@@ -2,8 +2,8 @@ class FindDuplicates < Formula
   include Language::Python::Virtualenv
 
   desc "Find and review duplicate images by perceptual hash and quality metrics"
-  homepage "https://github.com/pathanin/find_duplicates"
-  url "https://github.com/pathanin/find_duplicates/releases/download/v0.1.0/find_duplicates-0.1.0.tar.gz"
+  homepage "https://github.com/pathanin/homebrew-find_duplicates"
+  url "https://github.com/pathanin/homebrew-find_duplicates/releases/download/v0.1.0/find_duplicates-0.1.0.tar.gz"
   sha256 "65b1e9a34d9aff17ffb0a150347cbafd172499acc4e10760ad4f32a0d0b3a2be"
   license "MIT"
 
