@@ -111,12 +111,13 @@ def phash(gray: np.ndarray) -> int:
 
 
 def hamming(a: int, b: int) -> int:
-    return bin(a ^ b).count("1")
+    return (a ^ b).bit_count()
 
 
 class UnionFind:
     def __init__(self, n: int):
         self.parent = list(range(n))
+        self.rank = [0] * n
 
     def find(self, x: int) -> int:
         while self.parent[x] != x:
@@ -126,8 +127,13 @@ class UnionFind:
 
     def union(self, a: int, b: int) -> None:
         ra, rb = self.find(a), self.find(b)
-        if ra != rb:
-            self.parent[ra] = rb
+        if ra == rb:
+            return
+        if self.rank[ra] < self.rank[rb]:
+            ra, rb = rb, ra
+        self.parent[rb] = ra
+        if self.rank[ra] == self.rank[rb]:
+            self.rank[ra] += 1
 
 
 def group_duplicates(paths: list[Path], threshold: int) -> list[list[Path]]:
@@ -194,11 +200,17 @@ def humansize(n: float) -> str:
     return f"{n:.1f}GB"
 
 
+THUMBNAIL_FAILURE_COLOR = (60, 60, 60)  # neutral gray placeholder, visually distinct from real photos
+
+
 def make_thumbnail(path: Path) -> PILImage.Image:
-    img = PILImage.open(path)
-    img = img.convert("RGB")
-    img.thumbnail((PREVIEW_MAX_SIDE, PREVIEW_MAX_SIDE))
-    return img
+    try:
+        img = PILImage.open(path)
+        img = img.convert("RGB")
+        img.thumbnail((PREVIEW_MAX_SIDE, PREVIEW_MAX_SIDE))
+        return img
+    except Exception:
+        return PILImage.new("RGB", (PREVIEW_MAX_SIDE, PREVIEW_MAX_SIDE), THUMBNAIL_FAILURE_COLOR)
 
 
 @dataclass
@@ -656,22 +668,27 @@ class DuplicateReviewApp(App):
         group.status = "confirmed"
         group.current_pick = keep_idx
         moved = []
-        for idx, path in enumerate(group.paths):
-            if idx == keep_idx:
-                continue
-            dest = self._dest_for(path)
-            if not self.dry_run:
-                shutil.move(str(path), str(dest))
-            moved.append({"from": str(path), "to": str(dest)})
-        self.manifest.append(
-            {
-                "group": i,
-                "kept": str(group.paths[keep_idx]),
-                "moved": moved,
-                "dry_run": self.dry_run,
-            }
-        )
-        self._write_manifest()
+        try:
+            for idx, path in enumerate(group.paths):
+                if idx == keep_idx:
+                    continue
+                dest = self._dest_for(path)
+                if not self.dry_run:
+                    shutil.move(str(path), str(dest))
+                moved.append({"from": str(path), "to": str(dest)})
+        finally:
+            # Record whatever was actually moved even if a move raised partway
+            # through (disk full, permission error) -- otherwise files already
+            # moved to disk would have no manifest entry and become unrecoverable.
+            self.manifest.append(
+                {
+                    "group": i,
+                    "kept": str(group.paths[keep_idx]),
+                    "moved": moved,
+                    "dry_run": self.dry_run,
+                }
+            )
+            self._write_manifest()
 
     def _dest_for(self, path: Path) -> Path:
         if not self.dry_run:
