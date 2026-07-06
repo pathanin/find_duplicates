@@ -400,6 +400,7 @@ class DuplicateReviewApp(App):
     }
     .preview-box.suggested { border: round $accent; }
     .preview-box.picked { border: heavy $success; }
+    .preview-label { width: 100%; text-wrap: nowrap; text-overflow: ellipsis; }
     .preview-image { width: auto; height: auto; }
     #metrics-table { height: 1fr; }
     #status { height: 2; background: $panel; content-align: left top; padding: 0 1; }
@@ -509,14 +510,17 @@ class DuplicateReviewApp(App):
             tag = ""
             if idx == group.current_pick:
                 classes += " picked"
-                tag = "  ✔ WILL KEEP"
+                tag = "✔ KEEP  "
             elif idx == group.suggested_idx:
-                tag = "  ★ suggested"
+                tag = "★ suggested  "
             if idx == group.suggested_idx:
                 classes += " suggested"
-            label_text = f"[{idx + 1}] {path.name}{tag}"
+            # Tag (and the pick number) come before the filename, not after,
+            # so a narrow terminal's ellipsis truncates the recoverable
+            # filename tail rather than the keep/suggested indicator itself.
+            label_text = f"{tag}[{idx + 1}] {path.name}"
             image = PreviewImage(thumb, classes="preview-image")
-            boxes.append(Vertical(Label(label_text), image, classes=classes))
+            boxes.append(Vertical(Label(label_text, classes="preview-label"), image, classes=classes))
         await row.mount(*boxes)
 
         table = self.query_one(DataTable)

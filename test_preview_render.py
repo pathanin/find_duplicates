@@ -138,9 +138,91 @@ async def test_detector_catches_stretch() -> None:
     print(f"  ok  buggy CSS correctly detected as distorted (max err {worst:.1%})")
 
 
+def image_regions(app: fd.DuplicateReviewApp) -> list[str]:
+    """Region strings for every rendered image, in a stable left-to-right order."""
+    widgets = sorted(app.query(HalfcellImage), key=lambda w: w.region.x)
+    return [str(w.region) for w in widgets]
+
+
+# Realistic-length names (matching a real report) that stay *narrower* than
+# the preview box at a 170-col terminal, rather than wildly overflowing it.
+# That distinction matters: once a label's "auto" width already overflows
+# its box in both before/after states, Textual doesn't feed that overflow
+# back into sibling alignment either way and the bug doesn't reproduce.
+# It's specifically the case where the label's width stays *under* the box
+# width but *changes* underneath it (tag added/removed/swapped) that shifts
+# the box's centered content -- confirmed by hand while debugging the report.
+REALISTIC_NAMES = [
+    "2cad46a9-5f23-4ac6-b4ad-7e4f4bba6452.jpg",
+    "ellekorea_1783307128_3934986827730590834_558005422.jpg",
+]
+
+
+def make_named_group(names: list[str], suggested_idx: int = 0, current_pick: int = 0) -> fd.Group:
+    thumbs = [PILImage.new("RGB", (1200, 1500)) for _ in names]
+    return fd.Group(
+        paths=[Path(name) for name in names],
+        results=[fake_result(1200, 1500) for _ in names],
+        thumbnails=thumbs,
+        suggested_idx=suggested_idx,
+        current_pick=current_pick,
+        is_close_call=False,
+    )
+
+
+async def test_pick_change_does_not_move_the_images() -> None:
+    """Regression: the "<tag> [idx] name" label used to be unconstrained
+    ("auto" width), so a tag being added/removed/swapped as the pick moved
+    changed that label's width and, via the box's `align: center middle`,
+    visibly shifted that box's image left/right as the pick changed --
+    confirmed by hand with `region` before/after a pick change."""
+    app = new_app([make_named_group(REALISTIC_NAMES)])
+    async with app.run_test(size=(170, 50)) as pilot:
+        await pilot.pause()
+        before = image_regions(app)
+        await pilot.press("right")  # move current_pick from 0 to 1
+        await pilot.pause()
+        after = image_regions(app)
+        assert before == after, (
+            f"image regions moved when the pick changed: {before} -> {after}; "
+            "the picked box's label must not be able to change width under its neighbor"
+        )
+    print(f"  ok  image regions unchanged across a pick change: {before}")
+
+
+async def test_detector_catches_label_overflow() -> None:
+    """Reverting the label to unconstrained width must make the check above
+    fail, proving it isn't vacuous."""
+
+    class UnconstrainedLabelApp(fd.DuplicateReviewApp):
+        CSS = fd.DuplicateReviewApp.CSS.replace(
+            ".preview-label { width: 100%; text-wrap: nowrap; text-overflow: ellipsis; }",
+            "",
+        )
+
+    assert "preview-label" not in UnconstrainedLabelApp.CSS, "CSS removal did not apply; update the test"
+    app = new_app([make_named_group(REALISTIC_NAMES)], UnconstrainedLabelApp)
+    async with app.run_test(size=(170, 50)) as pilot:
+        await pilot.pause()
+        before = image_regions(app)
+        await pilot.press("right")
+        await pilot.pause()
+        after = image_regions(app)
+        assert before != after, (
+            f"expected the unconstrained label to shift the images when the pick changed, "
+            f"but they stayed at {before}; the regression check above may be vacuous"
+        )
+    print(f"  ok  without the width/nowrap/ellipsis CSS, the images do shift ({before} -> {after})")
+
+
 async def main() -> None:
     fd.PreviewImage = HalfcellImage  # force deterministic headless renderer
-    for test in (test_aspect_preserved, test_detector_catches_stretch):
+    for test in (
+        test_aspect_preserved,
+        test_detector_catches_stretch,
+        test_pick_change_does_not_move_the_images,
+        test_detector_catches_label_overflow,
+    ):
         print(f"{test.__name__}:")
         await test()
     print("all preview render tests passed")
