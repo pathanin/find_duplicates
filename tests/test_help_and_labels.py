@@ -78,21 +78,61 @@ def test_help_body_covers_every_weighted_metric() -> None:
     print("  ok  help text covers every weighted metric and its description")
 
 
-async def test_help_screen_opens_and_closes_without_side_effects() -> None:
-    app = new_app()
-    async with app.run_test(size=(170, 50)) as pilot:
-        await pilot.pause()
-        await pilot.press("question_mark")
-        await pilot.pause()
-        assert any(type(s).__name__ == "HelpScreen" for s in app.screen_stack), "'?' should push the help screen"
-        shown = str(app.screen.query(Static).first().render())
-        assert "QUALITY SCORE" in shown, "help screen didn't render the expected content"
+def test_every_weighted_metric_has_a_display_row() -> None:
+    """METRIC_WEIGHTS and METRIC_ROWS are two separate structures kept in
+    sync by convention only: a metric added to METRIC_WEIGHTS but never given
+    a METRIC_ROWS row would silently affect the score without ever being
+    shown to the user. Each row's rendering function is a lambda that
+    dict-subscripts its result by the metric's key, e.g. `r['niqe']` -- that
+    key literal shows up in the lambda's compiled constants, so we can check
+    every weighted metric is actually referenced by some row without needing
+    to render the table."""
+    referenced = set()
+    for _, fn in fd.METRIC_ROWS:
+        referenced.update(c for c in fn.__code__.co_consts if isinstance(c, str))
+    for name in fd.METRIC_WEIGHTS:
+        assert name in referenced, (
+            f"{name!r} is scored (in METRIC_WEIGHTS) but no METRIC_ROWS row references it -- "
+            "it would silently affect quality_score without ever being displayed"
+        )
+    print("  ok  every weighted metric has a corresponding METRIC_ROWS display row")
 
-        await pilot.press("escape")
-        await pilot.pause()
-        assert not any(type(s).__name__ == "HelpScreen" for s in app.screen_stack), "escape should close the help screen"
-        assert app.groups[0].status == "pending", "opening/closing help must not touch group state"
-    print("  ok  '?' opens help, escape closes it, group state untouched")
+
+def test_detector_catches_a_dropped_display_row() -> None:
+    """Proof the check above can actually fail: with the NIQE row removed,
+    the check must flag 'niqe' as no longer referenced."""
+    rows_without_niqe = [row for row, _ in fd.METRIC_ROWS if "NIQE" not in row]
+    assert len(rows_without_niqe) == len(fd.METRIC_ROWS) - 1, "expected to drop exactly one row (NIQE)"
+    referenced = set()
+    for label, fn in fd.METRIC_ROWS:
+        if "NIQE" in label:
+            continue
+        referenced.update(c for c in fn.__code__.co_consts if isinstance(c, str))
+    assert "niqe" not in referenced, "dropping the NIQE row should have removed 'niqe' from referenced keys"
+    print("  ok  the coupling check correctly flags a dropped display row (not vacuous)")
+
+
+async def test_help_screen_opens_and_closes_without_side_effects() -> None:
+    # HelpScreen binds escape,q,question_mark -> close_help (see BINDINGS in
+    # find_duplicates.py); each must be exercised on its own, since a test
+    # that only presses one wouldn't notice the others silently breaking.
+    for close_key in ("escape", "q", "question_mark"):
+        app = new_app()
+        async with app.run_test(size=(170, 50)) as pilot:
+            await pilot.pause()
+            await pilot.press("question_mark")
+            await pilot.pause()
+            assert any(type(s).__name__ == "HelpScreen" for s in app.screen_stack), "'?' should push the help screen"
+            shown = str(app.screen.query(Static).first().render())
+            assert "QUALITY SCORE" in shown, "help screen didn't render the expected content"
+
+            await pilot.press(close_key)
+            await pilot.pause()
+            assert not any(type(s).__name__ == "HelpScreen" for s in app.screen_stack), (
+                f"{close_key!r} should close the help screen"
+            )
+            assert app.groups[0].status == "pending", "opening/closing help must not touch group state"
+        print(f"  ok  '?' opens help, {close_key!r} closes it, group state untouched")
 
 
 async def test_metric_labels_reach_the_table() -> None:
@@ -109,6 +149,8 @@ async def main() -> None:
     fd.PreviewImage = HalfcellImage  # deterministic headless renderer, no real terminal needed
     test_every_scored_metric_row_states_its_direction()
     test_help_body_covers_every_weighted_metric()
+    test_every_weighted_metric_has_a_display_row()
+    test_detector_catches_a_dropped_display_row()
     for test in (test_help_screen_opens_and_closes_without_side_effects, test_metric_labels_reach_the_table):
         print(f"{test.__name__}:")
         await test()
