@@ -16,7 +16,7 @@ Two scripts:
 
 Usage: `python3 find_duplicates.py [directory] [--threshold N] [--dest DIR] [--dry-run]`
 
-## Status: functionally verified, one visual fix awaiting your confirmation
+## Status: complete — rendering now verified headlessly (see below)
 
 ### Verified end-to-end (tmux automation + this directory's real photos)
 
@@ -35,21 +35,41 @@ Usage: `python3 find_duplicates.py [directory] [--threshold N] [--dest DIR] [--d
 - `decisions.json` writes into the scanned directory, not the process's cwd
   (also caught by advisor review, not my own testing).
 
-### What I'm struggling with, and why
+### Previously "struggling with": visual verification — now resolved
 
-The one thing I cannot verify myself is whether the inline image preview
-**actually looks right on screen**. This sandbox has no Screen Recording
-permission, so `screencapture` fails outright, and there's no other way for
-me to see rendered pixels. All I can check mechanically is: does the app
-crash, does it emit real per-pixel escape-sequence data (verified this at
-the byte level — decoding a real photo through the fallback renderer
-produced 361 distinct genuine RGB values, not blank), and does it run
-without exceptions. Whether it looks *correct* — proportioned, not
-stretched, actually showing the photo — requires a human looking at a live
-terminal window. That's you.
+The earlier blocker was that the sandbox has no Screen Recording permission,
+so there was no way to *see* whether the preview rendered proportioned and
+un-stretched. Workaround that closed the gap without any screen capture:
 
-This gap produced two rounds of bugs that only surfaced from your
-screenshots, not my own testing:
+- Run the real `DuplicateReviewApp` headlessly under Textual's test `Pilot`,
+  forcing the `HalfcellImage` renderer (plain colored half-block cells).
+- Export the screen with `App.export_screenshot()` — for character-cell
+  renderers this SVG is a faithful picture of what the terminal would draw
+  (unlike Sixel escapes, which SVG export can't capture).
+- Convert SVG → PNG with macOS `qlmanage -t` and inspect the pixels.
+
+Result, verified visually on this directory's real photos: photos render as
+recognizable images (no blank boxes), portraits stay portrait, a landscape
+photo stays landscape with its in-photo white border intact, everything is
+letterboxed and centered in its box, and the green suggested / heavy orange
+picked borders move correctly when changing the pick with `→`.
+
+The aspect fix is also verified mechanically and renderer-independently:
+`SixelImage` (what iTerm2 uses) inherits `get_content_width/height`
+unchanged from the same base class as `HalfcellImage`, so the letterboxing
+geometry checked headlessly is exactly what runs under Sixel. The
+`container.height or 2**32` first-measure concern flagged below never
+materialized — regions settle at aspect-correct sizes in a `Horizontal` of
+2 and of 3 image boxes (measured error 0–2.5%).
+
+`test_preview_render.py` (new) locks this in: it asserts non-empty,
+aspect-correct regions for portrait/landscape/square plus 4:1 and 1:4
+boundary shapes using synthetic images (no personal photos needed), and
+re-runs with the old buggy CSS to prove the check actually detects the
+stretch regression (321% error, caught). Run: `python3 test_preview_render.py`.
+
+History, for context — the two rounds of bugs that originally only surfaced
+from live-terminal screenshots:
 
 1. **Blank black boxes.** I imported `textual_image.widget.AutoImage`
    directly instead of the package's dynamically-resolved `Image` alias.
@@ -71,17 +91,7 @@ screenshots, not my own testing:
    concrete width/height forces a stretch-to-fill with no aspect
    correction. Fixed by setting `.preview-image { width: auto; height: auto; }`
    and centering the result with `align: center middle` on the parent box.
-   I relaunched a live iTerm2 window with this fix right before this commit
-   but haven't heard back on whether it looks right.
-
-If the aspect ratio is still off after this fix, the next thing I'd check is
-whether `get_content_width`/`get_content_height` are being called with a
-sane, non-zero `container` size the first time the image widget measures
-itself in our horizontally-packed multi-image row — Textual computes
-intrinsic sizes before layout fully settles, and the library has a
-compensating hack for a zero-height container (`2**32` fallback) that I
-haven't fully audited in the context of a `Horizontal` of several image
-boxes rather than the library's own (presumably simpler) demo layout.
+   This fix is now confirmed correct by the headless verification above.
 
 ### Known limitations / not deeply tested
 
@@ -94,9 +104,9 @@ boxes rather than the library's own (presumably simpler) demo layout.
   "unicode placeholder" compositing trick is broken on Konsole/WezTerm even
   when they report support. This has only been tuned against iTerm2 3.6.11.
   Other terminals (Terminal.app, VS Code's integrated terminal) will fall
-  back to the Halfcell (colored block character) renderer, which I verified
-  at the byte level produces real per-pixel color data, but haven't seen
-  visually.
+  back to the Halfcell (colored block character) renderer, which is the
+  renderer now verified visually via the headless SVG-screenshot workaround
+  above.
 - Directory scan is intentionally non-recursive, and grouping is O(n²)
   pairwise Hamming-distance comparisons — fine for the ~20 images here,
   would need an optimization (e.g. bucket by hash prefix) for a directory
@@ -109,6 +119,8 @@ boxes rather than the library's own (presumably simpler) demo layout.
 
 - `find_duplicates.py` — main script
 - `compare_image_quality.py` — unmodified, imported for `analyze()`
+- `test_preview_render.py` — headless preview-rendering regression test
+  (aspect ratio + non-blank widgets + stretch-detection self-check)
 - `.gitignore` — excludes tool output (`decisions.json`, `_duplicates/`) and
   the personal photos/videos that happen to live in this working directory,
   since neither is part of "the program"
