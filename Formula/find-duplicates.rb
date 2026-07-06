@@ -7,6 +7,7 @@ class FindDuplicates < Formula
   sha256 "65b1e9a34d9aff17ffb0a150347cbafd172499acc4e10760ad4f32a0d0b3a2be"
   license "MIT"
 
+  depends_on "jpeg-turbo"
   depends_on "python@3.13"
 
   # Perceptual hashing and image I/O
