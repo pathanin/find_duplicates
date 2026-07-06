@@ -217,7 +217,7 @@ def make_thumbnail(path: Path) -> PILImage.Image:
 class Group:
     paths: list[Path]
     results: list[dict]
-    thumbnails: list[PILImage.Image]
+    thumbnails: list[PILImage.Image] | None  # lazily generated on first view, see refresh_detail
     suggested_idx: int
     current_pick: int
     is_close_call: bool
@@ -302,13 +302,15 @@ def build_groups(directory: Path, threshold: int) -> list[Group]:
         close_call = len(order) > 1 and (
             results[order[0]]["quality_score"] - results[order[1]]["quality_score"] < CLOSE_CALL_MARGIN
         )
-        thumbnails = [make_thumbnail(p) for p in members]
-
         groups.append(
             Group(
                 paths=members,
                 results=results,
-                thumbnails=thumbnails,
+                # Not generated here: decoding+downscaling every group's images
+                # up front stalls TUI startup on large scans, and groups the
+                # user never navigates to (e.g. quits early) would pay that
+                # cost for nothing. refresh_detail() generates on first view.
+                thumbnails=None,
                 suggested_idx=suggested_idx,
                 current_pick=suggested_idx,
                 is_close_call=close_call,
@@ -515,26 +517,40 @@ class DuplicateReviewApp(App):
             self.active_index = event.list_view.index
             await self.refresh_detail(self.active_index)
 
+    def _pick_box_classes(self, group: Group, idx: int) -> str:
+        classes = "preview-box"
+        if idx == group.current_pick:
+            classes += " picked"
+        if idx == group.suggested_idx:
+            classes += " suggested"
+        return classes
+
+    def _pick_label_text(self, group: Group, idx: int) -> str:
+        tag = ""
+        if idx == group.current_pick:
+            tag = "[bold green]✔ KEEP[/]  "
+        elif idx == group.suggested_idx:
+            tag = "[italic]★ suggested[/]  "
+        # Tag (and the pick number) come before the filename, not after, so a
+        # narrow terminal's ellipsis truncates the recoverable filename tail
+        # rather than the keep/suggested indicator itself.
+        return f"{tag}[{idx + 1}] {group.paths[idx].name}"
+
     async def refresh_detail(self, i: int) -> None:
+        """Full re-render: switching which group is displayed. Only this path
+        needs to touch images/metrics at all -- moving the pick *within* the
+        same group goes through _update_pick_ui instead, since none of that
+        content depends on current_pick."""
         group = self.groups[i]
+        if group.thumbnails is None:
+            group.thumbnails = [make_thumbnail(p) for p in group.paths]
 
         row = self.query_one("#images-row", Horizontal)
         await row.remove_children()
         boxes = []
-        for idx, (path, thumb) in enumerate(zip(group.paths, group.thumbnails)):
-            classes = "preview-box"
-            tag = ""
-            if idx == group.current_pick:
-                classes += " picked"
-                tag = "[bold green]✔ KEEP[/]  "
-            elif idx == group.suggested_idx:
-                tag = "[italic]★ suggested[/]  "
-            if idx == group.suggested_idx:
-                classes += " suggested"
-            # Tag (and the pick number) come before the filename, not after,
-            # so a narrow terminal's ellipsis truncates the recoverable
-            # filename tail rather than the keep/suggested indicator itself.
-            label_text = f"{tag}[{idx + 1}] {path.name}"
+        for idx, thumb in enumerate(group.thumbnails):
+            classes = self._pick_box_classes(group, idx)
+            label_text = self._pick_label_text(group, idx)
             image = PreviewImage(thumb, classes="preview-image")
             boxes.append(Vertical(Label(label_text, classes="preview-label"), image, classes=classes))
         await row.mount(*boxes)
@@ -548,6 +564,23 @@ class DuplicateReviewApp(App):
         for label, fn in METRIC_ROWS:
             table.add_row(label, *[fn(r) for r in group.results])
 
+        self.query_one("#status", Static).update(self._status_text())
+
+    async def _update_pick_ui(self, old_pick: int, new_pick: int) -> None:
+        """Lightweight counterpart to refresh_detail for moving the pick
+        within the same group: only the old/new picked boxes' CSS class and
+        label text can have changed (nothing in METRIC_ROWS or the table
+        headers depends on current_pick), so this skips rebuilding the
+        PreviewImage widgets (avoids re-encoding/re-transmitting every
+        terminal image) and the DataTable entirely."""
+        group = self.groups[self.active_index]
+        boxes = self.query_one("#images-row", Horizontal).children
+        for idx in {old_pick, new_pick}:
+            if not (0 <= idx < len(boxes)):
+                continue
+            box = boxes[idx]
+            box.set_class(idx == group.current_pick, "picked")
+            box.query_one(Label).update(self._pick_label_text(group, idx))
         self.query_one("#status", Static).update(self._status_text())
 
     def _status_text(self) -> str:
@@ -582,14 +615,16 @@ class DuplicateReviewApp(App):
     async def action_pick(self, n: int) -> None:
         group = self.groups[self.active_index]
         idx = n - 1
-        if 0 <= idx < len(group.paths):
+        if 0 <= idx < len(group.paths) and idx != group.current_pick:
+            old_pick = group.current_pick
             group.current_pick = idx
-            await self.refresh_detail(self.active_index)
+            await self._update_pick_ui(old_pick, idx)
 
     async def action_pick_relative(self, delta: int) -> None:
         group = self.groups[self.active_index]
+        old_pick = group.current_pick
         group.current_pick = (group.current_pick + delta) % len(group.paths)
-        await self.refresh_detail(self.active_index)
+        await self._update_pick_ui(old_pick, group.current_pick)
 
     async def action_confirm(self) -> None:
         # confirm's Enter alias is a priority binding, which pierces modals
