@@ -17,9 +17,11 @@ Requires:
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -38,6 +40,11 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff", ".tif"}
 DEFAULT_HASH_THRESHOLD = 10  # max Hamming distance out of 64 bits to call two images duplicates
 PREVIEW_MAX_SIDE = 800
 CLOSE_CALL_MARGIN = 0.08  # quality_score gap below which we flag "close call"
+CACHE_FILENAME = ".find_duplicates_cache.json"
+# phash resizes to 32x32; a reduced-scale decode smaller than this on either side
+# would upsample instead of downsample there, drifting the hash. 64 gives margin,
+# and images this small are cheap to fully decode anyway.
+MIN_REDUCED_DECODE_SIDE = 64
 
 # Weight > 0 means higher raw value is better; weight < 0 means lower raw value is better.
 # effective_resolution_px_equiv is weighted heaviest since it's the metric most resistant
@@ -59,6 +66,17 @@ METRIC_WEIGHTS = {
 
 def find_images(directory: Path) -> list[Path]:
     return sorted(p for p in directory.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_EXTS)
+
+
+def load_hash_gray(p: Path) -> np.ndarray | None:
+    """Grayscale decode for perceptual hashing. Uses a 1/8-scale DCT decode
+    for speed (skips full-resolution JPEG decode just to shrink it to 32x32
+    afterwards); falls back to a full decode when the image is small enough
+    that the reduced decode would land below what the hash needs."""
+    img = cv2.imread(str(p), cv2.IMREAD_REDUCED_GRAYSCALE_8)
+    if img is None or min(img.shape) < MIN_REDUCED_DECODE_SIDE:
+        img = cv2.imread(str(p), cv2.IMREAD_GRAYSCALE)
+    return img
 
 
 def phash(gray: np.ndarray) -> int:
@@ -99,7 +117,7 @@ class UnionFind:
 def group_duplicates(paths: list[Path], threshold: int) -> list[list[Path]]:
     hashes: list[int | None] = []
     for p in paths:
-        img = cv2.imread(str(p), cv2.IMREAD_GRAYSCALE)
+        img = load_hash_gray(p)
         hashes.append(phash(img) if img is not None else None)
 
     uf = UnionFind(len(paths))
@@ -178,17 +196,77 @@ class Group:
     status: str = "pending"  # pending | confirmed | skipped
 
 
+def load_cache(directory: Path) -> dict:
+    path = directory / CACHE_FILENAME
+    if not path.exists():
+        return {}
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def save_cache(directory: Path, cache: dict) -> None:
+    with open(directory / CACHE_FILENAME, "w") as f:
+        json.dump(cache, f)
+
+
+def cached_result(cache: dict, p: Path, st: os.stat_result) -> dict | None:
+    entry = cache.get(str(p.resolve()))
+    if entry is None or entry.get("mtime") != st.st_mtime_ns or entry.get("size") != st.st_size:
+        return None
+    result = dict(entry["result"])
+    result["dimensions"] = tuple(result["dimensions"])
+    return result
+
+
+def store_result(cache: dict, p: Path, st: os.stat_result, result: dict) -> None:
+    cache[str(p.resolve())] = {"mtime": st.st_mtime_ns, "size": st.st_size, "result": result}
+
+
+def analyze_paths(paths: list[Path], cache: dict) -> dict[Path, dict]:
+    """analyze() every path, reusing `cache` for files whose (mtime, size)
+    haven't changed and running the rest through a process pool (analyze()
+    is CPU-bound and independent per file)."""
+    results: dict[Path, dict] = {}
+    stats = {p: p.stat() for p in paths}
+    to_compute = []
+    for p in paths:
+        hit = cached_result(cache, p, stats[p])
+        if hit is not None:
+            results[p] = hit
+        else:
+            to_compute.append(p)
+
+    if to_compute:
+        # Deliberately not forcing a "fork" context here: by this point
+        # group_duplicates() has already done real cv2 decode work in this
+        # process, and forking after cv2/numpy have used internal threads
+        # reliably crashes the pool (BrokenProcessPool) on macOS -- confirmed
+        # empirically. Default spawn pays a one-time ~0.3s re-import tax per
+        # pool but is actually safe.
+        with ProcessPoolExecutor() as executor:
+            for p, r in zip(to_compute, executor.map(analyze, [str(p) for p in to_compute])):
+                store_result(cache, p, stats[p], r)
+                results[p] = r
+
+    for p in paths:
+        results[p]["file_size"] = stats[p].st_size
+    return results
+
+
 def build_groups(directory: Path, threshold: int) -> list[Group]:
     paths = find_images(directory)
     raw_groups = group_duplicates(paths, threshold)
 
+    cache = load_cache(directory)
+    analyzed = analyze_paths([p for members in raw_groups for p in members], cache)
+    save_cache(directory, cache)
+
     groups = []
     for members in raw_groups:
-        results = []
-        for p in members:
-            r = analyze(str(p))
-            r["file_size"] = p.stat().st_size
-            results.append(r)
+        results = [analyzed[p] for p in members]
         score_group(results)
 
         order = sorted(range(len(results)), key=lambda i: -results[i]["quality_score"])

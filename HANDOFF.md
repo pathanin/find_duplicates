@@ -44,16 +44,30 @@ errors):
 
 ## Next features (planned)
 
-1. **Fast scanning.** Measured on this directory's 12 photos: the phash pass
-   decodes every JPEG at full resolution just to shrink it to 32×32 (0.78s;
-   `cv2.IMREAD_REDUCED_GRAYSCALE_8` does DCT-domain 1/8 decode in 0.41s with
-   at most 1 bit of hash drift out of 64 — harmless against the threshold of
-   10). The dominant cost is `analyze()`: 0.6s per ~3MB photo, run serially
-   on every group member before the UI opens. Plan: reduced-resolution
-   decode for hashing, `analyze()` parallelized with a `ProcessPoolExecutor`,
-   a metrics cache keyed by `(path, mtime, size)` so re-runs are near-free,
-   and optionally lazy per-group analysis in Textual background workers so
-   the TUI opens right after grouping.
+1. **Fast scanning — perf trio landed, lazy-UI still open.** Done:
+   `load_hash_gray()` decodes at `cv2.IMREAD_REDUCED_GRAYSCALE_8` (1/8 scale)
+   for hashing instead of full resolution, falling back to a full decode
+   whenever the reduced decode would land below 32px on the short side (the
+   phash's own resize target) — verified this matters: a real large/small
+   duplicate pair matched exactly (0 bits) at full decode but drifted 3/64
+   bits when the small side used a naive reduced-8 decode with no fallback.
+   `analyze()` calls are parallelized via `ProcessPoolExecutor` across every
+   group member in one batch, backed by a metrics cache keyed by
+   `(path, mtime, size)` at `.find_duplicates_cache.json` in the scanned
+   directory (gitignored) so unchanged files skip recomputation and the pool
+   isn't even constructed on an all-cache-hit re-run. Deliberately **not**
+   forcing a `fork` multiprocessing context despite it measuring ~6x faster
+   pool startup than the default `spawn`: `group_duplicates()` has already
+   done real cv2 decode work by the time the pool spins up, and forking
+   after cv2/numpy have used internal threads reliably crashed the pool
+   (`BrokenProcessPool`) in testing — a macOS fork-after-threads hazard, not
+   a fluke. Spawn's one-time ~0.3s tax per invocation is the safe tradeoff.
+   Covered by `test_fast_scan.py`. Still open: lazy per-group analysis in
+   Textual background workers so the TUI opens right after grouping instead
+   of waiting for all `analyze()` calls to finish — deferred as its own
+   checkpoint since it changes the `Group` lifecycle from "fully populated
+   before app launch" to "populated over time," which is exactly the
+   invariant `test_preview_render.py` currently assumes.
 2. **1:1 zoom-crop compare.** Thumbnails are too small to show sharpness or
    compression differences, so "close call ⚠" groups can't actually be
    resolved in-app (`o`/Preview.app opens full images but aligns nothing).
@@ -83,6 +97,10 @@ errors):
 - `compare_image_quality.py` — unmodified, imported for `analyze()`
 - `test_preview_render.py` — headless preview-rendering regression test
   (aspect ratio + non-blank widgets + stretch-detection self-check)
-- `.gitignore` — excludes tool output (`decisions.json`, `_duplicates/`) and
-  the personal photos/videos that happen to live in this working directory,
-  since neither is part of "the program"
+- `test_fast_scan.py` — regression test for reduced-decode hashing (fast
+  path + small-image fallback) and the analyze() cache (round-trip,
+  invalidation, corrupt-file handling, pool skipped on all-cache-hit)
+- `.gitignore` — excludes tool output (`decisions.json`, `_duplicates/`,
+  `.find_duplicates_cache.json`) and the personal photos/videos that happen
+  to live in this working directory, since none of it is part of "the
+  program"
