@@ -46,13 +46,13 @@ cd find_duplicates
 
 ## Tests
 
-\`\`\`bash
+```bash
 python3 tests/test_preview_render.py
 python3 tests/test_help_and_labels.py
 python3 tests/test_footer_click_safety.py
 python3 tests/test_keyboard_aliases.py
 python3 tests/test_fast_scan.py
-\`\`\`
+```
 
 ## License
 
