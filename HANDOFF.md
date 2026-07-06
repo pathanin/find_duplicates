@@ -16,104 +16,66 @@ Two scripts:
 
 Usage: `python3 find_duplicates.py [directory] [--threshold N] [--dest DIR] [--dry-run]`
 
-## Status: complete — rendering now verified headlessly (see below)
+## Status: complete and verified
 
-### Verified end-to-end (tmux automation + this directory's real photos)
+- Grouping found all 7 real duplicate pairs in this directory; quality
+  scoring consistently suggested the higher-resolution, sharper original.
+- Confirm / skip / override (`1`-`9`, `←`/`→`) / quit, move-to-`_duplicates`
+  with collision suffixing, `--dry-run`, and re-deciding an already-decided
+  group (no-op, no crash) all verified end-to-end.
+- Preview rendering verified both visually and mechanically without screen
+  capture: run the app under Textual's test `Pilot` with the `HalfcellImage`
+  renderer, `App.export_screenshot()` to SVG (faithful for character-cell
+  renderers), `qlmanage -t` to PNG, inspect. Aspect ratios correct within
+  0–2.5% in 2- and 3-image rows. `test_preview_render.py` locks this in and
+  proves its own check catches the old stretch bug. The result carries over
+  to iTerm2 because `SixelImage` inherits the same sizing methods verified
+  headlessly.
 
-- Perceptual-hash grouping correctly found all 7 real duplicate pairs here
-  (each `uuid.jpg` paired with its higher-resolution `ellekorea_...jpg`
-  original).
-- Quality scoring consistently suggested keeping the higher-resolution,
-  sharper, cleaner original.
-- Confirm / skip / override (`1`-`9` or `←`/`→`) / quit flow all work.
-- Move-to-`_duplicates` with filename-collision suffixing (`_dup1`, `_dup2`,
-  ...) works.
-- `--dry-run` leaves every file untouched.
-- Re-confirming or re-skipping an already-decided group is now a no-op
-  instead of crashing (`shutil.move` on an already-moved file) — caught by
-  an advisor review pass, not by my own testing.
-- `decisions.json` writes into the scanned directory, not the process's cwd
-  (also caught by advisor review, not my own testing).
+Gotchas worth remembering (both produced silent blank/distorted output, no
+errors):
 
-### Previously "struggling with": visual verification — now resolved
+- Inside Textual, Sixel needs the package's auto-resolved `Image` alias from
+  `textual_image.widget`, not `AutoImage` directly — `AutoImage` silently
+  renders nothing when the active protocol is Sixel.
+- The library only letterboxes (preserves aspect) when the widget's CSS
+  width *and* height are both literally `auto`; any concrete size forces a
+  stretch-to-fill. Guarded by `test_preview_render.py`.
 
-The earlier blocker was that the sandbox has no Screen Recording permission,
-so there was no way to *see* whether the preview rendered proportioned and
-un-stretched. Workaround that closed the gap without any screen capture:
+## Next features (planned)
 
-- Run the real `DuplicateReviewApp` headlessly under Textual's test `Pilot`,
-  forcing the `HalfcellImage` renderer (plain colored half-block cells).
-- Export the screen with `App.export_screenshot()` — for character-cell
-  renderers this SVG is a faithful picture of what the terminal would draw
-  (unlike Sixel escapes, which SVG export can't capture).
-- Convert SVG → PNG with macOS `qlmanage -t` and inspect the pixels.
+1. **Fast scanning.** Measured on this directory's 12 photos: the phash pass
+   decodes every JPEG at full resolution just to shrink it to 32×32 (0.78s;
+   `cv2.IMREAD_REDUCED_GRAYSCALE_8` does DCT-domain 1/8 decode in 0.41s with
+   at most 1 bit of hash drift out of 64 — harmless against the threshold of
+   10). The dominant cost is `analyze()`: 0.6s per ~3MB photo, run serially
+   on every group member before the UI opens. Plan: reduced-resolution
+   decode for hashing, `analyze()` parallelized with a `ProcessPoolExecutor`,
+   a metrics cache keyed by `(path, mtime, size)` so re-runs are near-free,
+   and optionally lazy per-group analysis in Textual background workers so
+   the TUI opens right after grouping.
+2. **1:1 zoom-crop compare.** Thumbnails are too small to show sharpness or
+   compression differences, so "close call ⚠" groups can't actually be
+   resolved in-app (`o`/Preview.app opens full images but aligns nothing).
+   Add a `z` binding showing the *same* center region of each candidate at
+   100% pixel scale, side by side.
+3. **Recursive scan + scalable grouping.** Scanning is top-level only and
+   grouping is O(n²) pairwise Hamming — fine for ~20 images, not for a real
+   library. Add `--recursive` and bucket hashes (prefix buckets or a
+   BK-tree) before pairwise comparison.
 
-Result, verified visually on this directory's real photos: photos render as
-recognizable images (no blank boxes), portraits stay portrait, a landscape
-photo stays landscape with its in-photo white border intact, everything is
-letterboxed and centered in its box, and the green suggested / heavy orange
-picked borders move correctly when changing the pick with `→`.
-
-The aspect fix is also verified mechanically and renderer-independently:
-`SixelImage` (what iTerm2 uses) inherits `get_content_width/height`
-unchanged from the same base class as `HalfcellImage`, so the letterboxing
-geometry checked headlessly is exactly what runs under Sixel. The
-`container.height or 2**32` first-measure concern flagged below never
-materialized — regions settle at aspect-correct sizes in a `Horizontal` of
-2 and of 3 image boxes (measured error 0–2.5%).
-
-`test_preview_render.py` (new) locks this in: it asserts non-empty,
-aspect-correct regions for portrait/landscape/square plus 4:1 and 1:4
-boundary shapes using synthetic images (no personal photos needed), and
-re-runs with the old buggy CSS to prove the check actually detects the
-stretch regression (321% error, caught). Run: `python3 test_preview_render.py`.
-
-History, for context — the two rounds of bugs that originally only surfaced
-from live-terminal screenshots:
-
-1. **Blank black boxes.** I imported `textual_image.widget.AutoImage`
-   directly instead of the package's dynamically-resolved `Image` alias.
-   iTerm2 supports the Sixel protocol, and Sixel rendering inside Textual
-   needs a structurally different widget (`SixelImage`, which overrides
-   low-level `render_lines()` to inject raw sixel escapes) — the generic
-   `AutoImage`/`BaseImage` widget silently no-ops when the resolved renderer
-   is Sixel. It works fine outside Textual (plain `rich.console.Console`)
-   and works fine for the Halfcell/Unicode/TGP renderers; only
-   Sixel-inside-Textual needs the special widget, and getting it wrong
-   produces no error — just an empty box. Fixed by importing `Image` (the
-   package's own auto-resolving alias) instead of `AutoImage`.
-
-2. **Stretched/skewed photos** (current fix, not yet confirmed by you). CSS
-   on the image widget set `width: 100%; height: 1fr` — both concrete
-   sizes. The library only preserves the source aspect ratio when *both*
-   width and height are the literal Textual `auto` keyword, which triggers
-   its own letterboxing math against the available container size; any
-   concrete width/height forces a stretch-to-fill with no aspect
-   correction. Fixed by setting `.preview-image { width: auto; height: auto; }`
-   and centering the result with `align: center middle` on the parent box.
-   This fix is now confirmed correct by the headless verification above.
-
-### Known limitations / not deeply tested
+## Known limitations / not deeply tested
 
 - `o` (open full-res in Preview.app) only verified to compile; not exercised
-  in automated tests to avoid popping GUI windows during test runs. Should
-  work via `open -a Preview <files>` on macOS; the Linux `xdg-open` fallback
-  is unverified.
-- Terminal graphics support is inherently inconsistent across emulators —
-  the `textual-image` source itself notes the Kitty protocol's
-  "unicode placeholder" compositing trick is broken on Konsole/WezTerm even
-  when they report support. This has only been tuned against iTerm2 3.6.11.
-  Other terminals (Terminal.app, VS Code's integrated terminal) will fall
-  back to the Halfcell (colored block character) renderer, which is the
-  renderer now verified visually via the headless SVG-screenshot workaround
-  above.
-- Directory scan is intentionally non-recursive, and grouping is O(n²)
-  pairwise Hamming-distance comparisons — fine for the ~20 images here,
-  would need an optimization (e.g. bucket by hash prefix) for a directory
-  with thousands of images.
-- `METRIC_WEIGHTS` in `find_duplicates.py` is a heuristic I designed, not
-  validated against ground truth beyond "it picked the objectively
-  higher-resolution original in this directory's 7 real duplicate pairs."
+  in automated tests to avoid popping GUI windows. The Linux `xdg-open`
+  fallback is unverified.
+- Terminal graphics support varies by emulator (the `textual-image` source
+  notes Kitty's compositing trick is broken on Konsole/WezTerm even when
+  advertised). Tuned against iTerm2 3.6.11; other terminals fall back to the
+  Halfcell renderer, which is the one verified visually here.
+- `METRIC_WEIGHTS` in `find_duplicates.py` is a designed heuristic, only
+  validated by "it picked the objectively higher-resolution original in this
+  directory's 7 real duplicate pairs."
 
 ## Files
 
