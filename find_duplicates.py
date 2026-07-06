@@ -319,11 +319,11 @@ class DuplicateReviewApp(App):
         width: 1fr; min-width: 30; height: 22; border: round $panel; padding: 0 1;
         align: center middle;
     }
-    .preview-box.suggested { border: round $success; }
-    .preview-box.picked { border: heavy $warning; }
+    .preview-box.suggested { border: round $accent; }
+    .preview-box.picked { border: heavy $success; }
     .preview-image { width: auto; height: auto; }
     #metrics-table { height: 1fr; }
-    #status { height: 1; background: $panel; content-align: left middle; padding: 0 1; }
+    #status { height: 2; background: $panel; content-align: left top; padding: 0 1; }
     """
 
     BINDINGS = [
@@ -352,6 +352,16 @@ class DuplicateReviewApp(App):
         self.manifest_path = manifest_path
         self.manifest: list[dict] = []
         self.active_index = 0
+
+    def simulate_key(self, key: str) -> None:
+        """Textual's Footer renders key bindings as clickable buttons, whose
+        click handler routes through this exact method. That turns "c Confirm
+        keep" into a real button one stray click away from silently moving
+        files -- e.g. a click meant to focus/scroll the terminal after the
+        scan finishes. Confirm/skip mutate group state, so they must only
+        fire from a deliberate keypress, never a footer click."""
+        if key not in ("c", "s"):
+            super().simulate_key(key)
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -394,11 +404,15 @@ class DuplicateReviewApp(App):
         boxes = []
         for idx, (path, thumb) in enumerate(zip(group.paths, group.thumbnails)):
             classes = "preview-box"
-            if idx == group.suggested_idx:
-                classes += " suggested"
+            tag = ""
             if idx == group.current_pick:
                 classes += " picked"
-            label_text = f"[{idx + 1}] {path.name}" + (" ★" if idx == group.suggested_idx else "")
+                tag = "  ✔ WILL KEEP"
+            elif idx == group.suggested_idx:
+                tag = "  ★ suggested"
+            if idx == group.suggested_idx:
+                classes += " suggested"
+            label_text = f"[{idx + 1}] {path.name}{tag}"
             image = PreviewImage(thumb, classes="preview-image")
             boxes.append(Vertical(Label(label_text), image, classes=classes))
         await row.mount(*boxes)
@@ -419,9 +433,21 @@ class DuplicateReviewApp(App):
         skipped = sum(1 for g in self.groups if g.status == "skipped")
         pending = len(self.groups) - confirmed - skipped
         mode = "  [DRY RUN]" if self.dry_run else ""
+
+        group = self.groups[self.active_index]
+        n_removed = len(group.paths) - 1
+        if group.status == "pending":
+            plural = "s" if n_removed != 1 else ""
+            action = (
+                f"c confirms: KEEP {group.paths[group.current_pick].name}"
+                f", move {n_removed} other file{plural} to _duplicates"
+            )
+        else:
+            action = f"group already {group.status}"
+
         return (
-            f"Groups: {len(self.groups)}  confirmed={confirmed}  skipped={skipped}  pending={pending}{mode}"
-            "   ↑↓ groups · ←→ / 1-9 pick keep · c confirm · s skip · o open full-res · q finish"
+            f"Groups: {len(self.groups)}  confirmed={confirmed}  skipped={skipped}  pending={pending}{mode}\n"
+            f"{action}   |   ↑↓ groups · ←→ / 1-9 pick keep · c confirm · s skip · o open full-res · q finish"
         )
 
     async def action_pick(self, n: int) -> None:
