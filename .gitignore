@@ -16,3 +16,6 @@ _duplicates/
 *.mp4
 
 .DS_Store
+
+# project-local agent config, not source
+.omo/
