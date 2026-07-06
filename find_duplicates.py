@@ -363,7 +363,7 @@ class HelpScreen(ModalScreen):
     CSS = """
     HelpScreen { align: center middle; }
     #help-box {
-        width: 78; height: auto; max-height: 90%; border: round $accent;
+        width: 78; height: auto; max-height: 90%; border: solid $surface;
         padding: 1 2; background: $panel;
     }
     """
@@ -391,19 +391,19 @@ class DuplicateReviewApp(App):
 
     CSS = """
     #body { height: 1fr; }
-    #sidebar { width: 40; border-right: solid $accent; }
+    #sidebar { width: 40; border-right: solid $surface; }
     #detail { width: 1fr; height: 1fr; }
     #images-row { height: 24; overflow-x: auto; }
     .preview-box {
-        width: 1fr; min-width: 30; height: 22; border: round $panel; padding: 0 1;
+        width: 1fr; min-width: 30; height: 22; border: solid $surface; padding: 0 1;
         align: center middle;
     }
-    .preview-box.suggested { border: round $accent; }
+
     .preview-box.picked { border: heavy $success; }
     .preview-label { width: 100%; text-wrap: nowrap; text-overflow: ellipsis; }
     .preview-image { width: auto; height: auto; }
     #metrics-table { height: 1fr; }
-    #status { height: 2; background: $panel; content-align: left top; padding: 0 1; }
+    #status { height: 3; background: $surface; content-align: left top; padding: 0 1; }
     """
 
     # Non-latin/alternate keyboard layouts remap letter keys to different
@@ -488,7 +488,10 @@ class DuplicateReviewApp(App):
         g = self.groups[i]
         marker = {"pending": "◻", "confirmed": "✔", "skipped": "—"}[g.status]
         close = " ⚠" if g.is_close_call else ""
-        return f"{marker} Group {i + 1} ({len(g.paths)} files){close}"
+        pick = ""
+        if g.status == "confirmed":
+            pick = f" → [{g.current_pick + 1}]"
+        return f"{marker} Group {i + 1} ({len(g.paths)} files){close}{pick}"
 
     async def _relabel(self, i: int) -> None:
         item = self.query_one("#group-list", ListView).children[i]
@@ -510,9 +513,9 @@ class DuplicateReviewApp(App):
             tag = ""
             if idx == group.current_pick:
                 classes += " picked"
-                tag = "✔ KEEP  "
+                tag = "[bold green]✔ KEEP[/]  "
             elif idx == group.suggested_idx:
-                tag = "★ suggested  "
+                tag = "[italic]★ suggested[/]  "
             if idx == group.suggested_idx:
                 classes += " suggested"
             # Tag (and the pick number) come before the filename, not after,
@@ -544,16 +547,23 @@ class DuplicateReviewApp(App):
         n_removed = len(group.paths) - 1
         if group.status == "pending":
             plural = "s" if n_removed != 1 else ""
-            action = (
-                f"c confirms: KEEP {group.paths[group.current_pick].name}"
-                f", move {n_removed} other file{plural} to _duplicates"
-            )
+            action = f"keep [{group.current_pick + 1}] {group.paths[group.current_pick].name}"
+            if n_removed > 0:
+                action += f", move {n_removed} other file{plural}"
+            if group.current_pick != group.suggested_idx:
+                line3 = (
+                    f"your pick [{group.current_pick + 1}]  ·  "
+                    f"★ suggested [{group.suggested_idx + 1}] {group.paths[group.suggested_idx].name}"
+                )
+            else:
+                line3 = ""
         else:
-            action = f"group already {group.status}"
+            action = f"already {group.status}"
+            line3 = ""
 
         return (
             f"Groups: {len(self.groups)}  confirmed={confirmed}  skipped={skipped}  pending={pending}{mode}\n"
-            f"{action}   |   ↑↓ groups · ←→ / 1-9 pick keep · c confirm · s skip · o open full-res · ? help · q finish"
+            f"{action}\n{line3}"
         )
 
     async def action_pick(self, n: int) -> None:
@@ -576,9 +586,19 @@ class DuplicateReviewApp(App):
         if len(self.screen_stack) > 1:
             return
         i = self.active_index
-        if self.groups[i].status != "pending":
-            return
-        self._apply(i, self.groups[i].current_pick)
+        group = self.groups[i]
+
+        if group.status == "confirmed":
+            # Skip if pick hasn't changed
+            entry = next((m for m in self.manifest if m["group"] == i), None)
+            if entry is not None and entry["kept"] == str(group.paths[group.current_pick]):
+                return
+            self._unapply(i)
+            self._apply(i, group.current_pick)
+        elif group.status == "skipped":
+            self._apply(i, group.current_pick)
+        else:
+            self._apply(i, group.current_pick)
         await self._relabel(i)
         await self._advance()
 
@@ -586,11 +606,20 @@ class DuplicateReviewApp(App):
         if len(self.screen_stack) > 1:
             return
         i = self.active_index
-        if self.groups[i].status != "pending":
-            return
-        self.groups[i].status = "skipped"
-        await self._relabel(i)
-        await self._advance()
+        group = self.groups[i]
+
+        if group.status == "pending":
+            group.status = "skipped"
+            await self._relabel(i)
+            await self._advance()
+        elif group.status == "confirmed":
+            self._unapply(i)
+            group.status = "skipped"
+            await self._relabel(i)
+            await self._advance()
+        elif group.status == "skipped":
+            group.status = "pending"
+            await self._relabel(i)
 
     def action_open_fullres(self) -> None:
         group = self.groups[self.active_index]
@@ -607,6 +636,19 @@ class DuplicateReviewApp(App):
 
     def action_show_help(self) -> None:
         self.push_screen(HelpScreen())
+
+    def _unapply(self, i: int) -> None:
+        """Reverse file moves for a confirmed group using the manifest.
+        Does NOT change the group status — the caller decides."""
+        entry = next((m for m in self.manifest if m["group"] == i), None)
+        if entry:
+            for moved in entry["moved"]:
+                src = Path(moved["from"])
+                dst = Path(moved["to"])
+                if dst.exists() and not src.exists():
+                    dst.rename(src)
+            self.manifest.remove(entry)
+            self._write_manifest()
 
     def _apply(self, i: int, keep_idx: int) -> None:
         group = self.groups[i]
