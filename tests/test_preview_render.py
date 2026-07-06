@@ -216,8 +216,42 @@ async def test_detector_catches_label_overflow() -> None:
     print(f"  ok  without the width/nowrap/ellipsis CSS, the images do shift ({before} -> {after})")
 
 
+def test_make_thumbnail_returns_placeholder_for_corrupt_file() -> None:
+    """Failure case: a file that passes the extension filter but isn't a
+    real/openable image (truncated download, wrong-extension file, etc)
+    must not crash build_groups -- make_thumbnail() should return a
+    placeholder instead of letting PIL's exception propagate."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "corrupt.jpg"
+        p.write_bytes(b"not actually a jpeg")
+
+        thumb = fd.make_thumbnail(p)
+        assert isinstance(thumb, PILImage.Image), "expected a placeholder image, not an exception"
+        assert thumb.size == (fd.PREVIEW_MAX_SIDE, fd.PREVIEW_MAX_SIDE)
+        assert thumb.getpixel((0, 0)) == fd.THUMBNAIL_FAILURE_COLOR
+    print("  ok  make_thumbnail returns a placeholder for a corrupt/unreadable file instead of raising")
+
+
+def test_detector_catches_a_real_photo_as_not_a_placeholder() -> None:
+    """Proof the check above can actually fail: a real photo must NOT be
+    mistaken for the placeholder, otherwise the assertion above would pass
+    vacuously for any thumbnail."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "real.png"
+        assert (200, 50, 50) != fd.THUMBNAIL_FAILURE_COLOR, "test color collides with the placeholder color"
+        PILImage.new("RGB", (50, 50), (200, 50, 50)).save(p)
+
+        thumb = fd.make_thumbnail(p)
+        assert thumb.getpixel((0, 0)) != fd.THUMBNAIL_FAILURE_COLOR, (
+            "a real photo was indistinguishable from the failure placeholder"
+        )
+    print("  ok  a real photo is not mistaken for the failure placeholder (not vacuous)")
+
+
 async def main() -> None:
     fd.PreviewImage = HalfcellImage  # force deterministic headless renderer
+    test_make_thumbnail_returns_placeholder_for_corrupt_file()
+    test_detector_catches_a_real_photo_as_not_a_placeholder()
     for test in (
         test_aspect_preserved,
         test_detector_catches_stretch,
