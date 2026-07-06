@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+
+# tool output, not source
+decisions.json
+_duplicates/
+
+# personal media living in this working directory, not part of the program
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.bmp
+*.tiff
+*.mp4
+
+.DS_Store
