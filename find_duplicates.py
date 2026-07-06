@@ -31,6 +31,7 @@ from PIL import Image as PILImage
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Header, Label, ListItem, ListView, Static
 from textual_image.widget import Image as PreviewImage
 
@@ -57,6 +58,20 @@ METRIC_WEIGHTS = {
     "blockiness": -0.10,
     "brisque": -0.10,
     "niqe": -0.10,
+}
+
+# One-line plain-English gloss per metric, shown in the in-app help (`?`).
+# Keyed off METRIC_WEIGHTS so the help text can't drift out of sync with
+# what's actually scored -- add a metric to the weights and its description
+# is required here too, or the help screen would silently omit it.
+METRIC_DESCRIPTIONS = {
+    "effective_resolution_px_equiv": "true detail amount; resistant to fake upscaling",
+    "sharpness_normalized": "edge/detail sharpness, compared at a common scale",
+    "effective_resolution_fraction": "fraction of native resolution that's real detail, not just interpolated pixels",
+    "noise_sigma": "sensor/compression noise",
+    "blockiness": "JPEG block-edge artifacts",
+    "brisque": "no-reference perceptual quality score (needs optional `brisque` package)",
+    "niqe": "no-reference perceptual quality score (needs optional `pyiqa` package)",
 }
 
 
@@ -293,18 +308,64 @@ def build_groups(directory: Path, threshold: int) -> list[Group]:
 # TUI
 # ---------------------------------------------------------------------------
 
+# Every row is labeled with what a bigger/smaller number means, since a raw
+# number is meaningless without knowing which direction is "better" -- and
+# for the two rows that aren't part of the score at all (dimensions, file
+# size), saying so plainly heads off reading them as quality signals.
 METRIC_ROWS = [
-    ("Dimensions", lambda r: f"{r['dimensions'][0]}x{r['dimensions'][1]}"),
-    ("File size", lambda r: humansize(r["file_size"])),
-    ("Sharpness (norm.)", lambda r: f"{r['sharpness_normalized']:.1f}"),
-    ("Eff. res. fraction", lambda r: f"{r['effective_resolution_fraction']:.3f}"),
-    ("Eff. res. (px equiv)", lambda r: f"{r['effective_resolution_px_equiv']:.0f}"),
-    ("Noise sigma", lambda r: f"{r['noise_sigma']:.3f}"),
-    ("Blockiness", lambda r: f"{r['blockiness']:.3f}"),
-    ("BRISQUE", lambda r: f"{r['brisque']:.2f}" if r.get("brisque") is not None else "n/a"),
-    ("NIQE", lambda r: f"{r['niqe']:.2f}" if r.get("niqe") is not None else "n/a"),
-    ("Quality score", lambda r: f"{r['quality_score']:.3f}"),
+    ("Dimensions (not scored)", lambda r: f"{r['dimensions'][0]}x{r['dimensions'][1]}"),
+    ("File size (not scored)", lambda r: humansize(r["file_size"])),
+    ("Sharpness (higher better)", lambda r: f"{r['sharpness_normalized']:.1f}"),
+    ("Eff. res. fraction (higher better)", lambda r: f"{r['effective_resolution_fraction']:.3f}"),
+    ("Eff. res. px equiv (higher better)", lambda r: f"{r['effective_resolution_px_equiv']:.0f}"),
+    ("Noise sigma (lower better)", lambda r: f"{r['noise_sigma']:.3f}"),
+    ("Blockiness (lower better)", lambda r: f"{r['blockiness']:.3f}"),
+    ("BRISQUE (lower better)", lambda r: f"{r['brisque']:.2f}" if r.get("brisque") is not None else "n/a"),
+    ("NIQE (lower better)", lambda r: f"{r['niqe']:.2f}" if r.get("niqe") is not None else "n/a"),
+    ("Quality score (higher better)", lambda r: f"{r['quality_score']:.3f}"),
 ]
+
+
+def _help_body() -> str:
+    lines = [
+        "QUALITY SCORE",
+        "A weighted composite of the metrics below, normalized 0-1 within",
+        "this group only (min-max against the other files here -- not",
+        "comparable across different photos). It's a hand-tuned heuristic,",
+        "not a lab measurement: treat it as a strong hint, not a verdict,",
+        "especially on a close call.",
+        "",
+        "Dimensions and file size are shown for reference only and do NOT",
+        "factor into the score. A smaller or larger file is not, by itself,",
+        "a quality signal -- e.g. a noisier image can outweigh a cleaner one",
+        "in stored bytes without containing any more real detail.",
+        "",
+        "WEIGHTED METRICS, sorted by influence:",
+    ]
+    for name, weight in sorted(METRIC_WEIGHTS.items(), key=lambda kv: -abs(kv[1])):
+        direction = "higher better" if weight > 0 else "lower better"
+        lines.append(f"  {abs(weight):.2f}  {name} ({direction})")
+        lines.append(f"        {METRIC_DESCRIPTIONS[name]}")
+    return "\n".join(lines)
+
+
+class HelpScreen(ModalScreen):
+    CSS = """
+    HelpScreen { align: center middle; }
+    #help-box {
+        width: 78; height: auto; max-height: 90%; border: round $accent;
+        padding: 1 2; background: $panel;
+    }
+    """
+    BINDINGS = [Binding("escape,q,question_mark", "close_help", "Close")]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="help-box"):
+            yield Static(_help_body())
+            yield Static("\n[Esc / q / ? to close]")
+
+    def action_close_help(self) -> None:
+        self.dismiss()
 
 
 class DuplicateReviewApp(App):
@@ -332,6 +393,7 @@ class DuplicateReviewApp(App):
         Binding("c", "confirm", "Confirm keep"),
         Binding("s", "skip", "Skip group"),
         Binding("o", "open_fullres", "Open full-res"),
+        Binding("question_mark", "show_help", "Help"),
         Binding("1", "pick(1)", "Pick 1", show=False),
         Binding("2", "pick(2)", "Pick 2", show=False),
         Binding("3", "pick(3)", "Pick 3", show=False),
@@ -447,7 +509,7 @@ class DuplicateReviewApp(App):
 
         return (
             f"Groups: {len(self.groups)}  confirmed={confirmed}  skipped={skipped}  pending={pending}{mode}\n"
-            f"{action}   |   ↑↓ groups · ←→ / 1-9 pick keep · c confirm · s skip · o open full-res · q finish"
+            f"{action}   |   ↑↓ groups · ←→ / 1-9 pick keep · c confirm · s skip · o open full-res · ? help · q finish"
         )
 
     async def action_pick(self, n: int) -> None:
@@ -490,6 +552,9 @@ class DuplicateReviewApp(App):
                 self.notify("Full-resolution open isn't supported on this OS.", severity="warning")
         except FileNotFoundError:
             self.notify("Couldn't find an image viewer to open the file with.", severity="error")
+
+    def action_show_help(self) -> None:
+        self.push_screen(HelpScreen())
 
     def _apply(self, i: int, keep_idx: int) -> None:
         group = self.groups[i]
