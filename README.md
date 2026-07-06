@@ -18,18 +18,10 @@ python3 find_duplicates.py [directory] [--threshold N] [--dest DIR] [--dry-run]
 ```bash
 # Install script (Python 3.10+) — creates an isolated venv via pip
 # (prebuilt wheels, seconds) and puts `find-duplicates` on your PATH
-git clone https://github.com/pathanin/homebrew-find_duplicates.git
-cd homebrew-find_duplicates
+git clone https://github.com/pathanin/find_duplicates.git
+cd find_duplicates
 ./contrib/install.sh
 ```
-
-### Alternative: Homebrew
-
-```bash
-brew install pathanin/find_duplicates/find-duplicates
-```
-
-Homebrew builds `numpy`, `opencv-python-headless`, and `pillow` from source rather than using prebuilt wheels — no bottle is published for this tap yet, so `brew install`/`brew upgrade` recompiles them every time (opencv-python-headless alone compiles the full OpenCV C++ library). Expect several minutes rather than seconds. Use the install script above if you just want it fast.
 
 ## Usage
 

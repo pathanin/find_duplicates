@@ -1,12 +1,7 @@
 #!/usr/bin/env bash
-# Alternative installer that bypasses Homebrew entirely.
-#
-# Homebrew's Language::Python::Virtualenv forces `pip install --no-binary=:all:`
-# on every resource, so numpy/opencv-python-headless/pillow always compile from
-# source under `brew install`. Plain pip has no such restriction — it happily
-# uses prebuilt wheels from PyPI. This script creates an isolated venv with
-# plain pip (fast, wheel-based install) and puts a `find-duplicates` wrapper
-# on PATH, without needing a Homebrew bottle at all.
+# Creates an isolated venv with plain pip (fast, wheel-based install of
+# numpy/opencv-python-headless/pillow/textual) and puts a `find-duplicates`
+# wrapper on PATH.
 #
 # Usage: ./contrib/install.sh
 
