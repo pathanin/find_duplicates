@@ -21,6 +21,7 @@ from PIL import Image as PILImage
 from textual_image.widget import HalfcellImage
 from textual.widgets._footer import FooterKey
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import find_duplicates as fd
 
 

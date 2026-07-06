@@ -47,13 +47,13 @@ python3 find_duplicates.py
 
 ## Tests
 
-```bash
-python3 test_preview_render.py
-python3 test_help_and_labels.py
-python3 test_footer_click_safety.py
-python3 test_keyboard_aliases.py
-python3 test_fast_scan.py
-```
+\`\`\`bash
+python3 tests/test_preview_render.py
+python3 tests/test_help_and_labels.py
+python3 tests/test_footer_click_safety.py
+python3 tests/test_keyboard_aliases.py
+python3 tests/test_fast_scan.py
+\`\`\`
 
 ## License
 

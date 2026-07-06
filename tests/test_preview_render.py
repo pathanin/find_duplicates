@@ -26,6 +26,7 @@ from pathlib import Path
 
 from PIL import Image as PILImage
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import find_duplicates as fd
 from textual_image.widget import HalfcellImage
 from textual_image._terminal import get_cell_size

@@ -18,6 +18,7 @@ from PIL import Image as PILImage
 from textual.widgets import DataTable, Static
 from textual_image.widget import HalfcellImage
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import find_duplicates as fd
 
 
