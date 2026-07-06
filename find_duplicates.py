@@ -289,8 +289,12 @@ def build_groups(directory: Path, threshold: int) -> list[Group]:
     raw_groups = group_duplicates(paths, threshold)
 
     cache = load_cache(directory)
+    cache_before = dict(cache)
     analyzed = analyze_paths([p for members in raw_groups for p in members], cache)
-    save_cache(directory, cache)
+    if cache != cache_before:
+        # Skip the full JSON serialize+write when nothing new was computed
+        # (e.g. a warm re-run where every path was already a cache hit).
+        save_cache(directory, cache)
 
     groups = []
     for members in raw_groups:
