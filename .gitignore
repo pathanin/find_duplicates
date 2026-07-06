@@ -6,6 +6,7 @@ decisions.json
 decisions_*.json
 _duplicates/
 .find_duplicates_cache.json
+.find_duplicates_hash_cache.json
 
 # personal media living in this working directory, not part of the program
 *.jpg

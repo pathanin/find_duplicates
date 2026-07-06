@@ -29,6 +29,22 @@ def save_jpeg(img: np.ndarray, path: Path) -> None:
     cv2.imwrite(str(path), img, [cv2.IMWRITE_JPEG_QUALITY, 85])
 
 
+def make_duplicate_pair(tmp: str, seed: int) -> list[Path]:
+    """Same source texture resized to two different sizes and re-exported at
+    different JPEG quality -- perceptually close enough that group_duplicates
+    should group them at DEFAULT_HASH_THRESHOLD, the same shape of "real"
+    duplicate the tool is meant to catch."""
+    rng = np.random.default_rng(seed)
+    base = rng.integers(0, 255, size=(150, 200, 3), dtype=np.uint8)
+    big = cv2.resize(base, (1600, 1200), interpolation=cv2.INTER_CUBIC)
+    small = cv2.resize(base, (400, 300), interpolation=cv2.INTER_CUBIC)
+    p1 = Path(tmp) / "big.jpg"
+    p2 = Path(tmp) / "small.jpg"
+    cv2.imwrite(str(p1), big, [cv2.IMWRITE_JPEG_QUALITY, 90])
+    cv2.imwrite(str(p2), small, [cv2.IMWRITE_JPEG_QUALITY, 90])
+    return [p1, p2]
+
+
 def test_load_hash_gray_uses_reduced_decode_for_normal_size() -> None:
     """A normal-size image should take the fast ~1/8-scale decode path, not
     pay for a full decode it doesn't need."""
@@ -116,6 +132,147 @@ def test_load_cache_handles_corrupt_file() -> None:
         print("  ok  corrupt cache file loads as {} instead of raising")
 
 
+def test_hash_cache_round_trip() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "photo.jpg"
+        save_jpeg(make_texture(400, 400, seed=50), p)
+        cache: dict = {}
+
+        assert fd.cached_hash(cache, p, _stat(p)) is None, "empty cache must miss"
+
+        fd.store_hash(cache, p, _stat(p), 12345)
+
+        hit = fd.cached_hash(cache, p, _stat(p))
+        assert hit == 12345, "expected a hash cache hit right after storing"
+        print("  ok  hash cache hit returns the stored hash")
+
+
+def test_hash_cache_miss_after_modification() -> None:
+    """Boundary: any change to mtime or size must invalidate, even with a
+    stale entry still present under the same path key."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "photo.jpg"
+        save_jpeg(make_texture(400, 400, seed=51), p)
+        cache: dict = {}
+        fd.store_hash(cache, p, _stat(p), 999)
+        assert fd.cached_hash(cache, p, _stat(p)) == 999
+
+        save_jpeg(make_texture(400, 400, seed=52), p)  # different content, same path
+        assert fd.cached_hash(cache, p, _stat(p)) is None, "modified file must miss the hash cache"
+        print("  ok  modifying the file invalidates its hash cache entry")
+
+
+def test_load_hash_cache_handles_corrupt_file() -> None:
+    """Failure case: a truncated/corrupt hash cache file must not crash a
+    scan, just be treated as empty."""
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp)
+        (directory / fd.HASH_CACHE_FILENAME).write_text("{not valid json")
+        cache = fd.load_hash_cache(directory)
+        assert cache == {}, "corrupt hash cache file should load as empty, not raise"
+        print("  ok  corrupt hash cache file loads as {} instead of raising")
+
+
+def test_group_duplicates_skips_decode_on_all_cache_hits() -> None:
+    """When every path's hash is already cached, group_duplicates must not
+    call load_hash_gray again -- the actual benefit a hash cache is for:
+    re-scanning an already-hashed directory shouldn't re-decode old files."""
+    with tempfile.TemporaryDirectory() as tmp:
+        paths = make_duplicate_pair(tmp, seed=40)
+        cache: dict = {}
+        fd.group_duplicates(paths, fd.DEFAULT_HASH_THRESHOLD, cache)  # warm the cache
+
+        def exploding_load(_p):
+            raise AssertionError("load_hash_gray must not be called on an all-cache-hit run")
+
+        real_load = fd.load_hash_gray
+        fd.load_hash_gray = exploding_load
+        try:
+            groups = fd.group_duplicates(paths, fd.DEFAULT_HASH_THRESHOLD, cache)
+        finally:
+            fd.load_hash_gray = real_load
+
+        assert len(groups) == 1 and len(groups[0]) == 2, "expected the pair to still be grouped from cached hashes"
+        print("  ok  all-cache-hit run never re-decodes for hashing")
+
+
+def test_group_duplicates_computes_and_caches_on_miss() -> None:
+    """Smoke test: an actual hash-cache miss computes real hashes, groups
+    the near-duplicate pair correctly, and writes the hashes back to cache."""
+    with tempfile.TemporaryDirectory() as tmp:
+        paths = make_duplicate_pair(tmp, seed=41)
+        cache: dict = {}
+        groups = fd.group_duplicates(paths, fd.DEFAULT_HASH_THRESHOLD, cache)
+        assert len(groups) == 1 and len(groups[0]) == 2, "expected the near-duplicate pair to be grouped"
+        for p in paths:
+            assert str(p.resolve()) in cache, "a computed hash must be written back into the cache"
+            assert fd.cached_hash(cache, p, p.stat()) is not None
+        print("  ok  cache miss computes hashes via the real pipeline and writes them back to cache")
+
+
+def test_group_duplicates_hashes_serially_below_the_parallel_threshold() -> None:
+    """Below HASH_PARALLEL_THRESHOLD uncached files, group_duplicates must
+    not construct a ProcessPoolExecutor at all -- see the benchmark cited at
+    HASH_PARALLEL_THRESHOLD's definition: pool spawn overhead outweighs any
+    speedup for a small uncached batch."""
+    with tempfile.TemporaryDirectory() as tmp:
+        paths = []
+        for i in range(3):
+            p = Path(tmp) / f"photo_{i}.jpg"
+            save_jpeg(make_texture(200, 200, seed=60 + i), p)
+            paths.append(p)
+
+        class ExplodingPool:
+            def __init__(self, *a, **k):
+                raise AssertionError("ProcessPoolExecutor must not be constructed below the threshold")
+
+        real_pool = fd.ProcessPoolExecutor
+        fd.ProcessPoolExecutor = ExplodingPool
+        try:
+            groups = fd.group_duplicates(paths, fd.DEFAULT_HASH_THRESHOLD, {})
+        finally:
+            fd.ProcessPoolExecutor = real_pool
+        assert isinstance(groups, list)
+        print("  ok  a small uncached batch hashes serially, no process pool constructed")
+
+
+def test_group_duplicates_uses_pool_above_the_parallel_threshold() -> None:
+    """Proof the check above can actually fail: temporarily lowering the
+    threshold below the batch size must make group_duplicates construct a
+    real ProcessPoolExecutor -- and, critically, still produce the *correct*
+    grouping through that pool path (a near-duplicate pair plus one unrelated
+    filler file), not just prove a pool object got created."""
+    with tempfile.TemporaryDirectory() as tmp:
+        paths = make_duplicate_pair(tmp, seed=70)
+        filler = Path(tmp) / "unrelated.jpg"
+        save_jpeg(make_texture(200, 200, seed=72), filler)
+        paths.append(filler)
+
+        real_pool_cls = fd.ProcessPoolExecutor
+        constructed = []
+
+        class RecordingPool(real_pool_cls):
+            def __init__(self, *a, **k):
+                constructed.append(True)
+                super().__init__(*a, **k)
+
+        real_threshold = fd.HASH_PARALLEL_THRESHOLD
+        fd.ProcessPoolExecutor = RecordingPool
+        fd.HASH_PARALLEL_THRESHOLD = 2  # batch of 3 uncached files now exceeds it
+        try:
+            groups = fd.group_duplicates(paths, fd.DEFAULT_HASH_THRESHOLD, {})
+        finally:
+            fd.ProcessPoolExecutor = real_pool_cls
+            fd.HASH_PARALLEL_THRESHOLD = real_threshold
+
+        assert constructed, "expected a real ProcessPoolExecutor to be constructed above the (lowered) threshold"
+        assert len(groups) == 1 and set(groups[0]) == set(paths[:2]), (
+            f"expected the pool path to still group exactly the near-duplicate pair, got {groups}"
+        )
+        print("  ok  a batch above the (lowered) threshold routes through a real process pool "
+              "and still produces the correct grouping")
+
+
 def test_analyze_paths_skips_pool_on_all_cache_hits() -> None:
     """When every path is already cached, analyze_paths must not construct a
     ProcessPoolExecutor at all (no subprocess spawn cost for a warm re-run)."""
@@ -197,6 +354,13 @@ def main() -> None:
         test_cache_round_trip,
         test_cache_miss_after_modification,
         test_load_cache_handles_corrupt_file,
+        test_hash_cache_round_trip,
+        test_hash_cache_miss_after_modification,
+        test_load_hash_cache_handles_corrupt_file,
+        test_group_duplicates_skips_decode_on_all_cache_hits,
+        test_group_duplicates_computes_and_caches_on_miss,
+        test_group_duplicates_hashes_serially_below_the_parallel_threshold,
+        test_group_duplicates_uses_pool_above_the_parallel_threshold,
         test_analyze_paths_skips_pool_on_all_cache_hits,
         test_analyze_paths_computes_and_caches_on_miss,
         test_real_analyze_result_round_trips_through_json_cache_file,

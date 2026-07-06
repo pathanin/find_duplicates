@@ -43,10 +43,22 @@ DEFAULT_HASH_THRESHOLD = 10  # max Hamming distance out of 64 bits to call two i
 PREVIEW_MAX_SIDE = 800
 CLOSE_CALL_MARGIN = 0.08  # quality_score gap below which we flag "close call"
 CACHE_FILENAME = ".find_duplicates_cache.json"
+HASH_CACHE_FILENAME = ".find_duplicates_hash_cache.json"
 # phash resizes to 32x32; a reduced-scale decode smaller than this on either side
 # would upsample instead of downsample there, drifting the hash. 64 gives margin,
 # and images this small are cheap to fully decode anyway.
 MIN_REDUCED_DECODE_SIDE = 64
+# Below this many uncached files, a serial loop beats spawning a pool. Benchmarked
+# on Apple M4/10 cores hashing synthetic 1600x1200 JPEGs: pool spawn alone costs
+# roughly 1-3s (much higher than the ~0.3s the analyze_paths pool comment assumes)
+# and varies a lot run to run under system load, so treat this as a qualitative
+# result, not a precise crossover: tens to low-hundreds of images clearly favor
+# serial (up to 4x faster); low-thousands clearly favor parallel (5-10x faster).
+# The exact crossover was too noisy to pin down closer than "a few hundred."
+# This constant is a conservative, machine-specific heuristic biased toward NOT
+# parallelizing when unsure, not a precisely-tuned value like the other constants
+# in this file -- re-benchmark before changing it materially.
+HASH_PARALLEL_THRESHOLD = 400
 
 # Weight > 0 means higher raw value is better; weight < 0 means lower raw value is better.
 # effective_resolution_px_equiv is weighted heaviest since it's the metric most resistant
@@ -98,7 +110,13 @@ def load_hash_gray(p: Path) -> np.ndarray | None:
 def phash(gray: np.ndarray) -> int:
     """Classic 64-bit DCT perceptual hash: resize small, keep low frequencies,
     threshold against their mean. Robust to resizing/recompression, which is
-    exactly the kind of "same photo, different export" duplicate we're after."""
+    exactly the kind of "same photo, different export" duplicate we're after.
+
+    The on-disk hash cache (.find_duplicates_hash_cache.json) keys on path +
+    mtime + size, not on this function's code -- if you change phash or
+    load_hash_gray while testing against real images, delete that cache file
+    first, or you'll be silently served old hashes and wrongly conclude your
+    change had no effect on grouping."""
     resized = cv2.resize(gray, (32, 32), interpolation=cv2.INTER_AREA).astype(np.float32)
     dct = cv2.dct(resized)
     low = dct[:8, :8]
@@ -136,25 +154,84 @@ class UnionFind:
             self.rank[ra] += 1
 
 
-def group_duplicates(paths: list[Path], threshold: int) -> list[list[Path]]:
-    hashes: list[int | None] = []
+def load_hash_cache(directory: Path) -> dict:
+    path = directory / HASH_CACHE_FILENAME
+    if not path.exists():
+        return {}
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def save_hash_cache(directory: Path, cache: dict) -> None:
+    with open(directory / HASH_CACHE_FILENAME, "w") as f:
+        json.dump(cache, f)
+
+
+def cached_hash(cache: dict, p: Path, st: os.stat_result) -> int | None:
+    """Returns None both when there's no entry and when the cached entry
+    itself is None (the file failed to decode/hash last time) -- a
+    permanently-corrupt file is simply re-attempted every run, no worse
+    than today's uncached behavior for that one file."""
+    entry = cache.get(str(p.resolve()))
+    if entry is None or entry.get("mtime") != st.st_mtime_ns or entry.get("size") != st.st_size:
+        return None
+    return entry["hash"]
+
+
+def store_hash(cache: dict, p: Path, st: os.stat_result, hash_value: int | None) -> None:
+    cache[str(p.resolve())] = {"mtime": st.st_mtime_ns, "size": st.st_size, "hash": hash_value}
+
+
+def _hash_one(p: Path) -> int | None:
+    img = load_hash_gray(p)
+    return phash(img) if img is not None else None
+
+
+def group_duplicates(paths: list[Path], threshold: int, cache: dict) -> list[list[Path]]:
+    """Groups `paths` by perceptual-hash Hamming distance, reusing `cache`
+    for files whose (mtime, size) haven't changed (see cached_hash/
+    store_hash above) so a re-scan of an already-hashed directory doesn't
+    re-decode every old file. The uncached subset is only run through a
+    process pool when there are enough of them to be worth the spawn
+    overhead -- see HASH_PARALLEL_THRESHOLD."""
+    stats = {p: p.stat() for p in paths}
+    hashes: dict[Path, int | None] = {}
+    to_compute = []
     for p in paths:
-        img = load_hash_gray(p)
-        hashes.append(phash(img) if img is not None else None)
+        cached = cached_hash(cache, p, stats[p])
+        if cached is not None:
+            hashes[p] = cached
+        else:
+            to_compute.append(p)
+
+    if to_compute:
+        if len(to_compute) > HASH_PARALLEL_THRESHOLD:
+            with ProcessPoolExecutor() as executor:
+                computed = executor.map(_hash_one, to_compute)
+        else:
+            computed = map(_hash_one, to_compute)
+        for p, h in zip(to_compute, computed):
+            store_hash(cache, p, stats[p], h)
+            hashes[p] = h
+
+    hash_list = [hashes[p] for p in paths]
 
     uf = UnionFind(len(paths))
     for i in range(len(paths)):
-        if hashes[i] is None:
+        if hash_list[i] is None:
             continue
         for j in range(i + 1, len(paths)):
-            if hashes[j] is None:
+            if hash_list[j] is None:
                 continue
-            if hamming(hashes[i], hashes[j]) <= threshold:
+            if hamming(hash_list[i], hash_list[j]) <= threshold:
                 uf.union(i, j)
 
     clusters: dict[int, list[Path]] = {}
     for i, p in enumerate(paths):
-        if hashes[i] is None:
+        if hash_list[i] is None:
             continue
         clusters.setdefault(uf.find(i), []).append(p)
 
@@ -286,7 +363,12 @@ def analyze_paths(paths: list[Path], cache: dict) -> dict[Path, dict]:
 
 def build_groups(directory: Path, threshold: int) -> list[Group]:
     paths = find_images(directory)
-    raw_groups = group_duplicates(paths, threshold)
+
+    hash_cache = load_hash_cache(directory)
+    hash_cache_before = dict(hash_cache)
+    raw_groups = group_duplicates(paths, threshold, hash_cache)
+    if hash_cache != hash_cache_before:
+        save_hash_cache(directory, hash_cache)
 
     cache = load_cache(directory)
     cache_before = dict(cache)
