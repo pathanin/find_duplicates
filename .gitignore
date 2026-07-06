@@ -3,6 +3,7 @@ __pycache__/
 
 # tool output, not source
 decisions.json
+decisions_*.json
 _duplicates/
 .find_duplicates_cache.json
 

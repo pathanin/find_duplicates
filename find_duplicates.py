@@ -23,6 +23,7 @@ import subprocess
 import sys
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 import cv2
@@ -725,6 +726,9 @@ def main() -> None:
     directory = args.directory.resolve()
     dest_dir = (args.dest or (directory / "_duplicates")).resolve()
     manifest_path = directory / "decisions.json"
+    if manifest_path.exists():
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        manifest_path = directory / f"decisions_{timestamp}.json"
 
     print(f"Scanning {directory} ...")
     groups = build_groups(directory, args.threshold)
