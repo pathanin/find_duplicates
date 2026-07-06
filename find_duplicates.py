@@ -308,13 +308,14 @@ def build_groups(directory: Path, threshold: int) -> list[Group]:
 # TUI
 # ---------------------------------------------------------------------------
 
-# Every row is labeled with what a bigger/smaller number means, since a raw
-# number is meaningless without knowing which direction is "better" -- and
-# for the two rows that aren't part of the score at all (dimensions, file
-# size), saying so plainly heads off reading them as quality signals.
+# Every scored row is labeled with what a bigger/smaller number means, since
+# a raw number is meaningless without knowing which direction is "better".
+# Dimensions/file size carry no such label since they aren't part of the
+# score at all -- that's explained once, in the '?' help screen, rather than
+# on every row.
 METRIC_ROWS = [
-    ("Dimensions (not scored)", lambda r: f"{r['dimensions'][0]}x{r['dimensions'][1]}"),
-    ("File size (not scored)", lambda r: humansize(r["file_size"])),
+    ("Dimensions", lambda r: f"{r['dimensions'][0]}x{r['dimensions'][1]}"),
+    ("File size", lambda r: humansize(r["file_size"])),
     ("Sharpness (higher better)", lambda r: f"{r['sharpness_normalized']:.1f}"),
     ("Eff. res. fraction (higher better)", lambda r: f"{r['effective_resolution_fraction']:.3f}"),
     ("Eff. res. px equiv (higher better)", lambda r: f"{r['effective_resolution_px_equiv']:.0f}"),
@@ -346,6 +347,15 @@ def _help_body() -> str:
         direction = "higher better" if weight > 0 else "lower better"
         lines.append(f"  {abs(weight):.2f}  {name} ({direction})")
         lines.append(f"        {METRIC_DESCRIPTIONS[name]}")
+    lines += [
+        "",
+        "KEYBOARD LAYOUTS",
+        "If typed letters seem to do nothing, an alternate keyboard layout is",
+        "probably remapping them to different characters before the terminal",
+        "ever sees them. Control keys aren't remapped that way, so each core",
+        "action also has a layout-independent alias: Enter = confirm,",
+        "Delete/Backspace = skip, Escape = finish, F1 = this help screen.",
+    ]
     return "\n".join(lines)
 
 
@@ -371,6 +381,14 @@ class HelpScreen(ModalScreen):
 class DuplicateReviewApp(App):
     TITLE = "Duplicate image review"
 
+    # confirm's Enter alias is a priority binding (see BINDINGS below), which
+    # is checked against the *full* screen chain and so pierces modals like
+    # HelpScreen and the command palette's input -- unlike every other
+    # binding here, it does not respect modal boundaries on its own. This app
+    # has no use for the palette, and disabling it removes that surface
+    # entirely rather than trying to make "c"/"enter" behave inside its Input.
+    ENABLE_COMMAND_PALETTE = False
+
     CSS = """
     #body { height: 1fr; }
     #sidebar { width: 40; border-right: solid $accent; }
@@ -387,13 +405,22 @@ class DuplicateReviewApp(App):
     #status { height: 2; background: $panel; content-align: left top; padding: 0 1; }
     """
 
+    # Non-latin/alternate keyboard layouts remap letter keys to different
+    # Unicode characters entirely (the OS translates the keystroke before the
+    # terminal ever sees it), so a 'c'/'s'/'q' binding can silently stop
+    # responding the moment the active input source isn't English. Control
+    # keys aren't part of that character remapping, so each core action also
+    # has a layout-independent alias.
     BINDINGS = [
         Binding("left", "pick_relative(-1)", "Prev pick"),
         Binding("right", "pick_relative(1)", "Next pick"),
-        Binding("c", "confirm", "Confirm keep"),
-        Binding("s", "skip", "Skip group"),
+        # priority=True: ListView and DataTable both bind "enter" to their own
+        # select_cursor, which would otherwise swallow it before it reaches
+        # this binding whenever either has focus (ListView is the default).
+        Binding("c,enter", "confirm", "Confirm keep", priority=True),
+        Binding("s,delete,backspace", "skip", "Skip group"),
         Binding("o", "open_fullres", "Open full-res"),
-        Binding("question_mark", "show_help", "Help"),
+        Binding("question_mark,f1", "show_help", "Help"),
         Binding("1", "pick(1)", "Pick 1", show=False),
         Binding("2", "pick(2)", "Pick 2", show=False),
         Binding("3", "pick(3)", "Pick 3", show=False),
@@ -403,8 +430,21 @@ class DuplicateReviewApp(App):
         Binding("7", "pick(7)", "Pick 7", show=False),
         Binding("8", "pick(8)", "Pick 8", show=False),
         Binding("9", "pick(9)", "Pick 9", show=False),
-        Binding("q", "quit_and_apply", "Finish"),
+        Binding("q,escape", "quit_and_apply", "Finish"),
     ]
+
+    # Every key bound to a state-mutating action (confirm/skip), including
+    # their layout-independent aliases -- Footer picks *some* one of a
+    # compound binding's keys to render as its clickable button, and which
+    # one it picks depends on internal Binding ordering/priority, not on
+    # source order here. Blocking by literal key alone (e.g. just "c") broke
+    # the instant "enter" became the one Footer chose to show for confirm.
+    _DESTRUCTIVE_KEYS = frozenset(
+        key.strip()
+        for binding in BINDINGS
+        if isinstance(binding, Binding) and binding.action in ("confirm", "skip")
+        for key in binding.key.split(",")
+    )
 
     def __init__(self, groups: list[Group], dest_dir: Path, dry_run: bool, manifest_path: Path):
         super().__init__()
@@ -417,12 +457,12 @@ class DuplicateReviewApp(App):
 
     def simulate_key(self, key: str) -> None:
         """Textual's Footer renders key bindings as clickable buttons, whose
-        click handler routes through this exact method. That turns "c Confirm
+        click handler routes through this exact method. That turns "Confirm
         keep" into a real button one stray click away from silently moving
         files -- e.g. a click meant to focus/scroll the terminal after the
         scan finishes. Confirm/skip mutate group state, so they must only
         fire from a deliberate keypress, never a footer click."""
-        if key not in ("c", "s"):
+        if key not in self._DESTRUCTIVE_KEYS:
             super().simulate_key(key)
 
     def compose(self) -> ComposeResult:
@@ -525,6 +565,12 @@ class DuplicateReviewApp(App):
         await self.refresh_detail(self.active_index)
 
     async def action_confirm(self) -> None:
+        # confirm's Enter alias is a priority binding, which pierces modals
+        # (see ENABLE_COMMAND_PALETTE above) -- without this guard, Enter
+        # pressed just to read the help screen silently confirms the group
+        # underneath it.
+        if len(self.screen_stack) > 1:
+            return
         i = self.active_index
         if self.groups[i].status != "pending":
             return
@@ -533,6 +579,8 @@ class DuplicateReviewApp(App):
         await self._advance()
 
     async def action_skip(self) -> None:
+        if len(self.screen_stack) > 1:
+            return
         i = self.active_index
         if self.groups[i].status != "pending":
             return

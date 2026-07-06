@@ -55,15 +55,18 @@ def new_app() -> fd.DuplicateReviewApp:
     )
 
 
-def test_every_metric_row_states_its_direction() -> None:
+REFERENCE_ONLY_ROWS = {"Dimensions", "File size"}  # not part of the score; explained in the help screen instead
+
+
+def test_every_scored_metric_row_states_its_direction() -> None:
     for label, _ in fd.METRIC_ROWS:
-        has_direction = "better" in label
-        has_not_scored = "not scored" in label
-        assert has_direction or has_not_scored, (
-            f"metric row {label!r} states neither a direction nor that it's unscored -- "
+        if label in REFERENCE_ONLY_ROWS:
+            continue
+        assert "better" in label, (
+            f"metric row {label!r} doesn't state a direction -- "
             "a bare number here is meaningless without one"
         )
-    print("  ok  every METRIC_ROWS label states a direction or 'not scored'")
+    print("  ok  every scored METRIC_ROWS label states a direction")
 
 
 def test_help_body_covers_every_weighted_metric() -> None:
@@ -103,7 +106,7 @@ async def test_metric_labels_reach_the_table() -> None:
 
 async def main() -> None:
     fd.PreviewImage = HalfcellImage  # deterministic headless renderer, no real terminal needed
-    test_every_metric_row_states_its_direction()
+    test_every_scored_metric_row_states_its_direction()
     test_help_body_covers_every_weighted_metric()
     for test in (test_help_screen_opens_and_closes_without_side_effects, test_metric_labels_reach_the_table):
         print(f"{test.__name__}:")
