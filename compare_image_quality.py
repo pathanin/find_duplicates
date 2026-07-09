@@ -17,6 +17,16 @@ import sys
 import cv2
 import numpy as np
 
+# Maximum image dimension for FFT-based analysis. Images larger than this on
+# either side are downsampled before FFT to cap memory: a 6K×4K image (192 MB
+# float64) would peak at over 1.5 GB through the FFT pipeline (complex128 FFT,
+# power spectrum, index arrays, radial sum); capping at 2048 keeps peak per-worker
+# memory under ~35 MB without meaningful loss of frequency-cutoff accuracy (the
+# metric is a fraction of Nyquist, which is scale-invariant). This constant is a
+# safety bound and should not be raised without re-verifying memory usage against
+# the largest images your typical scan encounters.
+EFFECTIVE_RES_MAX_PX = 2048
+
 
 def load_gray(path):
     img = cv2.imread(path, cv2.IMREAD_COLOR)
@@ -47,6 +57,18 @@ def effective_resolution(gray):
     h, w = gray.shape
     if h < 3 or w < 3:
         return 0.0, 0.0  # too small for any meaningful frequency analysis
+
+    # Downsample large images before FFT to cap memory. The cutoff_fraction
+    # is a fraction of Nyquist (scale-invariant), so this doesn't change the
+    # result. equivalent_pixels below uses the ORIGINAL min(h, w) so the
+    # absolute estimate remains correct regardless of downsampling.
+    orig_min_side = min(h, w)
+    if max(h, w) > EFFECTIVE_RES_MAX_PX:
+        scale = EFFECTIVE_RES_MAX_PX / max(h, w)
+        new_h, new_w = int(h * scale), int(w * scale)
+        gray = cv2.resize(gray, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        h, w = gray.shape
+
     f = np.fft.fft2(gray)
     fshift = np.fft.fftshift(f)
     power = np.abs(fshift) ** 2
@@ -74,7 +96,7 @@ def effective_resolution(gray):
             break
 
     cutoff_fraction = cutoff_idx / max_r
-    equivalent_pixels = cutoff_fraction * min(h, w)
+    equivalent_pixels = cutoff_fraction * orig_min_side
     return cutoff_fraction, equivalent_pixels
 
 

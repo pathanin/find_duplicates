@@ -16,6 +16,7 @@ Requires:
 """
 
 import argparse
+import functools
 import json
 import math
 import os
@@ -62,6 +63,14 @@ MIN_REDUCED_DECODE_SIDE = 64
 # parallelizing when unsure, not a precisely-tuned value like the other constants
 # in this file -- re-benchmark before changing it materially.
 HASH_PARALLEL_THRESHOLD = 400
+# Below this many uncached analysis files, serialize in-process instead of
+# spawning a ProcessPoolExecutor. analyze() is CPU-bound, but pool spawn
+# overhead (~1-3s on Apple M4, per the hash benchmark) dominates wall time
+# for trivial batches. Since analyze_paths is called on the already-grouped
+# subset (typically far fewer files than the scan-phase hash), 2 is a safe
+# floor: a single uncached file costs ~1-3s of pool overhead to save ~0.2s
+# of serial analysis.
+ANALYZE_PARALLEL_THRESHOLD = 2
 
 # Weight > 0 means higher raw value is better; weight < 0 means lower raw value is better.
 # effective_resolution_px_equiv is weighted heaviest since it's the metric most resistant
@@ -364,12 +373,20 @@ def _analyze_one(path_str: str) -> dict | None:
         return None
 
 
-def analyze_paths(paths: list[Path], cache: dict) -> dict[Path, dict]:
+def analyze_paths(paths: list[Path], cache: dict,
+                  precomputed_stats: dict[Path, os.stat_result] | None = None) -> dict[Path, dict]:
     """analyze() every path, reusing `cache` for files whose (mtime, size)
     haven't changed and running the rest through a process pool (analyze()
-    is CPU-bound and independent per file)."""
+    is CPU-bound and independent per file) only when the uncached batch is
+    large enough to amortize pool-spawn overhead.
+
+    If *precomputed_stats* is provided, it must cover every path in *paths*
+    and will be used instead of calling stat() again."""
     results: dict[Path, dict] = {}
-    stats = {p: p.stat() for p in paths}
+    if precomputed_stats is not None:
+        stats = precomputed_stats
+    else:
+        stats = {p: p.stat() for p in paths}
     to_compute = []
     for p in paths:
         hit = cached_result(cache, p, stats[p])
@@ -379,19 +396,26 @@ def analyze_paths(paths: list[Path], cache: dict) -> dict[Path, dict]:
             to_compute.append(p)
 
     if to_compute:
-        # Deliberately not forcing a "fork" context here: by this point
-        # group_duplicates() has already done real cv2 decode work in this
-        # process, and forking after cv2/numpy have used internal threads
-        # reliably crashes the pool (BrokenProcessPool) on macOS -- confirmed
-        # empirically. Default spawn pays a one-time ~0.3s re-import tax per
-        # pool but is actually safe.
-        with ProcessPoolExecutor() as executor:
-            for p, r in zip(to_compute, executor.map(_analyze_one, [str(p) for p in to_compute])):
+        if len(to_compute) > ANALYZE_PARALLEL_THRESHOLD:
+            # Deliberately not forcing a "fork" context here: by this point
+            # group_duplicates() has already done real cv2 decode work in this
+            # process, and forking after cv2/numpy have used internal threads
+            # reliably crashes the pool (BrokenProcessPool) on macOS -- confirmed
+            # empirically. Default spawn pays a one-time ~0.3s re-import tax per
+            # pool but is actually safe.
+            with ProcessPoolExecutor() as executor:
+                for p, r in zip(to_compute, executor.map(_analyze_one, [str(p) for p in to_compute])):
+                    if r is not None:
+                        store_result(cache, p, stats[p], r)
+                        results[p] = r
+        else:
+            for p in to_compute:
+                r = _analyze_one(str(p))
                 if r is not None:
                     store_result(cache, p, stats[p], r)
                     results[p] = r
 
-    for p in list(results):
+    for p in results:
         results[p]["file_size"] = stats[p].st_size
     return results
 
@@ -407,7 +431,12 @@ def build_groups(directory: Path, threshold: int) -> list[Group]:
 
     cache = load_cache(directory)
     cache_pre_count = len(cache)
-    analyzed = analyze_paths([p for members in raw_groups for p in members], cache)
+    # Compute stats for the grouped files once and pass to analyze_paths,
+    # rather than letting it call stat() again on files already stat()'d
+    # during the hash phase (the same Path objects are reused).
+    grouped_paths = [p for members in raw_groups for p in members]
+    grouped_stats = {p: p.stat() for p in grouped_paths}
+    analyzed = analyze_paths(grouped_paths, cache, precomputed_stats=grouped_stats)
     if len(cache) != cache_pre_count:
         save_cache(directory, cache)
 
@@ -467,6 +496,7 @@ METRIC_ROWS = [
 ]
 
 
+@functools.cache
 def _help_body() -> str:
     lines = [
         "QUALITY SCORE",
