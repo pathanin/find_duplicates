@@ -100,7 +100,10 @@ def test_partial_move_failure_is_still_recorded_in_the_manifest() -> None:
             fd.shutil.move = flaky.real_move
 
         assert raised, "expected the simulated move failure to propagate out of _apply"
-        assert group.status == "confirmed", "status is set at the top of _apply before any move is attempted"
+        assert group.status == "pending", (
+            "status should NOT be set to 'confirmed' after a partial failure; "
+            "it stays 'pending' so the user can see the group is in an inconsistent state"
+        )
 
         assert len(app.manifest) == 1, f"expected exactly one manifest entry, got {app.manifest}"
         entry = app.manifest[0]

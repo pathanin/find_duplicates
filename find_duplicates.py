@@ -17,8 +17,10 @@ Requires:
 
 import argparse
 import json
+import math
 import os
 import shutil
+import tempfile
 import subprocess
 import sys
 from concurrent.futures import ProcessPoolExecutor
@@ -29,6 +31,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PIL import Image as PILImage
+from rich.markup import escape as rich_escape
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -165,9 +168,26 @@ def load_hash_cache(directory: Path) -> dict:
         return {}
 
 
+def _write_json_atomic(path: str, data: dict) -> None:
+    """Write a JSON file atomically: write to a temp file in the same
+    directory, then rename over the target.  Prevents concurrent or
+    interrupted writes from leaving a truncated JSON file."""
+
+    fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(path), suffix=".tmp", prefix=".find_duplicates_")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f)
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def save_hash_cache(directory: Path, cache: dict) -> None:
-    with open(directory / HASH_CACHE_FILENAME, "w") as f:
-        json.dump(cache, f)
+    _write_json_atomic(str(directory / HASH_CACHE_FILENAME), cache)
 
 
 def cached_hash(cache: dict, p: Path, st: os.stat_result) -> int | None:
@@ -247,7 +267,12 @@ def score_group(results: list[dict]) -> None:
     within this group only (raw metric ranges aren't comparable across
     unrelated images, but are meaningful when comparing duplicates of the
     same photo)."""
-    keys = [k for k in METRIC_WEIGHTS if all(r.get(k) is not None for r in results)]
+    if not results:
+        return
+    keys = [
+        k for k in METRIC_WEIGHTS
+        if all(r.get(k) is not None and math.isfinite(r[k]) for r in results)
+    ]
     total_weight = sum(abs(METRIC_WEIGHTS[k]) for k in keys) or 1.0
 
     ranges = {}
@@ -313,21 +338,30 @@ def load_cache(directory: Path) -> dict:
 
 
 def save_cache(directory: Path, cache: dict) -> None:
-    with open(directory / CACHE_FILENAME, "w") as f:
-        json.dump(cache, f)
+    _write_json_atomic(str(directory / CACHE_FILENAME), cache)
 
 
 def cached_result(cache: dict, p: Path, st: os.stat_result) -> dict | None:
     entry = cache.get(str(p.resolve()))
     if entry is None or entry.get("mtime") != st.st_mtime_ns or entry.get("size") != st.st_size:
         return None
-    result = dict(entry["result"])
-    result["dimensions"] = tuple(result["dimensions"])
-    return result
+    try:
+        result = dict(entry["result"])
+        result["dimensions"] = tuple(result["dimensions"])
+        return result
+    except (KeyError, TypeError):
+        return None
 
 
 def store_result(cache: dict, p: Path, st: os.stat_result, result: dict) -> None:
-    cache[str(p.resolve())] = {"mtime": st.st_mtime_ns, "size": st.st_size, "result": result}
+    cache[str(p.resolve())] = {"mtime": st.st_mtime_ns, "size": st.st_size, "result": dict(result)}
+
+
+def _analyze_one(path_str: str) -> dict | None:
+    try:
+        return analyze(path_str)
+    except Exception:
+        return None
 
 
 def analyze_paths(paths: list[Path], cache: dict) -> dict[Path, dict]:
@@ -352,11 +386,12 @@ def analyze_paths(paths: list[Path], cache: dict) -> dict[Path, dict]:
         # empirically. Default spawn pays a one-time ~0.3s re-import tax per
         # pool but is actually safe.
         with ProcessPoolExecutor() as executor:
-            for p, r in zip(to_compute, executor.map(analyze, [str(p) for p in to_compute])):
-                store_result(cache, p, stats[p], r)
-                results[p] = r
+            for p, r in zip(to_compute, executor.map(_analyze_one, [str(p) for p in to_compute])):
+                if r is not None:
+                    store_result(cache, p, stats[p], r)
+                    results[p] = r
 
-    for p in paths:
+    for p in list(results):
         results[p]["file_size"] = stats[p].st_size
     return results
 
@@ -365,22 +400,26 @@ def build_groups(directory: Path, threshold: int) -> list[Group]:
     paths = find_images(directory)
 
     hash_cache = load_hash_cache(directory)
-    hash_cache_before = dict(hash_cache)
+    hash_cache_pre_count = len(hash_cache)
     raw_groups = group_duplicates(paths, threshold, hash_cache)
-    if hash_cache != hash_cache_before:
+    if len(hash_cache) != hash_cache_pre_count:
         save_hash_cache(directory, hash_cache)
 
     cache = load_cache(directory)
-    cache_before = dict(cache)
+    cache_pre_count = len(cache)
     analyzed = analyze_paths([p for members in raw_groups for p in members], cache)
-    if cache != cache_before:
-        # Skip the full JSON serialize+write when nothing new was computed
-        # (e.g. a warm re-run where every path was already a cache hit).
+    if len(cache) != cache_pre_count:
         save_cache(directory, cache)
 
     groups = []
     for members in raw_groups:
-        results = [analyzed[p] for p in members]
+        # Skip files that failed analysis (not in analyzed dict).
+        valid = [(p, analyzed[p]) for p in members if p in analyzed]
+        if len(valid) < 2:
+            continue  # no longer a duplicate group
+        members, results = zip(*valid)
+        members = list(members)
+        results = list(results)
         score_group(results)
 
         order = sorted(range(len(results)), key=lambda i: -results[i]["quality_score"])
@@ -501,6 +540,7 @@ class DuplicateReviewApp(App):
     }
 
     .preview-box.picked { border: heavy $success; }
+    .preview-box.suggested { border: heavy $warning; }
     .preview-label { width: 100%; text-wrap: nowrap; text-overflow: ellipsis; }
     .preview-image { width: auto; height: auto; }
     #metrics-table { height: 1fr; }
@@ -620,7 +660,7 @@ class DuplicateReviewApp(App):
         # Tag (and the pick number) come before the filename, not after, so a
         # narrow terminal's ellipsis truncates the recoverable filename tail
         # rather than the keep/suggested indicator itself.
-        return f"{tag}[{idx + 1}] {group.paths[idx].name}"
+        return f"{tag}[{idx + 1}] {rich_escape(group.paths[idx].name)}"
 
     async def refresh_detail(self, i: int) -> None:
         """Full re-render: switching which group is displayed. Only this path
@@ -679,13 +719,13 @@ class DuplicateReviewApp(App):
         n_removed = len(group.paths) - 1
         if group.status == "pending":
             plural = "s" if n_removed != 1 else ""
-            action = f"keep [{group.current_pick + 1}] {group.paths[group.current_pick].name}"
+            action = f"keep [{group.current_pick + 1}] {rich_escape(group.paths[group.current_pick].name)}"
             if n_removed > 0:
                 action += f", move {n_removed} other file{plural}"
             if group.current_pick != group.suggested_idx:
                 line3 = (
                     f"your pick [{group.current_pick + 1}]  ·  "
-                    f"★ suggested [{group.suggested_idx + 1}] {group.paths[group.suggested_idx].name}"
+                    f"★ suggested [{group.suggested_idx + 1}] {rich_escape(group.paths[group.suggested_idx].name)}"
                 )
             else:
                 line3 = ""
@@ -700,6 +740,8 @@ class DuplicateReviewApp(App):
 
     async def action_pick(self, n: int) -> None:
         group = self.groups[self.active_index]
+        if group.status == "confirmed":
+            return
         idx = n - 1
         if 0 <= idx < len(group.paths) and idx != group.current_pick:
             old_pick = group.current_pick
@@ -708,6 +750,8 @@ class DuplicateReviewApp(App):
 
     async def action_pick_relative(self, delta: int) -> None:
         group = self.groups[self.active_index]
+        if group.status == "confirmed":
+            return
         old_pick = group.current_pick
         group.current_pick = (group.current_pick + delta) % len(group.paths)
         await self._update_pick_ui(old_pick, group.current_pick)
@@ -729,9 +773,7 @@ class DuplicateReviewApp(App):
                 return
             self._unapply(i)
             self._apply(i, group.current_pick)
-        elif group.status == "skipped":
-            self._apply(i, group.current_pick)
-        else:
+        elif group.status == "pending" or group.status == "skipped":
             self._apply(i, group.current_pick)
         await self._relabel(i)
         await self._advance()
@@ -762,7 +804,7 @@ class DuplicateReviewApp(App):
             if sys.platform == "darwin":
                 subprocess.run(["open", "-a", "Preview", *paths], check=False)
             elif sys.platform.startswith("linux"):
-                subprocess.run(["xdg-open", paths[0]], check=False)
+                subprocess.run(["xdg-open", paths[group.current_pick]], check=False)
             else:
                 self.notify("Full-resolution open isn't supported on this OS.", severity="warning")
         except FileNotFoundError:
@@ -775,23 +817,41 @@ class DuplicateReviewApp(App):
         """Reverse file moves for a confirmed group using the manifest.
         Does NOT change the group status — the caller decides."""
         entry = next((m for m in self.manifest if m["group"] == i), None)
-        if entry:
+        if not entry:
+            return
+        restored = []
+        try:
             for moved in entry["moved"]:
                 src = Path(moved["from"])
                 dst = Path(moved["to"])
                 if dst.exists() and not src.exists():
                     dst.rename(src)
+                    restored.append(moved)
+        finally:
+            # Record whatever was actually restored even if a rename failed
+            # partway through, so the manifest reflects real filesystem state.
+            if restored:
+                entry["moved"] = restored
             self.manifest.remove(entry)
             self._write_manifest()
 
     def _apply(self, i: int, keep_idx: int) -> None:
         group = self.groups[i]
-        group.status = "confirmed"
         group.current_pick = keep_idx
+        kept_path = group.paths[keep_idx]
+        # If the kept file is a symlink, resolve to the real path so we
+        # avoid moving the real target out from under it (leaving a dangling
+        # link). The symlink itself is kept.
+        kept_real = kept_path.resolve() if kept_path.is_symlink() else None
         moved = []
         try:
             for idx, path in enumerate(group.paths):
                 if idx == keep_idx:
+                    continue
+                # Skip files that are symlinks to the same real path as the
+                # kept file (they share content on disk -- moving the target
+                # would leave the kept path dangling).
+                if kept_real is not None and path.resolve() == kept_real:
                     continue
                 dest = self._dest_for(path)
                 if not self.dry_run:
@@ -810,13 +870,17 @@ class DuplicateReviewApp(App):
                 }
             )
             self._write_manifest()
+        # Only mark confirmed after all moves completed; if an exception
+        # propagates from the try block, the group stays "pending" so the
+        # user can see it's in an inconsistent state.
+        group.status = "confirmed"
 
     def _dest_for(self, path: Path) -> Path:
         if not self.dry_run:
             self.dest_dir.mkdir(parents=True, exist_ok=True)
         dest = self.dest_dir / path.name
         n = 1
-        while not self.dry_run and dest.exists():
+        while dest.exists():
             dest = self.dest_dir / f"{path.stem}_dup{n}{path.suffix}"
             n += 1
         return dest
@@ -843,12 +907,19 @@ class DuplicateReviewApp(App):
 # CLI
 # ---------------------------------------------------------------------------
 
+def _threshold_arg(s: str) -> int:
+    v = int(s)
+    if not 0 <= v <= 64:
+        raise argparse.ArgumentTypeError(f"threshold must be 0-64, got {v}")
+    return v
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Find and review potential duplicate images by quality.")
     parser.add_argument("directory", nargs="?", default=".", type=Path)
     parser.add_argument(
         "--threshold",
-        type=int,
+        type=_threshold_arg,
         default=DEFAULT_HASH_THRESHOLD,
         help="Max Hamming distance (0-64) to consider two images duplicates. Lower = stricter. Default: %(default)s",
     )
@@ -861,7 +932,14 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="Don't move any files, just show what would happen.")
     args = parser.parse_args()
 
-    directory = args.directory.resolve()
+    directory = args.directory
+    if not directory.exists():
+        print(f"Error: directory '{directory}' does not exist.", file=sys.stderr)
+        sys.exit(1)
+    if not directory.is_dir():
+        print(f"Error: '{directory}' is not a directory.", file=sys.stderr)
+        sys.exit(1)
+    directory = directory.resolve()
     dest_dir = (args.dest or (directory / "_duplicates")).resolve()
     manifest_path = directory / "decisions.json"
     if manifest_path.exists():

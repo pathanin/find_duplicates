@@ -45,6 +45,8 @@ def effective_resolution(gray):
         "true" linear resolution regardless of stored dimensions
     """
     h, w = gray.shape
+    if h < 3 or w < 3:
+        return 0.0, 0.0  # too small for any meaningful frequency analysis
     f = np.fft.fft2(gray)
     fshift = np.fft.fftshift(f)
     power = np.abs(fshift) ** 2
@@ -65,7 +67,7 @@ def effective_resolution(gray):
     noise_floor = np.median(smoothed[-max(5, max_r // 20):])
     threshold = noise_floor + 0.5  # tolerance above floor
 
-    cutoff_idx = max_r - 1
+    cutoff_idx = 1  # fallback: near-zero when no ring exceeds the floor
     for i in range(max_r - 1, 0, -1):
         if smoothed[i] > threshold:
             cutoff_idx = i
@@ -79,6 +81,8 @@ def effective_resolution(gray):
 def noise_estimate(gray):
     """Fast noise sigma estimate (Immerkaer's method)."""
     h, w = gray.shape
+    if h < 3 or w < 3:
+        return 0.0  # noise indistinguishable from signal at this size
     M = [[1, -2, 1], [-2, 4, -2], [1, -2, 1]]
     M = np.array(M, dtype=np.float64)
     conv = cv2.filter2D(gray, -1, M)
