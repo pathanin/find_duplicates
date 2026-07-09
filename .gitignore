@@ -21,3 +21,6 @@ _duplicates/
 
 # project-local agent config, not source
 .omo/
+
+# local development tracking, not source
+improvement-status.md
