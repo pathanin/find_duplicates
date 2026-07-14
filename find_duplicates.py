@@ -855,14 +855,27 @@ class DuplicateReviewApp(App):
                 src = Path(moved["from"])
                 dst = Path(moved["to"])
                 if dst.exists() and not src.exists():
-                    dst.rename(src)
+                    # shutil.move, not Path.rename: --dest may point at a
+                    # different filesystem than the scanned directory, and
+                    # a plain rename raises OSError (EXDEV) cross-device
+                    # where shutil.move falls back to copy+remove -- the
+                    # same reason _apply below uses shutil.move rather than
+                    # rename for the forward move.
+                    shutil.move(str(dst), str(src))
                     restored.append(moved)
         finally:
-            # Record whatever was actually restored even if a rename failed
-            # partway through, so the manifest reflects real filesystem state.
-            if restored:
-                entry["moved"] = restored
-            self.manifest.remove(entry)
+            # Keep tracking whatever wasn't restored (never just the fact
+            # that *something* was restored) even if a move raised partway
+            # through, so decisions.json always reflects real filesystem
+            # state -- the same invariant _apply preserves on the forward
+            # move (see test_manifest_crash_safety.py). Dropping the whole
+            # entry here regardless of partial failure would silently lose
+            # track of files still sitting in dest_dir/.
+            remaining = [m for m in entry["moved"] if m not in restored]
+            if remaining:
+                entry["moved"] = remaining
+            else:
+                self.manifest.remove(entry)
             self._write_manifest()
 
     def _apply(self, i: int, keep_idx: int) -> None:
