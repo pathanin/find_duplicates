@@ -323,6 +323,106 @@ def test_analyze_paths_computes_and_caches_on_miss() -> None:
         print("  ok  cache miss computes via the process pool and is written back to cache")
 
 
+def test_analyze_paths_computes_serially_at_or_below_threshold() -> None:
+    """At exactly ANALYZE_PARALLEL_THRESHOLD uncached files, analyze_paths
+    must not construct a ProcessPoolExecutor -- see the comment at
+    ANALYZE_PARALLEL_THRESHOLD's definition: pool spawn overhead (~1-3s)
+    dominates wall time for a batch this small. Mirrors the HASH_PARALLEL_
+    THRESHOLD serial/pool tests above, which cover group_duplicates but not
+    analyze_paths's own (separate) threshold."""
+    with tempfile.TemporaryDirectory() as tmp:
+        paths = []
+        for i in range(fd.ANALYZE_PARALLEL_THRESHOLD):
+            p = Path(tmp) / f"photo_{i}.jpg"
+            save_jpeg(make_texture(200, 200, seed=80 + i), p)
+            paths.append(p)
+
+        class ExplodingPool:
+            def __init__(self, *a, **k):
+                raise AssertionError("ProcessPoolExecutor must not be constructed at/below the threshold")
+
+        real_pool = fd.ProcessPoolExecutor
+        fd.ProcessPoolExecutor = ExplodingPool
+        try:
+            analyzed = fd.analyze_paths(paths, {})
+        finally:
+            fd.ProcessPoolExecutor = real_pool
+
+        for p in paths:
+            assert analyzed[p]["dimensions"] == (200, 200)
+        print("  ok  a batch at the threshold analyzes serially, no process pool constructed")
+
+
+def test_analyze_paths_uses_pool_above_threshold() -> None:
+    """Proof the check above can actually fail: a batch above
+    ANALYZE_PARALLEL_THRESHOLD must construct a real ProcessPoolExecutor --
+    and, critically, still produce correct results for every file through
+    that pool path, not just prove a pool object got created."""
+    with tempfile.TemporaryDirectory() as tmp:
+        paths = []
+        for i in range(fd.ANALYZE_PARALLEL_THRESHOLD + 1):
+            p = Path(tmp) / f"photo_{i}.jpg"
+            save_jpeg(make_texture(200, 200, seed=90 + i), p)
+            paths.append(p)
+
+        real_pool_cls = fd.ProcessPoolExecutor
+        constructed = []
+
+        class RecordingPool(real_pool_cls):
+            def __init__(self, *a, **k):
+                constructed.append(True)
+                super().__init__(*a, **k)
+
+        fd.ProcessPoolExecutor = RecordingPool
+        try:
+            analyzed = fd.analyze_paths(paths, {})
+        finally:
+            fd.ProcessPoolExecutor = real_pool_cls
+
+        assert constructed, "expected a real ProcessPoolExecutor to be constructed above the threshold"
+        for p in paths:
+            assert analyzed[p]["dimensions"] == (200, 200)
+            assert analyzed[p]["file_size"] == p.stat().st_size
+        print("  ok  a batch above the threshold routes through a real process pool "
+              "and still produces correct results for every file")
+
+
+class _FakeStat:
+    """Minimal stand-in for os.stat_result exposing only the two fields
+    analyze_paths actually reads (st_size, st_mtime_ns)."""
+    def __init__(self, st_size: int, st_mtime_ns: int) -> None:
+        self.st_size = st_size
+        self.st_mtime_ns = st_mtime_ns
+
+
+def test_analyze_paths_honors_precomputed_stats() -> None:
+    """build_groups() passes precomputed_stats to avoid re-stat()'ing files
+    already stat()'d during the hash phase (9b6a6bd). Prove analyze_paths
+    actually *uses* the passed-in stats -- rather than silently ignoring the
+    parameter and deriving file_size from a fresh real stat() -- by handing
+    it a deliberately wrong size and confirming that wrong value comes back
+    out. (A blanket "stat() must never be called again" check doesn't work
+    here: cached_result()'s str(p.resolve()) call itself invokes Path.stat()
+    internally in this pathlib version, which is unrelated to the
+    optimization being tested.)"""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "photo.jpg"
+        save_jpeg(make_texture(300, 300, seed=95), p)
+        real_st = p.stat()
+        fake_size = real_st.st_size + 999_999
+        precomputed = {p: _FakeStat(st_size=fake_size, st_mtime_ns=real_st.st_mtime_ns)}
+
+        analyzed = fd.analyze_paths([p], {}, precomputed_stats=precomputed)
+
+        assert analyzed[p]["dimensions"] == (300, 300)
+        assert analyzed[p]["file_size"] == fake_size, (
+            f"expected file_size from precomputed_stats ({fake_size}), "
+            f"got {analyzed[p]['file_size']} (real size is {real_st.st_size}) "
+            "-- precomputed_stats appears to be ignored"
+        )
+        print("  ok  precomputed_stats values (not a fresh stat()) determine the result")
+
+
 def test_real_analyze_result_round_trips_through_json_cache_file() -> None:
     """analyze() emits np.float64 for several metrics, which only serializes
     today because np.float64 subclasses Python float. Prove the *actual*
@@ -363,6 +463,9 @@ def main() -> None:
         test_group_duplicates_uses_pool_above_the_parallel_threshold,
         test_analyze_paths_skips_pool_on_all_cache_hits,
         test_analyze_paths_computes_and_caches_on_miss,
+        test_analyze_paths_computes_serially_at_or_below_threshold,
+        test_analyze_paths_uses_pool_above_threshold,
+        test_analyze_paths_honors_precomputed_stats,
         test_real_analyze_result_round_trips_through_json_cache_file,
     ]
     for test in tests:
