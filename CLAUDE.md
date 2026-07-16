@@ -27,6 +27,7 @@ python3 tests/test_keyboard_aliases.py
 python3 tests/test_manifest_crash_safety.py
 python3 tests/test_preview_render.py
 python3 tests/test_score_group.py
+python3 tests/test_unapply_crash_safety.py
 ```
 
 Tests import the app module via `sys.path.insert(0, str(Path(__file__).resolve().parent.parent)); import find_duplicates as fd` — there's no package install step. To add a test, follow the existing pattern (module-level `test_*` functions, a `main()` list, `if __name__ == "__main__"` trailer) rather than introducing a new test runner.
