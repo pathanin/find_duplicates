@@ -1028,10 +1028,18 @@ class DuplicateReviewApp(App):
         boxes = [c for c in self.query_one("#images-row", Horizontal).children if c.id != "images-spacer"]
         if len(boxes) != len(group.paths):
             return  # stale callback racing a newer refresh_detail for a different-sized group
-        # -2: DataTable's own cell_padding (default 1 cell each side) is
-        # added on top of the width we pass to add_column, which is content
-        # width -- see METRIC_LABEL_COL_WIDTH's comment.
-        widths = [max(box.size.width - 2, 1) for box in boxes]
+        # outer_size, not size: .size is a widget's *content* area (excludes
+        # its own border+padding), but what needs to match the table column
+        # is the box's total on-screen footprint -- its border(2)+padding(2)
+        # are exactly the overhead .size already strips out, so using .size
+        # here made every column 4 cells narrower than its box, an error
+        # that compounds column-over-column since each column's x-offset is
+        # the sum of every render width before it (caught visually: columns
+        # drifted further left of their box the further right they were).
+        # -2 for the -2*cell_padding: DataTable's own cell_padding (default 1
+        # cell each side) is added on top of the width passed to add_column,
+        # which is content width -- see METRIC_LABEL_COL_WIDTH's comment.
+        widths = [max(box.outer_size.width - 2, 1) for box in boxes]
         self._build_metrics_table(group, image_col_widths=widths)
 
     async def _update_pick_ui(self, old_pick: int, new_pick: int) -> None:

@@ -60,13 +60,42 @@ def new_app(n: int) -> fd.DuplicateReviewApp:
 
 
 def preview_box_widths(app: fd.DuplicateReviewApp) -> list[int]:
+    # outer_size, not size: .size is a widget's *content* area (excludes its
+    # own border+padding); outer_size is the box's actual on-screen
+    # footprint, which is what needs to match the table column below it.
+    # Using .size here previously made this whole test file vacuous -- it
+    # compared against the same (wrong) metric the implementation used
+    # internally, so a real drift between the two widgets went undetected.
     boxes = [c for c in app.query_one("#images-row").children if c.id != "images-spacer"]
-    return [b.size.width for b in boxes]
+    return [b.outer_size.width for b in boxes]
 
 
 def table_column_render_widths(app: fd.DuplicateReviewApp) -> list[int]:
     table = app.query_one(DataTable)
     return [c.get_render_width(table) for c in table.ordered_columns]
+
+
+def preview_box_screen_regions(app: fd.DuplicateReviewApp) -> list[tuple[int, int]]:
+    """(x, width) in absolute screen coordinates for every preview box."""
+    boxes = [c for c in app.query_one("#images-row").children if c.id != "images-spacer"]
+    return [(b.region.x, b.region.width) for b in boxes]
+
+
+def table_column_screen_regions(app: fd.DuplicateReviewApp) -> list[tuple[int, int]]:
+    """(x, width) in absolute screen coordinates for every image column
+    (index 0, the "Metric" column, excluded) -- computed the same way
+    DataTable itself positions columns on screen (_get_column_region),
+    not re-derived from column widths alone. This is what actually proves
+    on-screen alignment, as opposed to merely equal widths: two rows of
+    boxes with matching widths can still drift apart if their starting
+    x-offsets diverge, which is exactly the bug this test exists to catch
+    (see preview_box_widths' docstring)."""
+    table = app.query_one(DataTable)
+    regions = []
+    for i in range(1, len(table.ordered_columns)):
+        col_region = table._get_column_region(i)
+        regions.append((table.region.x + col_region.x, col_region.width))
+    return regions
 
 
 async def test_image_columns_match_preview_box_widths() -> None:
@@ -85,6 +114,31 @@ async def test_image_columns_match_preview_box_widths() -> None:
             "for the two rows to visually line up"
         )
     print(f"  ok  image column widths {col_widths[1:]} match preview box widths {box_widths}")
+
+
+async def test_image_columns_align_on_screen_with_preview_boxes() -> None:
+    """The definitive alignment check: each column's absolute screen (x,
+    width) must exactly match its corresponding box's, not just have equal
+    width. Widths alone can match while positions still drift apart --
+    that's precisely the bug that shipped and was reported as "still
+    slightly not align[ed]": each column landed 4 cells narrower than its
+    box (border+padding accounted for on the box side but not matched on
+    the column side), an error that compounds column over column since
+    each column's x-offset is the sum of every render width before it."""
+    app = new_app(n=4)
+    async with app.run_test(size=(170, 50)) as pilot:
+        await pilot.pause()
+        await asyncio.sleep(0.1)
+        await pilot.pause()
+
+        box_regions = preview_box_screen_regions(app)
+        col_regions = table_column_screen_regions(app)
+        assert col_regions == box_regions, (
+            f"column regions {col_regions} must exactly match box regions {box_regions} -- "
+            "any mismatch, even growing gradually left-to-right, means the columns don't "
+            "actually line up under their images"
+        )
+    print(f"  ok  every column's on-screen (x, width) exactly matches its box: {box_regions}")
 
 
 async def test_metric_column_matches_spacer() -> None:
@@ -130,6 +184,7 @@ async def main() -> None:
     fd.PreviewImage = HalfcellImage  # deterministic headless renderer, no real terminal needed
     for test in (
         test_image_columns_match_preview_box_widths,
+        test_image_columns_align_on_screen_with_preview_boxes,
         test_metric_column_matches_spacer,
         test_resize_resyncs_column_widths,
     ):
