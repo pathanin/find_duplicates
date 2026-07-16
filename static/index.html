@@ -24,6 +24,12 @@
   </div>
 </header>
 
+<div id="error-banner" class="banner banner-error" hidden></div>
+<div id="dry-run-banner" class="banner banner-warn" hidden>
+  Dry run — no files will actually be moved. Confirm/skip still update review status.
+</div>
+<div id="review-progress" class="banner banner-info" hidden></div>
+
 <main id="body">
   <nav id="sidebar">
     <ul id="group-list"></ul>
@@ -36,7 +42,7 @@
       <button id="btn-confirm" title="Enter / c">Confirm keep</button>
       <button id="btn-skip" title="Delete / s">Skip group</button>
       <button id="btn-open" title="o">Open full-res</button>
-      <button id="btn-help" title="?">Help</button>
+      <button id="btn-help" title="? — keyboard shortcuts">Help</button>
     </div>
   </section>
 </main>

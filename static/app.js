@@ -21,9 +21,19 @@ async function api(path, opts = {}) {
     headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
   });
   if (!res.ok) {
-    let detail;
-    try { detail = (await res.json()).detail; } catch { detail = res.statusText; }
-    throw new Error(detail || `HTTP ${res.status}`);
+    let message;
+    try {
+      const detail = (await res.json()).detail;
+      // FastAPI/Pydantic validation failures (422) return `detail` as an
+      // array of {msg, loc, ...} objects, not a string -- new Error(array)
+      // stringifies to "[object Object]", which told the user nothing.
+      // Every other error path here (HTTPException(...)) returns a plain
+      // string, so only the array case needs special handling.
+      message = Array.isArray(detail)
+        ? detail.map((d) => (d && d.msg) || JSON.stringify(d)).join("; ")
+        : detail;
+    } catch { message = res.statusText; }
+    throw new Error(message || `HTTP ${res.status}`);
   }
   return res.status === 204 ? null : res.json();
 }
@@ -50,6 +60,7 @@ async function refreshState() {
   state.groups = data.groups;
   renderSidebar();
   updateScanStatusText();
+  renderBanners();
   return data;
 }
 
@@ -71,17 +82,82 @@ function renderSidebar() {
     li.className = "group-item" + (i === state.activeIndex ? " active" : "");
     const close = g.is_close_call ? " ⚠" : "";
     const pick = g.status === "confirmed" ? ` → [${g.current_pick + 1}]` : "";
-    li.textContent = `${MARKERS[g.status]} Group ${i + 1} (${g.file_count} files)${close}${pick}`;
+    const text = `${MARKERS[g.status]} Group ${i + 1} (${g.file_count} files)${close}${pick}`;
+    li.textContent = text;
+    li.title = g.is_close_call ? `${text} -- close call: the top two picks scored nearly the same` : text;
     li.addEventListener("click", () => loadGroup(i));
     ul.appendChild(li);
   });
+  updateDocumentTitle();
+}
+
+function reviewCounts() {
+  const confirmed = state.groups.filter((g) => g.status === "confirmed").length;
+  const skipped = state.groups.filter((g) => g.status === "skipped").length;
+  const pending = state.groups.length - confirmed - skipped;
+  return { confirmed, skipped, pending, total: state.groups.length };
+}
+
+function updateDocumentTitle() {
+  if (state.groups.length === 0) {
+    document.title = "Duplicate image review";
+    return;
+  }
+  const { pending, total } = reviewCounts();
+  document.title = pending === 0 ? `✓ Done — Duplicate review` : `(${pending}/${total} left) Duplicate review`;
+}
+
+// Persistent (not a toast) home for state that must stay visible without
+// the user needing to look at any specific group: scan errors, dry-run
+// mode, and overall review progress -- including, once every group has
+// been confirmed or skipped, an explicit "you're done, it's safe to close
+// this tab" message. Nothing here is a toast because the whole point is
+// that it doesn't disappear after a few seconds.
+function renderBanners() {
+  const errorBanner = document.getElementById("error-banner");
+  if (state.status === "error" && state.error) {
+    errorBanner.textContent = `Scan failed: ${state.error}`;
+    errorBanner.hidden = false;
+  } else {
+    errorBanner.hidden = true;
+  }
+
+  document.getElementById("dry-run-banner").hidden = !(state.params && state.params.dry_run);
+
+  const progressBanner = document.getElementById("review-progress");
+  if (state.groups.length === 0) {
+    progressBanner.hidden = true;
+    return;
+  }
+  const { confirmed, skipped, pending, total } = reviewCounts();
+  progressBanner.hidden = false;
+  progressBanner.classList.toggle("all-done", pending === 0);
+  progressBanner.textContent = pending === 0
+    ? `✓ All ${total} group(s) reviewed (${confirmed} confirmed, ${skipped} skipped) -- nothing left to do. ` +
+      `It's safe to close this tab now, or scan a different directory above.`
+    : `${confirmed} confirmed · ${skipped} skipped · ${pending} of ${total} left -- ` +
+      `each Confirm/Skip applies immediately, so it's safe to stop and close this tab at any point.`;
+}
+
+// Fixed width of the leading label column, shared by #images-row's spacer
+// and #metrics-table's first column (see GRID_COLS below) -- must be wide
+// enough for the longest metric label ("Eff. res. px equiv (higher
+// better)") without wrapping in the common case; the CSS wrap fallback
+// (see #metrics-table thead th:first-child) covers anything longer.
+const LABEL_COL_WIDTH = "220px";
+
+function gridColumns(n) {
+  return `${LABEL_COL_WIDTH} repeat(${n}, minmax(180px, 1fr))`;
 }
 
 function renderDetail() {
   const d = state.detail;
   const row = document.getElementById("images-row");
+  const table = document.getElementById("metrics-table");
   row.innerHTML = "";
+  updateActionButtons();
   if (!d) {
+    table.style.gridTemplateColumns = "";
     document.getElementById("status-line").textContent = state.groups.length
       ? "Select a group from the sidebar."
       : (state.status === "ready" ? "No potential duplicate groups found." : "");
@@ -90,9 +166,22 @@ function renderDetail() {
     return;
   }
 
+  // Both grids get the identical column template -- this (not a
+  // TUI-style post-layout measurement pass) is what keeps image box [j]
+  // lined up with metrics column [j]: see the CSS comment above
+  // #images-row for the full explanation.
+  const cols = gridColumns(d.paths.length);
+  row.style.gridTemplateColumns = cols;
+  table.style.gridTemplateColumns = cols;
+
+  const spacer = document.createElement("div");
+  spacer.className = "images-spacer";
+  row.appendChild(spacer);
+
   d.paths.forEach((path, j) => {
     const box = document.createElement("div");
     box.className = "preview-box" + (j === d.current_pick ? " picked" : "");
+    box.title = path;
     const label = document.createElement("div");
     label.className = "preview-label";
     let tag = "";
@@ -115,7 +204,9 @@ function renderDetail() {
   thead.innerHTML = "";
   tbody.innerHTML = "";
   const headRow = document.createElement("tr");
-  headRow.appendChild(document.createElement("th"));
+  const cornerTh = document.createElement("th");
+  cornerTh.textContent = "Metric";
+  headRow.appendChild(cornerTh);
   d.paths.forEach((_, j) => {
     const th = document.createElement("th");
     th.textContent = `[${j + 1}]` + (j === d.suggested_idx ? " ★" : "");
@@ -138,38 +229,45 @@ function renderDetail() {
   document.getElementById("status-line").textContent = statusText(d);
 }
 
-function statusText(d) {
-  const confirmed = state.groups.filter((g) => g.status === "confirmed").length;
-  const skipped = state.groups.filter((g) => g.status === "skipped").length;
-  const pending = state.groups.length - confirmed - skipped;
-  const mode = state.params && state.params.dry_run ? "  [DRY RUN]" : "";
-  const header = `Groups: ${state.groups.length}  confirmed=${confirmed}  skipped=${skipped}  pending=${pending}${mode}`;
+function updateActionButtons() {
+  const hasGroup = !!state.detail;
+  document.getElementById("btn-confirm").disabled = !hasGroup;
+  document.getElementById("btn-skip").disabled = !hasGroup;
+  document.getElementById("btn-open").disabled = !hasGroup;
+}
 
+// Per-group action text only -- overall progress (confirmed/skipped/
+// pending counts, dry-run mode, "all done") lives in the persistent
+// #review-progress/#dry-run-banner banners (renderBanners) instead, so it
+// stays visible even when no group is selected rather than being buried
+// in this per-group line.
+function statusText(d) {
   const nRemoved = d.paths.length - 1;
   const plural = nRemoved !== 1 ? "s" : "";
   let action = `keep [${d.current_pick + 1}] ${d.paths[d.current_pick]}`;
   if (nRemoved > 0) action += `, move ${nRemoved} other file${plural}`;
-  if (d.current_pick !== d.suggested_idx) {
+  const pickIsSuggested = d.current_pick === d.suggested_idx;
+  if (!pickIsSuggested) {
     action += `  ·  ★ suggested [${d.suggested_idx + 1}] ${d.paths[d.suggested_idx]}`;
   }
 
-  let line;
   if (d.status === "confirmed") {
-    line = `confirmed → [${d.current_pick + 1}]. ${action !== `keep [${d.current_pick + 1}] ${d.paths[d.current_pick]}` ? "Press Confirm again to apply the new pick." : ""}`;
-  } else if (d.status === "skipped") {
-    line = `skipped (was: ${action})`;
-  } else {
-    line = action;
+    return pickIsSuggested
+      ? `confirmed → [${d.current_pick + 1}]`
+      : `confirmed → [${d.current_pick + 1}]. Pick changed since confirming -- press Confirm again to apply it.`;
   }
-  return `${header}\n${line}`;
+  if (d.status === "skipped") {
+    return `skipped (was: ${action})`;
+  }
+  return action;
 }
 
 function updateScanStatusText() {
+  // The error case is covered by the more prominent, persistent
+  // #error-banner (renderBanners) instead of duplicating the message here.
   const el = document.getElementById("scan-status");
   if (state.status === "scanning") {
     el.textContent = "scanning…";
-  } else if (state.status === "error") {
-    el.textContent = `error: ${state.error}`;
   } else if (state.status === "ready") {
     el.textContent = `${state.groups.length} group(s) found`;
   } else {
@@ -195,6 +293,7 @@ function applyGroupPatch(i, data) {
   if (i === state.activeIndex) state.detail = data;
   renderSidebar();
   renderDetail();
+  renderBanners();
 }
 
 async function pick(j) {
@@ -356,7 +455,14 @@ async function showHelp() {
       <li>Delete / s -- skip group</li>
       <li>o -- open full-res in a new tab</li>
       <li>? / F1 -- this help</li>
-    </ul>`;
+    </ul>
+    <h3>Stopping and finishing</h3>
+    <p>Confirm and Skip apply immediately -- there's no separate "save" step
+    and nothing is left half-done. That means it's <strong>safe to close this
+    tab at any point</strong>, reviewed or not; your progress is exactly what
+    you see on screen. The server itself keeps running (so you can reopen
+    this URL and pick up where you left off) until it's stopped from the
+    terminal it was started in.</p>`;
   document.getElementById("help-body").innerHTML = html;
   document.getElementById("help-modal").hidden = false;
 }
@@ -397,6 +503,23 @@ function attachKeyboardHandler() {
   });
 }
 
+// #images-row and #metrics-table are two separate scroll containers with
+// identical column widths (see gridColumns) -- mirror scrollLeft between
+// them 1:1 so a wide group (many files) stays column-aligned while
+// scrolled, not just at rest. #metrics-table's own scrollbar is hidden via
+// CSS since this makes it redundant.
+function syncScroll(a, b) {
+  let syncing = false;
+  const mirror = (from, to) => {
+    if (syncing) return;
+    syncing = true;
+    to.scrollLeft = from.scrollLeft;
+    syncing = false;
+  };
+  a.addEventListener("scroll", () => mirror(a, b));
+  b.addEventListener("scroll", () => mirror(b, a));
+}
+
 function attachButtonHandlers() {
   document.getElementById("btn-confirm").addEventListener("click", confirmGroup);
   document.getElementById("btn-skip").addEventListener("click", skipGroup);
@@ -415,6 +538,7 @@ function attachButtonHandlers() {
 async function init() {
   attachKeyboardHandler();
   attachButtonHandlers();
+  syncScroll(document.getElementById("images-row"), document.getElementById("metrics-table"));
   await refreshState();
   populateFormFromParams();
   if (state.status === "scanning") {

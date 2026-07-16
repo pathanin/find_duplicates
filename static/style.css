@@ -92,6 +92,16 @@ input[type="text"], input[type="number"] {
 }
 #progress-label { color: var(--fg-dim); font-size: 0.85em; white-space: nowrap; }
 
+.banner {
+  padding: 0.5em 1em;
+  font-size: 0.9em;
+  border-bottom: 1px solid var(--border);
+}
+.banner-error { background: var(--danger); color: #fff; }
+.banner-warn { background: var(--warn); color: #1a1400; }
+.banner-info { background: var(--bg-alt); color: var(--fg); }
+.banner-info.all-done { background: var(--accent); color: var(--accent-fg); font-weight: 600; }
+
 #body {
   flex: 1;
   display: flex;
@@ -124,16 +134,26 @@ input[type="text"], input[type="number"] {
   overflow: hidden;
 }
 
+/* #images-row and #metrics-table are two independently-scrollable elements
+   that must nonetheless keep their columns pixel-aligned -- the same
+   problem find_duplicates.py's TUI solves with a measure-after-layout pass
+   (_sync_metric_column_widths). The web fix is simpler: both are CSS Grid
+   containers given the *same* explicit grid-template-columns string (set
+   in JS per render, see renderDetail's GRID_COLS) -- a fixed-width leading
+   column (label column / its image-row spacer) plus one track per file.
+   Identical column tracks in both containers guarantees identical
+   scrollWidth too, so app.js can mirror scrollLeft between them 1:1
+   (syncScroll) and only #images-row shows a visible scrollbar. */
 #images-row {
-  display: flex;
+  display: grid;
   gap: 0.6em;
   padding: 0.8em;
   overflow-x: auto;
   flex-shrink: 0;
 }
+.images-spacer { flex-shrink: 0; }
 .preview-box {
-  flex: 1 0 220px;
-  max-width: 320px;
+  min-width: 0;
   border: 2px solid var(--border);
   border-radius: 6px;
   padding: 0.5em;
@@ -160,15 +180,26 @@ input[type="text"], input[type="number"] {
 }
 
 #metrics-table {
+  display: grid;
   border-collapse: collapse;
   margin: 0 0.8em;
   font-size: 0.88em;
+  overflow-x: auto;
+  /* Scrolled programmatically in sync with #images-row (see syncScroll);
+     its own scrollbar is redundant with the visible one above the images
+     and would just be a second, confusing scroll affordance. */
+  scrollbar-width: none;
 }
+#metrics-table::-webkit-scrollbar { display: none; }
+#metrics-table thead, #metrics-table tbody, #metrics-table tr { display: contents; }
 #metrics-table th, #metrics-table td {
   border: 1px solid var(--border);
   padding: 0.3em 0.7em;
   text-align: left;
   white-space: nowrap;
+}
+#metrics-table thead th:first-child, #metrics-table tbody th {
+  white-space: normal; /* the label column has a fixed width; wrap rather than clip a long metric name */
 }
 #metrics-table thead th { background: var(--bg-alt); }
 #metrics-table tbody th { font-weight: 500; color: var(--fg-dim); }
