@@ -79,7 +79,14 @@ function renderSidebar() {
   const MARKERS = { pending: "◻", confirmed: "✔", skipped: "—" };
   state.groups.forEach((g, i) => {
     const li = document.createElement("li");
-    li.className = "group-item" + (i === state.activeIndex ? " active" : "");
+    // Status glyph alone doesn't let a long queue be scanned at a glance --
+    // every row reads with identical weight until you read each character.
+    // Dimming done rows (confirmed/skipped) lets pending rows -- the ones
+    // still needing a decision -- stand out peripherally, without dropping
+    // the glyph (color is never the only signal).
+    li.className = "group-item"
+      + (i === state.activeIndex ? " active" : "")
+      + (g.status !== "pending" ? " status-done" : "");
     const close = g.is_close_call ? " ⚠" : "";
     const pick = g.status === "confirmed" ? ` → [${g.current_pick + 1}]` : "";
     const text = `${MARKERS[g.status]} Group ${i + 1} (${g.file_count} files)${close}${pick}`;

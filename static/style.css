@@ -18,7 +18,13 @@
     --border: #333540;
     --accent: #4caf82;
     --accent-fg: #0c130f;
-    --danger: #e0764a;
+    /* --danger deliberately NOT overridden here: it's only ever used as a
+       background under white text (.banner-error, #toast.error), never as
+       foreground text on the page background, so it doesn't need a
+       dark-theme-brightened variant the way --accent/--warn do. The lighter
+       #e0764a this used to resolve to only meets ~3.1:1 contrast against
+       white text -- below WCAG AA's 4.5:1 floor -- while the root value
+       (#b3441e) holds ~5.6:1 in both themes. */
     --warn: #e0bb4a;
   }
 }
@@ -100,7 +106,17 @@ input[type="text"], input[type="number"] {
 .banner-error { background: var(--danger); color: #fff; }
 .banner-warn { background: var(--warn); color: #1a1400; }
 .banner-info { background: var(--bg-alt); color: var(--fg); }
-.banner-info.all-done { background: var(--accent); color: var(--accent-fg); font-weight: 600; }
+/* Outlined, not a solid accent fill: .preview-box.picked, .group-item.active,
+   and button:hover all use var(--accent) as a border/outline accent already
+   -- a solid full-color fill here would be the one place that same color
+   reads as a completely different (much louder) signal for a different
+   meaning ("everything is done" vs "this is the current selection"). */
+.banner-info.all-done {
+  background: var(--bg-alt);
+  color: var(--accent);
+  border-bottom: 2px solid var(--accent);
+  font-weight: 600;
+}
 
 #body {
   flex: 1;
@@ -125,6 +141,8 @@ input[type="text"], input[type="number"] {
 }
 .group-item:hover { background: var(--bg-alt); }
 .group-item.active { background: var(--bg-alt); font-weight: 600; border-left: 3px solid var(--accent); }
+.group-item.status-done { color: var(--fg-dim); }
+.group-item.status-done.active { color: var(--fg); }
 
 #detail {
   flex: 1;
@@ -217,6 +235,10 @@ input[type="text"], input[type="number"] {
 }
 #metrics-table thead th { background: var(--bg-alt); }
 #metrics-table tbody th { font-weight: 500; color: var(--fg-dim); }
+/* Fixed-width digits so values in the same row (e.g. 0.167 vs 0.833) align
+   by column instead of drifting with each digit's proportional width --
+   this table exists specifically to be compared number-by-number. */
+#metrics-table td { font-variant-numeric: tabular-nums; }
 
 #status-line {
   margin: 0.8em;
