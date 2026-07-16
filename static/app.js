@@ -454,6 +454,8 @@ async function showHelp() {
       <span class="dim">${info.descriptions[name]}</span></li>`;
   }
   html += `</ul>
+    <h3>Sidebar status</h3>
+    <p>◻ pending &middot; ✔ confirmed &middot; — skipped &middot; ⚠ close call (top two picks scored nearly the same)</p>
     <h3>Keyboard shortcuts</h3>
     <ul>
       <li>&larr; / &rarr; -- move pick</li>

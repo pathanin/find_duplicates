@@ -52,6 +52,25 @@ button {
 }
 button:hover:not(:disabled) { border-color: var(--accent); }
 button:disabled { opacity: 0.5; cursor: default; }
+/* Confirm/skip are the two decisions this whole screen exists to produce;
+   Open/Help are read-only utility actions. Giving all four the same base
+   button style (as before) claimed they were four equal peers -- a lie
+   factor. .btn-primary/.btn-ghost create three tiers instead: filled
+   accent (the terminal action) > neutral bordered (skip, still a real
+   decision) > near-invisible ghost (inspect/meta), so the action row can
+   be read as two groups at a glance rather than four identical buttons. */
+.btn-primary {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+.btn-primary:hover:not(:disabled) { filter: brightness(1.08); }
+.btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--fg-dim);
+}
 input[type="text"], input[type="number"] {
   font: inherit;
   background: var(--bg);
@@ -252,6 +271,12 @@ input[type="text"], input[type="number"] {
 
 #actions {
   margin: 0 0.8em 0.8em;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.6em;
+}
+.actions-decide, .actions-utility {
   display: flex;
   gap: 0.6em;
 }
