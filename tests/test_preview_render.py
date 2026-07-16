@@ -145,6 +145,13 @@ def image_regions(app: fd.DuplicateReviewApp) -> list[str]:
     return [str(w.region) for w in widgets]
 
 
+def preview_boxes(app: fd.DuplicateReviewApp) -> list:
+    """#images-row's children, excluding the leading alignment spacer
+    find_duplicates.py mounts there (see refresh_detail/METRIC_LABEL_COL_WIDTH)
+    -- callers indexing by pick index want only the actual preview boxes."""
+    return [c for c in app.query_one("#images-row").children if c.id != "images-spacer"]
+
+
 # Realistic-length names (matching a real report) that stay *narrower* than
 # the preview box at a 170-col terminal, rather than wildly overflowing it.
 # That distinction matters: once a label's "auto" width already overflows
@@ -177,8 +184,16 @@ async def test_pick_change_does_not_move_the_images() -> None:
     changed that label's width and, via the box's `align: center middle`,
     visibly shifted that box's image left/right as the pick changed --
     confirmed by hand with `region` before/after a pick change."""
+    # 220, not the 170 used elsewhere in this file: the alignment spacer
+    # find_duplicates.py adds at the start of #images-row (so the metrics
+    # table's columns can line up under these boxes -- see
+    # METRIC_LABEL_COL_WIDTH) eats width from the row, narrowing each box.
+    # Too narrow and REALISTIC_NAMES' longer label overflows the box in
+    # *every* state regardless of tag, which silently defeats this fixture
+    # (see the REALISTIC_NAMES comment above) -- 220 keeps both labels under
+    # their box width in both before/after states, verified empirically.
     app = new_app([make_named_group(REALISTIC_NAMES)])
-    async with app.run_test(size=(170, 50)) as pilot:
+    async with app.run_test(size=(220, 50)) as pilot:
         await pilot.pause()
         before = image_regions(app)
         await pilot.press("right")  # move current_pick from 0 to 1
@@ -203,7 +218,7 @@ async def test_detector_catches_label_overflow() -> None:
 
     assert "preview-label" not in UnconstrainedLabelApp.CSS, "CSS removal did not apply; update the test"
     app = new_app([make_named_group(REALISTIC_NAMES)], UnconstrainedLabelApp)
-    async with app.run_test(size=(170, 50)) as pilot:
+    async with app.run_test(size=(220, 50)) as pilot:  # see width comment on the sibling test above
         await pilot.pause()
         before = image_regions(app)
         await pilot.press("right")
@@ -228,7 +243,7 @@ async def test_only_the_picked_box_gets_a_distinguishing_border() -> None:
     app = new_app([make_named_group(REALISTIC_NAMES + ["c.jpg"], suggested_idx=1, current_pick=0)])
     async with app.run_test(size=(170, 50)) as pilot:
         await pilot.pause()
-        boxes = app.query_one("#images-row").children
+        boxes = preview_boxes(app)
 
         assert "picked" in boxes[0].classes, "the picked box must carry the 'picked' class"
         assert "picked" not in boxes[1].classes, (
@@ -270,7 +285,7 @@ async def test_detector_would_catch_the_confusing_double_border() -> None:
     )
     async with app.run_test(size=(170, 50)) as pilot:
         await pilot.pause()
-        boxes = app.query_one("#images-row").children
+        boxes = preview_boxes(app)
         assert boxes[1].classes != boxes[2].classes, (
             "expected the double-border replica to render the suggested box differently "
             "from an unrelated box, proving the check above can fail"

@@ -720,6 +720,15 @@ METRIC_ROWS = [
     ("Quality score (higher better)", lambda r: f"{r['quality_score']:.3f}"),
 ]
 
+# Content width (no padding) of the metrics table's "Metric" column -- fixed
+# for a given METRIC_ROWS, since that first column's content never varies
+# per-group. Used both to width that column explicitly (DataTable.add_column
+# ..., width=N is content width; render width adds 2*cell_padding, default
+# cell_padding=1 per side) and to size a matching blank spacer at the start
+# of the image-preview row, so the two independently-laid-out widgets'
+# column boundaries line up -- see refresh_detail/_sync_metric_column_widths.
+METRIC_LABEL_COL_WIDTH = max(len("Metric"), max(len(label) for label, _ in METRIC_ROWS))
+
 
 @functools.cache
 def _help_body() -> str:
@@ -771,6 +780,20 @@ class HelpScreen(ModalScreen):
 
     def action_close_help(self) -> None:
         self.dismiss()
+
+
+class _PreviewBox(Vertical):
+    """A single image's preview box in #images-row. Only exists (rather than
+    a plain Vertical) to catch its own resize -- a terminal resize changes
+    this box's actual rendered width ('1fr' of the row), and by the time
+    *this* widget's own on_resize fires, self.size already reflects the new
+    value (unlike DuplicateReviewApp.on_resize, which fires before the row's
+    children have been re-arranged to the new terminal size -- reading
+    box.size there is still stale). See _sync_metric_column_widths."""
+
+    def on_resize(self, event) -> None:
+        app = self.app
+        app.call_after_refresh(app._sync_metric_column_widths, app.active_index)
 
 
 class DuplicateReviewApp(App):
@@ -952,24 +975,64 @@ class DuplicateReviewApp(App):
 
         row = self.query_one("#images-row", Horizontal)
         await row.remove_children()
-        boxes = []
+        # A blank leading spacer sized to match the metrics table's "Metric"
+        # column, so preview box [idx] lines up under metrics column [idx]
+        # below once _sync_metric_column_widths sets each image column's
+        # width to match its box's actual rendered width (only known after
+        # layout -- see that method).
+        spacer = Static(id="images-spacer")
+        spacer.styles.width = METRIC_LABEL_COL_WIDTH + 2
+        boxes = [spacer]
         for idx, thumb in enumerate(group.thumbnails):
             classes = self._pick_box_classes(group, idx)
             label_text = self._pick_label_text(group, idx)
             image = PreviewImage(thumb, classes="preview-image")
-            boxes.append(Vertical(Label(label_text, classes="preview-label"), image, classes=classes))
+            boxes.append(_PreviewBox(Label(label_text, classes="preview-label"), image, classes=classes))
         await row.mount(*boxes)
 
+        self._build_metrics_table(group, image_col_widths=None)
+        self.call_after_refresh(self._sync_metric_column_widths, i)
+
+        self.query_one("#status", Static).update(self._status_text())
+
+    def _build_metrics_table(self, group: Group, image_col_widths: list[int] | None) -> None:
+        """*image_col_widths*, when given, must have one entry per
+        group.paths -- each metric column's explicit width, in cells
+        (content width, i.e. not including DataTable's own cell padding).
+        None leaves every image column auto-width (fits its own content),
+        which is what a fresh refresh_detail renders immediately; the actual
+        pixel-aligned widths come from a follow-up call once the preview
+        boxes' real rendered sizes are known (see _sync_metric_column_widths)."""
         table = self.query_one(DataTable)
         table.clear(columns=True)
-        table.add_column("Metric")
+        table.add_column("Metric", width=METRIC_LABEL_COL_WIDTH)
         for idx in range(len(group.paths)):
             header = f"[{idx + 1}]" + (" ★" if idx == group.suggested_idx else "")
-            table.add_column(header)
+            width = image_col_widths[idx] if image_col_widths is not None else None
+            table.add_column(header, width=width)
         for label, fn in METRIC_ROWS:
             table.add_row(label, *[fn(r) for r in group.results])
 
-        self.query_one("#status", Static).update(self._status_text())
+    def _sync_metric_column_widths(self, i: int) -> None:
+        """Runs once the preview boxes mounted in refresh_detail have
+        actually been laid out (scheduled via call_after_refresh, since a
+        box's real on-screen width -- it's `1fr` of #images-row, clamped to
+        min-width, possibly overflow-scrolled -- isn't known any earlier).
+        Rebuilds the metrics table with each image column's width pinned to
+        match its corresponding box's rendered width, so the two
+        independently-laid-out widgets' column boundaries actually line up.
+        """
+        if i != self.active_index:
+            return  # stale callback from a group navigated away from before layout settled
+        group = self.groups[i]
+        boxes = [c for c in self.query_one("#images-row", Horizontal).children if c.id != "images-spacer"]
+        if len(boxes) != len(group.paths):
+            return  # stale callback racing a newer refresh_detail for a different-sized group
+        # -2: DataTable's own cell_padding (default 1 cell each side) is
+        # added on top of the width we pass to add_column, which is content
+        # width -- see METRIC_LABEL_COL_WIDTH's comment.
+        widths = [max(box.size.width - 2, 1) for box in boxes]
+        self._build_metrics_table(group, image_col_widths=widths)
 
     async def _update_pick_ui(self, old_pick: int, new_pick: int) -> None:
         """Lightweight counterpart to refresh_detail for moving the pick
@@ -979,14 +1042,43 @@ class DuplicateReviewApp(App):
         PreviewImage widgets (avoids re-encoding/re-transmitting every
         terminal image) and the DataTable entirely."""
         group = self.groups[self.active_index]
-        boxes = self.query_one("#images-row", Horizontal).children
+        # [0] is the alignment spacer (see refresh_detail), not a preview box.
+        boxes = [c for c in self.query_one("#images-row", Horizontal).children if c.id != "images-spacer"]
         for idx in {old_pick, new_pick}:
             if not (0 <= idx < len(boxes)):
                 continue
             box = boxes[idx]
             box.set_class(idx == group.current_pick, "picked")
             box.query_one(Label).update(self._pick_label_text(group, idx))
+        # Re-picking on an already-confirmed group (see action_pick /
+        # action_pick_relative -- both allow this) leaves the sidebar's
+        # "-> [N]" arrow tracking current_pick, same as it always has; the
+        # status line below is what actually flags that a re-confirm is
+        # needed to make the new pick take effect on disk.
+        await self._relabel(self.active_index)
         self.query_one("#status", Static).update(self._status_text())
+
+    def _pending_pick_text(self, group: Group) -> tuple[str, str]:
+        """(action, line3) describing a not-yet-applied current_pick --
+        shared by a genuinely "pending" group and a "confirmed" group whose
+        pick has since diverged from what's on disk (_pick_needs_reapply)."""
+        n_removed = len(group.paths) - 1
+        plural = "s" if n_removed != 1 else ""
+        action = (
+            f"keep [{group.current_pick + 1}] "
+            f"{rich_escape(self._display_path(group.paths[group.current_pick]))}"
+        )
+        if n_removed > 0:
+            action += f", move {n_removed} other file{plural}"
+        if group.current_pick != group.suggested_idx:
+            line3 = (
+                f"your pick [{group.current_pick + 1}]  ·  "
+                f"★ suggested [{group.suggested_idx + 1}] "
+                f"{rich_escape(self._display_path(group.paths[group.suggested_idx]))}"
+            )
+        else:
+            line3 = ""
+        return action, line3
 
     def _status_text(self) -> str:
         confirmed = sum(1 for g in self.groups if g.status == "confirmed")
@@ -995,23 +1087,11 @@ class DuplicateReviewApp(App):
         mode = "  [DRY RUN]" if self.dry_run else ""
 
         group = self.groups[self.active_index]
-        n_removed = len(group.paths) - 1
         if group.status == "pending":
-            plural = "s" if n_removed != 1 else ""
-            action = (
-                f"keep [{group.current_pick + 1}] "
-                f"{rich_escape(self._display_path(group.paths[group.current_pick]))}"
-            )
-            if n_removed > 0:
-                action += f", move {n_removed} other file{plural}"
-            if group.current_pick != group.suggested_idx:
-                line3 = (
-                    f"your pick [{group.current_pick + 1}]  ·  "
-                    f"★ suggested [{group.suggested_idx + 1}] "
-                    f"{rich_escape(self._display_path(group.paths[group.suggested_idx]))}"
-                )
-            else:
-                line3 = ""
+            action, line3 = self._pending_pick_text(group)
+        elif group.status == "confirmed" and self._pick_needs_reapply(self.active_index, group):
+            action, line3 = self._pending_pick_text(group)
+            action = "change " + action + "  (press c/Enter to confirm)"
         else:
             action = f"already {group.status}"
             line3 = ""
@@ -1021,10 +1101,18 @@ class DuplicateReviewApp(App):
             f"{action}\n{line3}"
         )
 
+    def _pick_needs_reapply(self, i: int, group: Group) -> bool:
+        """True for a confirmed group whose current_pick has since diverged
+        from what's actually on disk (self.manifest's record of what got
+        applied) -- i.e. action_confirm would really re-move files if
+        pressed again, rather than being a no-op. Re-picking on an already
+        confirmed group (action_pick/action_pick_relative below) only stages
+        current_pick; nothing moves until the user explicitly re-confirms."""
+        entry = next((m for m in self.manifest if m["group"] == i), None)
+        return entry is None or entry["kept"] != str(group.paths[group.current_pick])
+
     async def action_pick(self, n: int) -> None:
         group = self.groups[self.active_index]
-        if group.status == "confirmed":
-            return
         idx = n - 1
         if 0 <= idx < len(group.paths) and idx != group.current_pick:
             old_pick = group.current_pick
@@ -1033,8 +1121,6 @@ class DuplicateReviewApp(App):
 
     async def action_pick_relative(self, delta: int) -> None:
         group = self.groups[self.active_index]
-        if group.status == "confirmed":
-            return
         old_pick = group.current_pick
         group.current_pick = (group.current_pick + delta) % len(group.paths)
         await self._update_pick_ui(old_pick, group.current_pick)
@@ -1050,12 +1136,16 @@ class DuplicateReviewApp(App):
         group = self.groups[i]
 
         if group.status == "confirmed":
-            # Skip if pick hasn't changed
-            entry = next((m for m in self.manifest if m["group"] == i), None)
-            if entry is not None and entry["kept"] == str(group.paths[group.current_pick]):
-                return
-            self._unapply(i)
-            self._apply(i, group.current_pick)
+            # Only re-move files if the pick actually diverged from what's
+            # applied (_pick_needs_reapply) -- but even when it didn't,
+            # confirm still means "done with this group," so fall through to
+            # _relabel/_advance below rather than returning early. Pressing
+            # confirm on a group you only looked at again, without changing
+            # anything, should move on to the next pending group, not sit
+            # there as if the keypress had no effect.
+            if self._pick_needs_reapply(i, group):
+                self._unapply(i)
+                self._apply(i, group.current_pick)
         elif group.status == "pending" or group.status == "skipped":
             # A prior _apply() may have failed partway through (disk full,
             # permission error) and left the group "pending" with a manifest
