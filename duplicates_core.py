@@ -565,6 +565,98 @@ def auto_apply_groups(
     }
 
 
+# ---------------------------------------------------------------------------
+# Interactive confirm/skip/re-pick primitives
+# ---------------------------------------------------------------------------
+# Shared by the TUI (DuplicateReviewApp._apply/_unapply/_pick_needs_reapply,
+# thin delegations to these) and the web front end, so both keep the same
+# manifest invariants (stays-pending-on-partial-failure, unapply-on-skip,
+# clear-stale-entries-before-reapply, re-pick-after-confirm) rather than
+# each reimplementing this -- the one genuinely destructive, stateful path
+# in the app -- separately.
+
+def unapply(manifest: list[dict], group_index: int) -> None:
+    """Reverse file moves for group *group_index* using *manifest* (the
+    record apply_pick/apply_group left behind). Does NOT change the group's
+    status -- the caller decides. Purely data-driven: doesn't need the Group
+    object itself, only the manifest entry apply_group recorded for it."""
+    entry = next((m for m in manifest if m["group"] == group_index), None)
+    if not entry:
+        return
+    if entry["dry_run"]:
+        # Dry-run moves never touch the filesystem (see apply_group), so
+        # there's nothing to check for on disk -- the manifest entry itself
+        # is the only state a dry-run "move" left behind, and reversing it
+        # is just dropping that entry.
+        manifest.remove(entry)
+        return
+    restored = []
+    try:
+        for moved in entry["moved"]:
+            src = Path(moved["from"])
+            dst = Path(moved["to"])
+            if dst.exists() and not src.exists():
+                # shutil.move, not Path.rename: dest_dir may point at a
+                # different filesystem than the scanned directory, and a
+                # plain rename raises OSError (EXDEV) cross-device where
+                # shutil.move falls back to copy+remove -- the same reason
+                # apply_group uses shutil.move rather than rename for the
+                # forward move.
+                shutil.move(str(dst), str(src))
+                restored.append(moved)
+    finally:
+        # Keep tracking whatever wasn't restored (never just the fact that
+        # *something* was restored) even if a move raised partway through,
+        # so *manifest* always reflects real filesystem state for the rest
+        # of this session -- the same invariant apply_group preserves on
+        # the forward move (see test_manifest_crash_safety.py). Dropping
+        # the whole entry here regardless of partial failure would
+        # silently lose track of files still sitting in dest_dir/.
+        remaining = [m for m in entry["moved"] if m not in restored]
+        if remaining:
+            entry["moved"] = remaining
+        else:
+            manifest.remove(entry)
+
+
+def pick_needs_reapply(manifest: list[dict], group_index: int, group: Group) -> bool:
+    """True for a confirmed group whose current_pick has since diverged from
+    what's actually on disk (manifest's record of what got applied) -- i.e.
+    re-applying would really re-move files, rather than being a no-op.
+    Re-picking on an already confirmed group only stages current_pick;
+    nothing moves until the caller explicitly re-applies."""
+    entry = next((m for m in manifest if m["group"] == group_index), None)
+    return entry is None or entry["kept"] != str(group.paths[group.current_pick])
+
+
+def apply_pick(
+    group: Group,
+    group_index: int,
+    keep_idx: int,
+    dest_dir: Path,
+    dry_run: bool,
+    manifest: list[dict],
+    recursive: bool = False,
+    scan_root: Path | None = None,
+) -> None:
+    """Confirm *keep_idx* for *group*: clear any stale manifest entries left
+    over from a previous partial failure for this group (unapply only
+    processes the first match, so a sequence of partial failures can orphan
+    entries), then apply_group the move, then mark the group confirmed.
+    Unlike apply_group (which deliberately leaves group.status alone -- see
+    its docstring), this DOES set it, since it's the caller apply_group
+    expects to make that decision: only reached after every move in
+    apply_group completed without raising, so the group is genuinely
+    confirmed. If apply_group raises, group.status is left untouched
+    (stays "pending"), same invariant apply_group's own callers rely on."""
+    manifest[:] = [m for m in manifest if m["group"] != group_index]
+    apply_group(
+        group, group_index, keep_idx, dest_dir, dry_run, manifest,
+        recursive=recursive, scan_root=scan_root,
+    )
+    group.status = "confirmed"
+
+
 def load_cache(directory: Path) -> dict:
     path = directory / CACHE_FILENAME
     if not path.exists():

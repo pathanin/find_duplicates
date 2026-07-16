@@ -24,7 +24,7 @@ Requires:
 
 import argparse
 import functools
-import shutil
+import shutil  # noqa: F401 -- unused directly; tests patch fd.shutil.move (see duplicates_core.unapply)
 import subprocess
 import sys
 from pathlib import Path
@@ -56,6 +56,7 @@ from duplicates_core import (
     _hash_one,
     analyze_paths,
     apply_group,
+    apply_pick,
     auto_apply_groups,
     build_groups,
     cached_hash,
@@ -68,11 +69,13 @@ from duplicates_core import (
     load_hash_gray,
     make_thumbnail,
     phash,
+    pick_needs_reapply,
     save_cache,
     save_hash_cache,
     score_group,
     store_hash,
     store_result,
+    unapply,
 )
 
 # ---------------------------------------------------------------------------
@@ -474,9 +477,10 @@ class DuplicateReviewApp(App):
         applied) -- i.e. action_confirm would really re-move files if
         pressed again, rather than being a no-op. Re-picking on an already
         confirmed group (action_pick/action_pick_relative below) only stages
-        current_pick; nothing moves until the user explicitly re-confirms."""
-        entry = next((m for m in self.manifest if m["group"] == i), None)
-        return entry is None or entry["kept"] != str(group.paths[group.current_pick])
+        current_pick; nothing moves until the user explicitly re-confirms.
+        Thin delegation to duplicates_core.pick_needs_reapply, shared with
+        the web front end."""
+        return pick_needs_reapply(self.manifest, i, group)
 
     async def action_pick(self, n: int) -> None:
         group = self.groups[self.active_index]
@@ -568,62 +572,19 @@ class DuplicateReviewApp(App):
 
     def _unapply(self, i: int) -> None:
         """Reverse file moves for a confirmed group using the in-memory
-        manifest. Does NOT change the group status — the caller decides."""
-        entry = next((m for m in self.manifest if m["group"] == i), None)
-        if not entry:
-            return
-        if entry["dry_run"]:
-            # Dry-run moves never touch the filesystem (see _apply), so
-            # there's nothing to check for on disk -- the manifest entry
-            # itself is the only state a dry-run "move" left behind, and
-            # reversing it is just dropping that entry.
-            self.manifest.remove(entry)
-            return
-        restored = []
-        try:
-            for moved in entry["moved"]:
-                src = Path(moved["from"])
-                dst = Path(moved["to"])
-                if dst.exists() and not src.exists():
-                    # shutil.move, not Path.rename: --dest may point at a
-                    # different filesystem than the scanned directory, and
-                    # a plain rename raises OSError (EXDEV) cross-device
-                    # where shutil.move falls back to copy+remove -- the
-                    # same reason _apply below uses shutil.move rather than
-                    # rename for the forward move.
-                    shutil.move(str(dst), str(src))
-                    restored.append(moved)
-        finally:
-            # Keep tracking whatever wasn't restored (never just the fact
-            # that *something* was restored) even if a move raised partway
-            # through, so self.manifest always reflects real filesystem
-            # state for the rest of this session -- the same invariant
-            # _apply preserves on the forward move (see
-            # test_manifest_crash_safety.py). Dropping the whole entry here
-            # regardless of partial failure would silently lose track of
-            # files still sitting in dest_dir/.
-            remaining = [m for m in entry["moved"] if m not in restored]
-            if remaining:
-                entry["moved"] = remaining
-            else:
-                self.manifest.remove(entry)
+        manifest. Does NOT change the group status — the caller decides.
+        Thin delegation to duplicates_core.unapply, shared with the web
+        front end -- see that function for the invariants this preserves."""
+        unapply(self.manifest, i)
 
     def _apply(self, i: int, keep_idx: int) -> None:
-        # Clear any stale entries for this group from previous partial
-        # failures (see _unapply — it only processes the first match, so
-        # a sequence of partial failures can orphan entries). apply_group's
-        # own finally appends the entry reflecting this attempt's actual
-        # state.
-        self.manifest[:] = [m for m in self.manifest if m["group"] != i]
-        group = self.groups[i]
-        apply_group(
-            group, i, keep_idx, self.dest_dir, self.dry_run, self.manifest,
+        """Thin delegation to duplicates_core.apply_pick, shared with the
+        web front end. If apply_group raises inside it, the group stays
+        "pending" so the user can see it's in an inconsistent state."""
+        apply_pick(
+            self.groups[i], i, keep_idx, self.dest_dir, self.dry_run, self.manifest,
             recursive=self.recursive, scan_root=self.scan_root,
         )
-        # Only mark confirmed after all moves completed; if an exception
-        # propagates out of apply_group, the group stays "pending" so the
-        # user can see it's in an inconsistent state.
-        group.status = "confirmed"
 
     def _dest_for(self, path: Path) -> Path:
         return _compute_dest(
