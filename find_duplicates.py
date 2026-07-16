@@ -219,6 +219,17 @@ def _hash_one(p: Path) -> int | None:
     return phash(img) if img is not None else None
 
 
+def _print_progress(label: str, done: int, total: int, tty: bool) -> None:
+    """Incremental progress for a long-running scan phase. On a TTY,
+    overwrites the same terminal line via carriage return so it doesn't spam
+    scrollback; when stdout isn't a TTY (redirected to a file, running under
+    test), falls back to occasional plain lines instead of \r-laden output."""
+    if tty:
+        print(f"\r{label}: {done}/{total}", end="", flush=True)
+    elif done == total or done % 100 == 0:
+        print(f"{label}: {done}/{total}")
+
+
 def group_duplicates(paths: list[Path], threshold: int, cache: dict) -> list[list[Path]]:
     """Groups `paths` by perceptual-hash Hamming distance, reusing `cache`
     for files whose (mtime, size) haven't changed (see cached_hash/
@@ -237,14 +248,19 @@ def group_duplicates(paths: list[Path], threshold: int, cache: dict) -> list[lis
             to_compute.append(p)
 
     if to_compute:
+        total = len(to_compute)
         if len(to_compute) > HASH_PARALLEL_THRESHOLD:
             with ProcessPoolExecutor() as executor:
                 computed = executor.map(_hash_one, to_compute)
         else:
             computed = map(_hash_one, to_compute)
-        for p, h in zip(to_compute, computed):
+        tty = sys.stdout.isatty()
+        for done, (p, h) in enumerate(zip(to_compute, computed), start=1):
             store_hash(cache, p, stats[p], h)
             hashes[p] = h
+            _print_progress("Hashing", done, total, tty)
+        if tty:
+            print()
 
     hash_list = [hashes[p] for p in paths]
 
@@ -396,6 +412,8 @@ def analyze_paths(paths: list[Path], cache: dict,
             to_compute.append(p)
 
     if to_compute:
+        total = len(to_compute)
+        tty = sys.stdout.isatty()
         if len(to_compute) > ANALYZE_PARALLEL_THRESHOLD:
             # Deliberately not forcing a "fork" context here: by this point
             # group_duplicates() has already done real cv2 decode work in this
@@ -404,16 +422,22 @@ def analyze_paths(paths: list[Path], cache: dict,
             # empirically. Default spawn pays a one-time ~0.3s re-import tax per
             # pool but is actually safe.
             with ProcessPoolExecutor() as executor:
-                for p, r in zip(to_compute, executor.map(_analyze_one, [str(p) for p in to_compute])):
+                for done, (p, r) in enumerate(
+                    zip(to_compute, executor.map(_analyze_one, [str(p) for p in to_compute])), start=1
+                ):
                     if r is not None:
                         store_result(cache, p, stats[p], r)
                         results[p] = r
+                    _print_progress("Analyzing", done, total, tty)
         else:
-            for p in to_compute:
+            for done, p in enumerate(to_compute, start=1):
                 r = _analyze_one(str(p))
                 if r is not None:
                     store_result(cache, p, stats[p], r)
                     results[p] = r
+                _print_progress("Analyzing", done, total, tty)
+        if tty:
+            print()
 
     for p in results:
         results[p]["file_size"] = stats[p].st_size

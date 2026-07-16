@@ -28,6 +28,7 @@ python3 tests/test_help_and_labels.py
 python3 tests/test_keyboard_aliases.py
 python3 tests/test_manifest_crash_safety.py
 python3 tests/test_preview_render.py
+python3 tests/test_scan_progress.py
 python3 tests/test_score_group.py
 python3 tests/test_unapply_crash_safety.py
 ```
