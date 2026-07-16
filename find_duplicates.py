@@ -24,7 +24,7 @@ import shutil
 import tempfile
 import subprocess
 import sys
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -63,25 +63,29 @@ HASH_CACHE_FILENAME = ".find_duplicates_hash_cache.json"
 # would upsample instead of downsample there, drifting the hash. 64 gives margin,
 # and images this small are cheap to fully decode anyway.
 MIN_REDUCED_DECODE_SIDE = 64
-# Below this many uncached files, a serial loop beats spawning a pool. Benchmarked
-# on Apple M4/10 cores hashing synthetic 1600x1200 JPEGs: pool spawn alone costs
-# roughly 1-3s (much higher than the ~0.3s the analyze_paths pool comment assumes)
-# and varies a lot run to run under system load, so treat this as a qualitative
-# result, not a precise crossover: tens to low-hundreds of images clearly favor
-# serial (up to 4x faster); low-thousands clearly favor parallel (5-10x faster).
-# The exact crossover was too noisy to pin down closer than "a few hundred."
-# This constant is a conservative, machine-specific heuristic biased toward NOT
-# parallelizing when unsure, not a precisely-tuned value like the other constants
-# in this file -- re-benchmark before changing it materially.
-HASH_PARALLEL_THRESHOLD = 400
-# Below this many uncached analysis files, serialize in-process instead of
-# spawning a ProcessPoolExecutor. analyze() is CPU-bound, but pool spawn
-# overhead (~1-3s on Apple M4, per the hash benchmark) dominates wall time
-# for trivial batches. Since analyze_paths is called on the already-grouped
-# subset (typically far fewer files than the scan-phase hash), 2 is a safe
-# floor: a single uncached file costs ~1-3s of pool overhead to save ~0.2s
-# of serial analysis.
-ANALYZE_PARALLEL_THRESHOLD = 2
+# load_hash_gray/phash's cv2 calls (imread/resize/dct) release the GIL, so a
+# thread pool gets real parallelism without ProcessPoolExecutor's process-spawn
+# cost (benchmarked at ~0.6-3s on Apple M4/10 cores -- a serial loop used to
+# beat a process pool below a few hundred files purely because of that spawn
+# tax). Benchmarked on the same machine hashing synthetic 1600x1200 JPEGs: a
+# thread pool beat both serial execution and a process pool at every batch
+# size tried (30, 150, 3000 files) -- ~5-9x faster than serial at 30-150
+# files (no spawn tax to pay), and matching or slightly beating a process
+# pool's throughput at 3000. So hashing always parallelizes now; there's no
+# serial fallback threshold to tune. cv2.setNumThreads(1) is set for the
+# duration of the pool (see group_duplicates) so cv2's own internal thread
+# pool doesn't oversubscription-fight these worker threads -- ~20% faster at
+# 3000 files than leaving cv2's default thread count in place.
+THREAD_POOL_WORKERS = os.cpu_count() or 1
+# analyze()'s cv2 calls (resize/Laplacian/filter2D) and numpy's FFT release
+# the GIL the same way hashing's do, so analyze_paths routes through a
+# thread pool too -- same THREAD_POOL_WORKERS, no threshold. Benchmarked on
+# the same machine: at a typical single-group batch (6 files), threads hit
+# ~19.6 img/s against a process pool's ~8.7 img/s (indistinguishable from
+# serial -- spawn overhead ate the whole benefit); at 300 files, ~36.3 img/s
+# against ~23.1 img/s. Threads also sidestep the fork-after-cv2-threads
+# macOS crash that motivated spawn-only ProcessPoolExecutor here before,
+# since there's no forking or spawning at all.
 
 # Weight > 0 means higher raw value is better; weight < 0 means lower raw value is better.
 # effective_resolution_px_equiv is weighted heaviest since it's the metric most resistant
@@ -264,9 +268,9 @@ def group_duplicates(paths: list[Path], threshold: int, cache: dict) -> list[lis
     """Groups `paths` by perceptual-hash Hamming distance, reusing `cache`
     for files whose (mtime, size) haven't changed (see cached_hash/
     store_hash above) so a re-scan of an already-hashed directory doesn't
-    re-decode every old file. The uncached subset is only run through a
-    process pool when there are enough of them to be worth the spawn
-    overhead -- see HASH_PARALLEL_THRESHOLD."""
+    re-decode every old file. The uncached subset always hashes through a
+    thread pool -- see THREAD_POOL_WORKERS for why threads (not a process
+    pool) win here."""
     stats = {p: p.stat() for p in paths}
     hashes: dict[Path, int | None] = {}
     to_compute = []
@@ -279,18 +283,20 @@ def group_duplicates(paths: list[Path], threshold: int, cache: dict) -> list[lis
 
     if to_compute:
         total = len(to_compute)
-        if len(to_compute) > HASH_PARALLEL_THRESHOLD:
-            with ProcessPoolExecutor() as executor:
+        original_cv2_threads = cv2.getNumThreads()
+        cv2.setNumThreads(1)
+        try:
+            with ThreadPoolExecutor(max_workers=THREAD_POOL_WORKERS) as executor:
                 computed = executor.map(_hash_one, to_compute)
-        else:
-            computed = map(_hash_one, to_compute)
-        tty = sys.stdout.isatty()
-        for done, (p, h) in enumerate(zip(to_compute, computed), start=1):
-            store_hash(cache, p, stats[p], h)
-            hashes[p] = h
-            _print_progress("Hashing", done, total, tty)
-        if tty:
-            print()
+            tty = sys.stdout.isatty()
+            for done, (p, h) in enumerate(zip(to_compute, computed), start=1):
+                store_hash(cache, p, stats[p], h)
+                hashes[p] = h
+                _print_progress("Hashing", done, total, tty)
+            if tty:
+                print()
+        finally:
+            cv2.setNumThreads(original_cv2_threads)
 
     hash_list = [hashes[p] for p in paths]
 
@@ -422,9 +428,9 @@ def _analyze_one(path_str: str) -> dict | None:
 def analyze_paths(paths: list[Path], cache: dict,
                   precomputed_stats: dict[Path, os.stat_result] | None = None) -> dict[Path, dict]:
     """analyze() every path, reusing `cache` for files whose (mtime, size)
-    haven't changed and running the rest through a process pool (analyze()
-    is CPU-bound and independent per file) only when the uncached batch is
-    large enough to amortize pool-spawn overhead.
+    haven't changed and running the rest through a thread pool (analyze()'s
+    cv2/numpy calls release the GIL -- see the comments at
+    THREAD_POOL_WORKERS's definition).
 
     If *precomputed_stats* is provided, it must cover every path in *paths*
     and will be used instead of calling stat() again."""
@@ -444,14 +450,10 @@ def analyze_paths(paths: list[Path], cache: dict,
     if to_compute:
         total = len(to_compute)
         tty = sys.stdout.isatty()
-        if len(to_compute) > ANALYZE_PARALLEL_THRESHOLD:
-            # Deliberately not forcing a "fork" context here: by this point
-            # group_duplicates() has already done real cv2 decode work in this
-            # process, and forking after cv2/numpy have used internal threads
-            # reliably crashes the pool (BrokenProcessPool) on macOS -- confirmed
-            # empirically. Default spawn pays a one-time ~0.3s re-import tax per
-            # pool but is actually safe.
-            with ProcessPoolExecutor() as executor:
+        original_cv2_threads = cv2.getNumThreads()
+        cv2.setNumThreads(1)
+        try:
+            with ThreadPoolExecutor(max_workers=THREAD_POOL_WORKERS) as executor:
                 for done, (p, r) in enumerate(
                     zip(to_compute, executor.map(_analyze_one, [str(p) for p in to_compute])), start=1
                 ):
@@ -459,13 +461,8 @@ def analyze_paths(paths: list[Path], cache: dict,
                         store_result(cache, p, stats[p], r)
                         results[p] = r
                     _print_progress("Analyzing", done, total, tty)
-        else:
-            for done, p in enumerate(to_compute, start=1):
-                r = _analyze_one(str(p))
-                if r is not None:
-                    store_result(cache, p, stats[p], r)
-                    results[p] = r
-                _print_progress("Analyzing", done, total, tty)
+        finally:
+            cv2.setNumThreads(original_cv2_threads)
         if tty:
             print()
 

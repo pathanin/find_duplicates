@@ -3,13 +3,13 @@ in find_duplicates.py: prints "\rHashing: n/N" / "\rAnalyzing: n/N" as each
 uncached item completes, falling back to occasional plain lines when stdout
 isn't a TTY (see _print_progress).
 
-This is purely additive over the existing cached/to_compute split and
-serial/pool execution -- these tests exist because threading progress output
-through a loop that zips against a ProcessPoolExecutor.map() result is
-exactly the kind of change that could silently break the order-pairing that
-store_hash()/store_result() rely on (e.g. enumerating one iterator but
-zipping a different one), without visibly breaking anything until results
-get attached to the wrong path.
+This is purely additive over the existing cached/to_compute split and pool
+execution (a ThreadPoolExecutor for hashing, a ProcessPoolExecutor for
+analyze) -- these tests exist because threading progress output through a
+loop that zips against a pool's .map() result is exactly the kind of change
+that could silently break the order-pairing that store_hash()/store_result()
+rely on (e.g. enumerating one iterator but zipping a different one), without
+visibly breaking anything until results get attached to the wrong path.
 
 Run: python3 tests/test_scan_progress.py
 """
@@ -64,21 +64,17 @@ class _FakeTTYBuffer(io.StringIO):
 def test_group_duplicates_progress_preserves_order_and_correctness():
     """The pool path (executor.map() zipped against to_compute) is where an
     off-by-one or wrong-iterator bug in progress printing would silently
-    misattribute a hash to the wrong file. Force the pool path (small
-    HASH_PARALLEL_THRESHOLD) and verify every cached hash matches an
-    independent direct recomputation for that exact path."""
+    misattribute a hash to the wrong file. group_duplicates always routes
+    uncached files through a thread pool now, so no threshold-forcing is
+    needed here -- verify every cached hash matches an independent direct
+    recomputation for that exact path."""
     with tempfile.TemporaryDirectory() as tmp:
         paths = make_distinguishable_images(tmp, 5)
         cache: dict = {}
 
-        real_threshold = fd.HASH_PARALLEL_THRESHOLD
-        fd.HASH_PARALLEL_THRESHOLD = 2  # force the ProcessPoolExecutor path for 5 files
-        try:
-            buf = io.StringIO()
-            with contextlib.redirect_stdout(buf):
-                fd.group_duplicates(paths, fd.DEFAULT_HASH_THRESHOLD, cache)
-        finally:
-            fd.HASH_PARALLEL_THRESHOLD = real_threshold
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            fd.group_duplicates(paths, fd.DEFAULT_HASH_THRESHOLD, cache)
 
         for p in paths:
             cached = fd.cached_hash(cache, p, p.stat())
@@ -89,9 +85,9 @@ def test_group_duplicates_progress_preserves_order_and_correctness():
 
 def test_analyze_paths_progress_preserves_order_and_correctness():
     """Same order-pairing concern as above, for analyze_paths' pool path
-    (triggered by default: 5 files is above ANALYZE_PARALLEL_THRESHOLD=2).
-    Each file has distinct real dimensions, so a mis-pairing shows up as a
-    dimensions mismatch instead of silently passing."""
+    (always taken for any uncached batch). Each file has distinct real
+    dimensions, so a mis-pairing shows up as a dimensions mismatch instead
+    of silently passing."""
     with tempfile.TemporaryDirectory() as tmp:
         paths = make_distinguishable_images(tmp, 5)
         expected_dims = {}

@@ -210,11 +210,12 @@ def test_group_duplicates_computes_and_caches_on_miss() -> None:
         print("  ok  cache miss computes hashes via the real pipeline and writes them back to cache")
 
 
-def test_group_duplicates_hashes_serially_below_the_parallel_threshold() -> None:
-    """Below HASH_PARALLEL_THRESHOLD uncached files, group_duplicates must
-    not construct a ProcessPoolExecutor at all -- see the benchmark cited at
-    HASH_PARALLEL_THRESHOLD's definition: pool spawn overhead outweighs any
-    speedup for a small uncached batch."""
+def test_group_duplicates_hashes_small_batch_via_thread_pool() -> None:
+    """Even a tiny uncached batch must still hash through a real
+    ThreadPoolExecutor, never a ProcessPoolExecutor -- see the comment at
+    THREAD_POOL_WORKERS: cv2's decode/resize/dct calls release the GIL, so
+    threads always win over both serial execution and a process pool's
+    spawn cost, with no threshold to gate on."""
     with tempfile.TemporaryDirectory() as tmp:
         paths = []
         for i in range(3):
@@ -222,60 +223,52 @@ def test_group_duplicates_hashes_serially_below_the_parallel_threshold() -> None
             save_jpeg(make_texture(200, 200, seed=60 + i), p)
             paths.append(p)
 
-        class ExplodingPool:
+        class ExplodingProcessPool:
             def __init__(self, *a, **k):
-                raise AssertionError("ProcessPoolExecutor must not be constructed below the threshold")
+                raise AssertionError("group_duplicates must never construct a ProcessPoolExecutor")
 
-        real_pool = fd.ProcessPoolExecutor
-        fd.ProcessPoolExecutor = ExplodingPool
+        real_thread_cls = fd.ThreadPoolExecutor
+        constructed = []
+
+        class RecordingThreadPool(real_thread_cls):
+            def __init__(self, *a, **k):
+                constructed.append(True)
+                super().__init__(*a, **k)
+
+        real_process_pool = fd.ProcessPoolExecutor
+        fd.ProcessPoolExecutor = ExplodingProcessPool
+        fd.ThreadPoolExecutor = RecordingThreadPool
         try:
             groups = fd.group_duplicates(paths, fd.DEFAULT_HASH_THRESHOLD, {})
         finally:
-            fd.ProcessPoolExecutor = real_pool
+            fd.ProcessPoolExecutor = real_process_pool
+            fd.ThreadPoolExecutor = real_thread_cls
+        assert constructed, "expected a real ThreadPoolExecutor to be constructed for the small batch"
         assert isinstance(groups, list)
-        print("  ok  a small uncached batch hashes serially, no process pool constructed")
+        print("  ok  a small uncached batch hashes via a real thread pool, no process pool constructed")
 
 
-def test_group_duplicates_uses_pool_above_the_parallel_threshold() -> None:
-    """Proof the check above can actually fail: temporarily lowering the
-    threshold below the batch size must make group_duplicates construct a
-    real ProcessPoolExecutor -- and, critically, still produce the *correct*
-    grouping through that pool path (a near-duplicate pair plus one unrelated
-    filler file), not just prove a pool object got created."""
+def test_group_duplicates_uses_thread_pool_and_groups_correctly() -> None:
+    """Proof the thread pool path produces the *correct* grouping (a
+    near-duplicate pair plus one unrelated filler file), not just that a
+    pool object got created."""
     with tempfile.TemporaryDirectory() as tmp:
         paths = make_duplicate_pair(tmp, seed=70)
         filler = Path(tmp) / "unrelated.jpg"
         save_jpeg(make_texture(200, 200, seed=72), filler)
         paths.append(filler)
 
-        real_pool_cls = fd.ProcessPoolExecutor
-        constructed = []
+        groups = fd.group_duplicates(paths, fd.DEFAULT_HASH_THRESHOLD, {})
 
-        class RecordingPool(real_pool_cls):
-            def __init__(self, *a, **k):
-                constructed.append(True)
-                super().__init__(*a, **k)
-
-        real_threshold = fd.HASH_PARALLEL_THRESHOLD
-        fd.ProcessPoolExecutor = RecordingPool
-        fd.HASH_PARALLEL_THRESHOLD = 2  # batch of 3 uncached files now exceeds it
-        try:
-            groups = fd.group_duplicates(paths, fd.DEFAULT_HASH_THRESHOLD, {})
-        finally:
-            fd.ProcessPoolExecutor = real_pool_cls
-            fd.HASH_PARALLEL_THRESHOLD = real_threshold
-
-        assert constructed, "expected a real ProcessPoolExecutor to be constructed above the (lowered) threshold"
         assert len(groups) == 1 and set(groups[0]) == set(paths[:2]), (
-            f"expected the pool path to still group exactly the near-duplicate pair, got {groups}"
+            f"expected the thread-pool path to group exactly the near-duplicate pair, got {groups}"
         )
-        print("  ok  a batch above the (lowered) threshold routes through a real process pool "
-              "and still produces the correct grouping")
+        print("  ok  the thread-pool path still produces the correct grouping")
 
 
 def test_analyze_paths_skips_pool_on_all_cache_hits() -> None:
-    """When every path is already cached, analyze_paths must not construct a
-    ProcessPoolExecutor at all (no subprocess spawn cost for a warm re-run)."""
+    """When every path is already cached, analyze_paths must not construct
+    any pool at all (no thread/process spawn cost for a warm re-run)."""
     with tempfile.TemporaryDirectory() as tmp:
         p = Path(tmp) / "photo.jpg"
         save_jpeg(make_texture(300, 300, seed=6), p)
@@ -289,22 +282,25 @@ def test_analyze_paths_skips_pool_on_all_cache_hits() -> None:
 
         class ExplodingPool:
             def __init__(self, *a, **k):
-                raise AssertionError("ProcessPoolExecutor must not be constructed on an all-cache-hit run")
+                raise AssertionError("no pool should be constructed on an all-cache-hit run")
 
-        real_pool = fd.ProcessPoolExecutor
+        real_process_pool = fd.ProcessPoolExecutor
+        real_thread_pool = fd.ThreadPoolExecutor
         fd.ProcessPoolExecutor = ExplodingPool
+        fd.ThreadPoolExecutor = ExplodingPool
         try:
             analyzed = fd.analyze_paths([p], cache)
         finally:
-            fd.ProcessPoolExecutor = real_pool
+            fd.ProcessPoolExecutor = real_process_pool
+            fd.ThreadPoolExecutor = real_thread_pool
 
         assert analyzed[p]["file_size"] == p.stat().st_size
         assert analyzed[p]["dimensions"] == (300, 300)
-        print("  ok  all-cache-hit run never constructs a process pool")
+        print("  ok  all-cache-hit run never constructs a pool")
 
 
 def test_analyze_paths_computes_and_caches_on_miss() -> None:
-    """Smoke test: an actual cache miss goes through the real process pool
+    """Smoke test: an actual cache miss goes through the real thread pool
     and produces a usable, cacheable result."""
     with tempfile.TemporaryDirectory() as tmp:
         p = Path(tmp) / "photo.jpg"
@@ -320,71 +316,65 @@ def test_analyze_paths_computes_and_caches_on_miss() -> None:
         assert str(p.resolve()) in cache, "a computed result must be written back into the cache"
         cached = fd.cached_result(cache, p, p.stat())
         assert cached is not None and cached["dimensions"] == (300, 300)
-        print("  ok  cache miss computes via the process pool and is written back to cache")
+        print("  ok  cache miss computes via the thread pool and is written back to cache")
 
 
-def test_analyze_paths_computes_serially_at_or_below_threshold() -> None:
-    """At exactly ANALYZE_PARALLEL_THRESHOLD uncached files, analyze_paths
-    must not construct a ProcessPoolExecutor -- see the comment at
-    ANALYZE_PARALLEL_THRESHOLD's definition: pool spawn overhead (~1-3s)
-    dominates wall time for a batch this small. Mirrors the HASH_PARALLEL_
-    THRESHOLD serial/pool tests above, which cover group_duplicates but not
-    analyze_paths's own (separate) threshold."""
+def test_analyze_paths_analyzes_small_batch_via_thread_pool() -> None:
+    """Even a tiny uncached batch must analyze through a real
+    ThreadPoolExecutor, never a ProcessPoolExecutor -- see the comments at
+    THREAD_POOL_WORKERS's definition in find_duplicates.py: analyze()'s
+    cv2/numpy calls release the GIL, so threads always win, with no
+    threshold to gate on."""
     with tempfile.TemporaryDirectory() as tmp:
         paths = []
-        for i in range(fd.ANALYZE_PARALLEL_THRESHOLD):
+        for i in range(2):
             p = Path(tmp) / f"photo_{i}.jpg"
             save_jpeg(make_texture(200, 200, seed=80 + i), p)
             paths.append(p)
 
-        class ExplodingPool:
+        class ExplodingProcessPool:
             def __init__(self, *a, **k):
-                raise AssertionError("ProcessPoolExecutor must not be constructed at/below the threshold")
+                raise AssertionError("analyze_paths must never construct a ProcessPoolExecutor")
 
-        real_pool = fd.ProcessPoolExecutor
-        fd.ProcessPoolExecutor = ExplodingPool
-        try:
-            analyzed = fd.analyze_paths(paths, {})
-        finally:
-            fd.ProcessPoolExecutor = real_pool
-
-        for p in paths:
-            assert analyzed[p]["dimensions"] == (200, 200)
-        print("  ok  a batch at the threshold analyzes serially, no process pool constructed")
-
-
-def test_analyze_paths_uses_pool_above_threshold() -> None:
-    """Proof the check above can actually fail: a batch above
-    ANALYZE_PARALLEL_THRESHOLD must construct a real ProcessPoolExecutor --
-    and, critically, still produce correct results for every file through
-    that pool path, not just prove a pool object got created."""
-    with tempfile.TemporaryDirectory() as tmp:
-        paths = []
-        for i in range(fd.ANALYZE_PARALLEL_THRESHOLD + 1):
-            p = Path(tmp) / f"photo_{i}.jpg"
-            save_jpeg(make_texture(200, 200, seed=90 + i), p)
-            paths.append(p)
-
-        real_pool_cls = fd.ProcessPoolExecutor
+        real_thread_cls = fd.ThreadPoolExecutor
         constructed = []
 
-        class RecordingPool(real_pool_cls):
+        class RecordingThreadPool(real_thread_cls):
             def __init__(self, *a, **k):
                 constructed.append(True)
                 super().__init__(*a, **k)
 
-        fd.ProcessPoolExecutor = RecordingPool
+        real_process_pool = fd.ProcessPoolExecutor
+        fd.ProcessPoolExecutor = ExplodingProcessPool
+        fd.ThreadPoolExecutor = RecordingThreadPool
         try:
             analyzed = fd.analyze_paths(paths, {})
         finally:
-            fd.ProcessPoolExecutor = real_pool_cls
+            fd.ProcessPoolExecutor = real_process_pool
+            fd.ThreadPoolExecutor = real_thread_cls
 
-        assert constructed, "expected a real ProcessPoolExecutor to be constructed above the threshold"
+        assert constructed, "expected a real ThreadPoolExecutor to be constructed for the small batch"
+        for p in paths:
+            assert analyzed[p]["dimensions"] == (200, 200)
+        print("  ok  a small uncached batch analyzes via a real thread pool, no process pool constructed")
+
+
+def test_analyze_paths_uses_thread_pool_for_larger_batch() -> None:
+    """Proof the thread pool path produces correct results for every file
+    at a larger batch size too, not just prove a pool object got created."""
+    with tempfile.TemporaryDirectory() as tmp:
+        paths = []
+        for i in range(6):
+            p = Path(tmp) / f"photo_{i}.jpg"
+            save_jpeg(make_texture(200, 200, seed=90 + i), p)
+            paths.append(p)
+
+        analyzed = fd.analyze_paths(paths, {})
+
         for p in paths:
             assert analyzed[p]["dimensions"] == (200, 200)
             assert analyzed[p]["file_size"] == p.stat().st_size
-        print("  ok  a batch above the threshold routes through a real process pool "
-              "and still produces correct results for every file")
+        print("  ok  a larger batch routes through the thread pool and produces correct results for every file")
 
 
 class _FakeStat:
@@ -459,12 +449,12 @@ def main() -> None:
         test_load_hash_cache_handles_corrupt_file,
         test_group_duplicates_skips_decode_on_all_cache_hits,
         test_group_duplicates_computes_and_caches_on_miss,
-        test_group_duplicates_hashes_serially_below_the_parallel_threshold,
-        test_group_duplicates_uses_pool_above_the_parallel_threshold,
+        test_group_duplicates_hashes_small_batch_via_thread_pool,
+        test_group_duplicates_uses_thread_pool_and_groups_correctly,
         test_analyze_paths_skips_pool_on_all_cache_hits,
         test_analyze_paths_computes_and_caches_on_miss,
-        test_analyze_paths_computes_serially_at_or_below_threshold,
-        test_analyze_paths_uses_pool_above_threshold,
+        test_analyze_paths_analyzes_small_batch_via_thread_pool,
+        test_analyze_paths_uses_thread_pool_for_larger_batch,
         test_analyze_paths_honors_precomputed_stats,
         test_real_analyze_result_round_trips_through_json_cache_file,
     ]
