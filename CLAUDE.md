@@ -20,6 +20,8 @@ Runtime deps: `opencv-python-headless numpy pillow textual textual-image`. There
 No pytest/unittest — each test file is a standalone script with its own `main()` that runs a list of test functions and asserts, printing `ok` lines and exiting non-zero on `AssertionError`. Run individually:
 
 ```bash
+python3 tests/test_claude_md_test_list_sync.py
+python3 tests/test_effective_resolution_downsampling.py
 python3 tests/test_fast_scan.py
 python3 tests/test_footer_click_safety.py
 python3 tests/test_help_and_labels.py
