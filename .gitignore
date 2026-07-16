@@ -22,3 +22,9 @@ _duplicates/
 
 # local development tracking, not source
 improvement-status.md
+
+# local agent pointer file, not source
+AGENTS.md
+
+# local agent config, not source (sole-dev project, not shared on GitHub)
+CLAUDE.md
