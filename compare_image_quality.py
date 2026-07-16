@@ -16,6 +16,19 @@ Optional (for BRISQUE/NIQE/MUSIQ no-reference scores):
 import sys
 import cv2
 import numpy as np
+from PIL import Image as PILImage
+
+# HEIC/HEIF (the default format Apple Photos/iPhone exports) has no reliable
+# OS-level decoder behind cv2.imread, so PIL needs this optional plugin
+# registered before PIL.Image.open can read those files. Mirrors the
+# brisque/pyiqa pattern below: a missing optional dependency must never
+# crash a scan, HEIC files just fail to decode and get treated the same as
+# any other unreadable file.
+try:
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+except ImportError:
+    pass
 
 # Maximum image dimension for FFT-based analysis. Images larger than this on
 # either side are downsampled before FFT to cap memory: a 6K×4K image (192 MB
@@ -28,8 +41,26 @@ import numpy as np
 EFFECTIVE_RES_MAX_PX = 2048
 
 
+def _load_bgr_via_pil(path):
+    """Fallback decode for formats cv2 can't read at all (currently just
+    HEIC/HEIF), via PIL + the registered pillow-heif opener. Returns BGR
+    uint8 to match cv2's channel convention, since callers (load_gray's
+    cvtColor, brisque_score) both expect BGR like every cv2.imread result.
+    Returns None (rather than raising) on any decode failure -- a HEIC file
+    with no HEIF plugin installed, or a genuinely corrupt file, is treated
+    the same as any other unreadable file."""
+    try:
+        with PILImage.open(path) as pil_img:
+            rgb = np.array(pil_img.convert("RGB"))
+        return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    except Exception:
+        return None
+
+
 def load_gray(path):
     img = cv2.imread(path, cv2.IMREAD_COLOR)
+    if img is None:
+        img = _load_bgr_via_pil(path)
     if img is None:
         raise FileNotFoundError(path)
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float64)

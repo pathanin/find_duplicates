@@ -42,7 +42,18 @@ from textual_image.widget import Image as PreviewImage
 
 from compare_image_quality import analyze
 
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff", ".tif"}
+# HEIC/HEIF (the default format Apple Photos/iPhone exports) has no reliable
+# OS-level decoder behind cv2.imread, so PIL needs this optional plugin
+# registered before PIL.Image.open can read those files. A missing package
+# must never crash a scan -- HEIC files just fail to decode and get silently
+# skipped like any other corrupt/unreadable file already does today.
+try:
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+except ImportError:
+    pass
+
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff", ".tif", ".heic", ".heif"}
 DEFAULT_HASH_THRESHOLD = 10  # max Hamming distance out of 64 bits to call two images duplicates
 PREVIEW_MAX_SIDE = 800
 CLOSE_CALL_MARGIN = 0.08  # quality_score gap below which we flag "close call"
@@ -108,14 +119,33 @@ def find_images(directory: Path) -> list[Path]:
     return sorted(p for p in directory.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_EXTS)
 
 
+def _load_gray_via_pil(p: Path) -> np.ndarray | None:
+    """Fallback decode for formats cv2 can't read at all (currently just
+    HEIC/HEIF), via PIL + the registered pillow-heif opener. Always a full
+    decode -- no reduced-scale trick like the cv2 path above, since
+    correctness matters more than that specific optimization for this
+    format. Returns None (rather than raising) on any decode failure so a
+    HEIC file with no HEIF plugin installed, or a genuinely corrupt file,
+    is silently skipped exactly like any other unreadable file today."""
+    try:
+        with PILImage.open(p) as pil_img:
+            return np.array(pil_img.convert("L"))
+    except Exception:
+        return None
+
+
 def load_hash_gray(p: Path) -> np.ndarray | None:
     """Grayscale decode for perceptual hashing. Uses a 1/8-scale DCT decode
     for speed (skips full-resolution JPEG decode just to shrink it to 32x32
     afterwards); falls back to a full decode when the image is small enough
-    that the reduced decode would land below what the hash needs."""
+    that the reduced decode would land below what the hash needs. Formats
+    cv2 can't decode at all (e.g. HEIC/HEIF) fall through both cv2 attempts
+    as None and get a full PIL-based decode instead."""
     img = cv2.imread(str(p), cv2.IMREAD_REDUCED_GRAYSCALE_8)
     if img is None or min(img.shape) < MIN_REDUCED_DECODE_SIDE:
         img = cv2.imread(str(p), cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        img = _load_gray_via_pil(p)
     return img
 
 

@@ -44,6 +44,7 @@ echo "==> Installing dependencies (prebuilt wheels via pip)"
   numpy \
   opencv-python-headless \
   pillow \
+  pillow-heif \
   textual \
   textual-image
 
