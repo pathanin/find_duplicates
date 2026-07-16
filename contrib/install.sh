@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# Creates an isolated venv with plain pip (fast, wheel-based install of
-# numpy/opencv-python-headless/pillow/textual) and puts a `find-duplicates`
+# Creates an isolated venv with plain pip (fast, wheel-based install) and
+# puts a `find-duplicates` (TUI) and/or `find-duplicates-web` (browser UI)
 # wrapper on PATH.
 #
-# Usage: ./contrib/install.sh
+# Usage: ./contrib/install.sh [--tui|--web|--all]
+#   --tui   Textual terminal UI only (adds textual/textual-image)
+#   --web   Browser UI only (adds fastapi/uvicorn) -- e.g. for a headless
+#           NAS box that will never run a TUI in a terminal.
+#   --all   Both (default).
 
 set -euo pipefail
 
@@ -11,14 +15,45 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/find-duplicates"
 VENV_DIR="$DATA_DIR/venv"
 BIN_DIR="$HOME/.local/bin"
-WRAPPER="$BIN_DIR/find-duplicates"
 
-for f in find_duplicates.py compare_image_quality.py; do
+COMPONENT="all"
+for arg in "$@"; do
+  case "$arg" in
+    --tui) COMPONENT="tui" ;;
+    --web) COMPONENT="web" ;;
+    --all) COMPONENT="all" ;;
+    *)
+      echo "error: unknown argument '$arg' (expected --tui, --web, or --all)" >&2
+      exit 1
+      ;;
+  esac
+done
+WANT_TUI=0
+WANT_WEB=0
+case "$COMPONENT" in
+  tui) WANT_TUI=1 ;;
+  web) WANT_WEB=1 ;;
+  all) WANT_TUI=1; WANT_WEB=1 ;;
+esac
+
+# duplicates_core.py + compare_image_quality.py are the shared scan/score/
+# move pipeline both front ends import -- required no matter which
+# component(s) are selected. find_duplicates.py (TUI) and
+# find_duplicates-web.py + static/ (web) are only required for their
+# respective component.
+REQUIRED_FILES=(duplicates_core.py compare_image_quality.py)
+[[ "$WANT_TUI" == "1" ]] && REQUIRED_FILES+=(find_duplicates.py)
+[[ "$WANT_WEB" == "1" ]] && REQUIRED_FILES+=(find_duplicates-web.py)
+for f in "${REQUIRED_FILES[@]}"; do
   if [[ ! -f "$REPO_ROOT/$f" ]]; then
     echo "error: $f not found next to this script (expected at $REPO_ROOT/$f)" >&2
     exit 1
   fi
 done
+if [[ "$WANT_WEB" == "1" && ! -d "$REPO_ROOT/static" ]]; then
+  echo "error: static/ not found next to this script (expected at $REPO_ROOT/static)" >&2
+  exit 1
+fi
 
 if ! command -v python3 >/dev/null 2>&1; then
   echo "error: python3 not found. Install Python 3.10+ first." >&2
@@ -33,35 +68,62 @@ if [[ "$PY_OK" != "1" ]]; then
 fi
 
 echo "==> Using python3 $PY_VERSION"
+echo "==> Installing: $COMPONENT"
 
 echo "==> Creating venv at $VENV_DIR"
 mkdir -p "$DATA_DIR"
 python3 -m venv "$VENV_DIR"
 
-echo "==> Installing dependencies (prebuilt wheels via pip)"
+echo "==> Installing shared dependencies (prebuilt wheels via pip)"
 "$VENV_DIR/bin/pip" install --upgrade pip --quiet
 "$VENV_DIR/bin/pip" install --quiet \
   numpy \
   opencv-python-headless \
   pillow \
-  pillow-heif \
-  textual \
-  textual-image
+  pillow-heif
+
+if [[ "$WANT_TUI" == "1" ]]; then
+  echo "==> Installing TUI dependencies"
+  "$VENV_DIR/bin/pip" install --quiet textual textual-image
+fi
+if [[ "$WANT_WEB" == "1" ]]; then
+  echo "==> Installing web dependencies"
+  "$VENV_DIR/bin/pip" install --quiet fastapi uvicorn
+fi
 
 echo "==> Installing scripts"
 mkdir -p "$DATA_DIR/libexec"
-cp "$REPO_ROOT/find_duplicates.py" "$REPO_ROOT/compare_image_quality.py" "$DATA_DIR/libexec/"
-
-echo "==> Writing wrapper to $WRAPPER"
+cp "$REPO_ROOT/duplicates_core.py" "$REPO_ROOT/compare_image_quality.py" "$DATA_DIR/libexec/"
 mkdir -p "$BIN_DIR"
-cat > "$WRAPPER" <<EOS
+
+if [[ "$WANT_TUI" == "1" ]]; then
+  cp "$REPO_ROOT/find_duplicates.py" "$DATA_DIR/libexec/"
+  WRAPPER="$BIN_DIR/find-duplicates"
+  echo "==> Writing wrapper to $WRAPPER"
+  cat > "$WRAPPER" <<EOS
 #!/bin/bash
 exec "$VENV_DIR/bin/python3" "$DATA_DIR/libexec/find_duplicates.py" "\$@"
 EOS
-chmod +x "$WRAPPER"
+  chmod +x "$WRAPPER"
+fi
+
+if [[ "$WANT_WEB" == "1" ]]; then
+  cp "$REPO_ROOT/find_duplicates-web.py" "$DATA_DIR/libexec/"
+  rm -rf "$DATA_DIR/libexec/static"
+  cp -r "$REPO_ROOT/static" "$DATA_DIR/libexec/static"
+  WEB_WRAPPER="$BIN_DIR/find-duplicates-web"
+  echo "==> Writing wrapper to $WEB_WRAPPER"
+  cat > "$WEB_WRAPPER" <<EOS
+#!/bin/bash
+exec "$VENV_DIR/bin/python3" "$DATA_DIR/libexec/find_duplicates-web.py" "\$@"
+EOS
+  chmod +x "$WEB_WRAPPER"
+fi
 
 echo
-echo "Installed. Run: find-duplicates --help"
+echo "Installed."
+[[ "$WANT_TUI" == "1" ]] && echo "Run: find-duplicates --help"
+[[ "$WANT_WEB" == "1" ]] && echo "Run: find-duplicates-web --help"
 
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
