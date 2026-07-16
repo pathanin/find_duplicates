@@ -1,16 +1,18 @@
 """
 find_duplicates.py
 
-Scans the current directory (top level only) for images that look like the
-same photo saved at different sizes/qualities, groups them with a perceptual
-hash, scores each candidate using compare_image_quality.analyze(), and lets
-you confirm which one to keep in a Textual TUI. Non-kept files are moved to
-./_duplicates/, never deleted -- restoring one is a manual move back out of
-that folder (the scan is top-level only, so the original location is always
-the scanned directory).
+Scans the current directory (top level only, or subdirectories too with
+--recursive) for images that look like the same photo saved at different
+sizes/qualities, groups them with a perceptual hash, scores each candidate
+using compare_image_quality.analyze(), and lets you confirm which one to
+keep in a Textual TUI (or automatically, with --auto). Non-kept files are
+moved to ./_duplicates/, never deleted -- restoring one is a manual move
+back out of that folder (with --recursive, a moved file's subdirectory
+structure is mirrored under _duplicates/, so the original relative location
+is still recoverable from the path alone).
 
 Usage:
-    python find_duplicates.py [directory] [--threshold N] [--dest DIR] [--dry-run]
+    python find_duplicates.py [directory] [--threshold N] [--dest DIR] [--recursive] [--auto] [--dry-run]
 
 Requires:
     pip install opencv-python-headless numpy textual textual-image pillow
@@ -119,8 +121,24 @@ METRIC_DESCRIPTIONS = {
 # Scanning + perceptual hashing + grouping
 # ---------------------------------------------------------------------------
 
-def find_images(directory: Path) -> list[Path]:
-    return sorted(p for p in directory.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_EXTS)
+def find_images(directory: Path, recursive: bool = False, exclude_dir: Path | None = None) -> list[Path]:
+    """Top-level-only scan by default. With *recursive*, walks subdirectories
+    too -- *exclude_dir* (typically the move destination) is then required to
+    keep a re-scan from picking up files already moved out by a prior run;
+    it's meaningless (and ignored) in non-recursive mode since the default
+    destination (<directory>/_duplicates) already sits below the top level
+    iterdir() looks at."""
+    if not recursive:
+        return sorted(p for p in directory.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_EXTS)
+    exclude_resolved = exclude_dir.resolve() if exclude_dir is not None else None
+    found = []
+    for p in directory.rglob("*"):
+        if not p.is_file() or p.suffix.lower() not in IMAGE_EXTS:
+            continue
+        if exclude_resolved is not None and p.resolve().is_relative_to(exclude_resolved):
+            continue
+        found.append(p)
+    return sorted(found)
 
 
 def _load_gray_via_pil(p: Path) -> np.ndarray | None:
@@ -387,6 +405,152 @@ class Group:
     status: str = "pending"  # pending | confirmed | skipped
 
 
+def _compute_dest(
+    path: Path,
+    dest_dir: Path,
+    dry_run: bool,
+    recursive: bool = False,
+    scan_root: Path | None = None,
+) -> Path:
+    """Where *path* should land under *dest_dir* if moved as a non-kept
+    duplicate. Preserves *path*'s position relative to *scan_root* when
+    *recursive* (so two same-named files from different subdirectories don't
+    collide into one flat name); just the filename otherwise. A collision
+    suffix keeps the same relative parent directory -- dropping it would
+    silently flatten the file into dest_dir's root, defeating the point of
+    preserving structure in the first place."""
+    rel = path.relative_to(scan_root) if (recursive and scan_root is not None) else Path(path.name)
+    dest = dest_dir / rel
+    if not dry_run:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+    n = 1
+    while dest.exists():
+        dest = dest_dir / rel.parent / f"{rel.stem}_dup{n}{rel.suffix}"
+        n += 1
+    return dest
+
+
+def apply_group(
+    group: Group,
+    group_index: int,
+    keep_idx: int,
+    dest_dir: Path,
+    dry_run: bool = False,
+    manifest: list[dict] | None = None,
+    recursive: bool = False,
+    scan_root: Path | None = None,
+) -> dict:
+    """Move every non-kept file in *group* to *dest_dir*. Shared by the TUI's
+    _apply and --auto mode. Files that are symlinks to the kept file's real
+    target are left alone (moving the target would leave the kept path
+    dangling). Records whatever was actually moved into a manifest entry
+    from a `finally` -- even a failure partway through the loop (disk full,
+    permission error) leaves an accurate, reversible record instead of
+    silently losing track of files already relocated to disk. Does not set
+    group.status; callers decide (kept "pending" on a raised exception is
+    load-bearing for the TUI's retry path, see test_manifest_crash_safety.py).
+    Appends the entry to *manifest* if given, and always returns it."""
+    group.current_pick = keep_idx
+    kept_path = group.paths[keep_idx]
+    moved = []
+    try:
+        # is_symlink()/resolve() can themselves raise (e.g. EACCES on a
+        # parent directory) -- kept inside the try so a failure here still
+        # goes through the finally below instead of leaving *manifest*
+        # without an entry for this group at all.
+        kept_real = kept_path.resolve() if kept_path.is_symlink() else None
+        for idx, path in enumerate(group.paths):
+            if idx == keep_idx:
+                continue
+            if kept_real is not None and path.resolve() == kept_real:
+                continue
+            dest = _compute_dest(path, dest_dir, dry_run, recursive=recursive, scan_root=scan_root)
+            if not dry_run:
+                shutil.move(str(path), str(dest))
+            moved.append({"from": str(path), "to": str(dest)})
+    finally:
+        entry = {"group": group_index, "kept": str(kept_path), "moved": moved, "dry_run": dry_run}
+        if manifest is not None:
+            manifest.append(entry)
+    return entry
+
+
+def auto_apply_groups(
+    groups: list[Group],
+    dest_dir: Path,
+    dry_run: bool = False,
+    recursive: bool = False,
+    scan_root: Path | None = None,
+) -> dict:
+    """Apply every pending group's suggested (top-scored) pick, no TUI --
+    used by --auto. Doesn't second-guess close calls: the suggested pick is
+    applied exactly as it would default to in the TUI.
+
+    A group whose apply_group() raises partway through is recorded as a
+    failure (its status stays "pending", the same state the TUI leaves it in
+    after a partial move failure) and the run continues with the remaining
+    groups -- one bad group (disk full, permission error) must not kill an
+    unattended run and leave earlier groups' successfully-moved files
+    unreported.
+
+    bytes_reclaimed sums each moved file's size from group.results[idx]
+    ["file_size"] (already populated by analyze_paths) *before* the move --
+    the source path is gone from disk by the time apply_group returns, so
+    re-stat()'ing it afterward would silently always read 0.
+
+    Returns {"confirmed": int, "failed": int, "files_moved": int,
+    "bytes_reclaimed": int, "failures": [{"group", "error", "files_moved",
+    "bytes_moved"}, ...]}."""
+    confirmed = 0
+    failed = 0
+    files_moved = 0
+    bytes_reclaimed = 0
+    failures = []
+    manifest: list[dict] = []
+
+    for i, group in enumerate(groups):
+        if group.status != "pending":
+            continue
+        keep_idx = group.suggested_idx
+        size_by_path = {str(p): r.get("file_size", 0) for p, r in zip(group.paths, group.results)}
+
+        error = None
+        pre_len = len(manifest)
+        try:
+            apply_group(group, i, keep_idx, dest_dir, dry_run, manifest, recursive=recursive, scan_root=scan_root)
+        except Exception as exc:  # noqa: BLE001 -- one group's failure must not abort the rest
+            error = exc
+
+        # apply_group's finally appends an entry in the normal case, but
+        # defend against a future change reintroducing a raise that happens
+        # before that finally is reached (it must not be possible today --
+        # see the comment in apply_group -- but indexing manifest[-1]
+        # unconditionally would otherwise misattribute a previous group's
+        # entry, or IndexError on group 0).
+        moved = manifest[-1]["moved"] if len(manifest) > pre_len else []
+        moved_bytes = sum(size_by_path.get(m["from"], 0) for m in moved)
+        n_moved = len(moved)
+        files_moved += n_moved
+
+        if error is not None:
+            failed += 1
+            failures.append({"group": i, "error": str(error), "files_moved": n_moved, "bytes_moved": moved_bytes})
+            continue
+
+        group.status = "confirmed"
+        confirmed += 1
+        if not dry_run:
+            bytes_reclaimed += moved_bytes
+
+    return {
+        "confirmed": confirmed,
+        "failed": failed,
+        "files_moved": files_moved,
+        "bytes_reclaimed": bytes_reclaimed,
+        "failures": failures,
+    }
+
+
 def load_cache(directory: Path) -> dict:
     path = directory / CACHE_FILENAME
     if not path.exists():
@@ -471,8 +635,10 @@ def analyze_paths(paths: list[Path], cache: dict,
     return results
 
 
-def build_groups(directory: Path, threshold: int) -> list[Group]:
-    paths = find_images(directory)
+def build_groups(
+    directory: Path, threshold: int, recursive: bool = False, dest_dir: Path | None = None
+) -> list[Group]:
+    paths = find_images(directory, recursive=recursive, exclude_dir=dest_dir)
 
     hash_cache = load_hash_cache(directory)
     # A shallow copy suffices to detect changes: store_hash always assigns a
@@ -676,17 +842,34 @@ class DuplicateReviewApp(App):
         for key in binding.key.split(",")
     )
 
-    def __init__(self, groups: list[Group], dest_dir: Path, dry_run: bool):
+    def __init__(
+        self,
+        groups: list[Group],
+        dest_dir: Path,
+        dry_run: bool,
+        recursive: bool = False,
+        scan_root: Path | None = None,
+    ):
         super().__init__()
         self.groups = groups
         self.dest_dir = dest_dir
         self.dry_run = dry_run
+        self.recursive = recursive
+        self.scan_root = scan_root  # only used (for relative-path display/dest) when recursive
         # In-memory only -- tracks moves within this session so a re-pick or
         # un-confirm can find what to reverse (see _apply/_unapply). Not
         # persisted to disk: moved files are never deleted, so restoring one
         # after the app exits is just a manual move back out of dest_dir.
         self.manifest: list[dict] = []
         self.active_index = 0
+
+    def _display_path(self, path: Path) -> str:
+        """Filename alone is ambiguous under --recursive (two subdirectories
+        can each hold an IMG_1234.jpg), so show the path relative to
+        scan_root there instead."""
+        if self.recursive and self.scan_root is not None:
+            return str(path.relative_to(self.scan_root))
+        return path.name
 
     def simulate_key(self, key: str) -> None:
         """Textual's Footer renders key bindings as clickable buttons, whose
@@ -756,7 +939,7 @@ class DuplicateReviewApp(App):
         # Tag (and the pick number) come before the filename, not after, so a
         # narrow terminal's ellipsis truncates the recoverable filename tail
         # rather than the keep/suggested indicator itself.
-        return f"{tag}[{idx + 1}] {rich_escape(group.paths[idx].name)}"
+        return f"{tag}[{idx + 1}] {rich_escape(self._display_path(group.paths[idx]))}"
 
     async def refresh_detail(self, i: int) -> None:
         """Full re-render: switching which group is displayed. Only this path
@@ -815,13 +998,17 @@ class DuplicateReviewApp(App):
         n_removed = len(group.paths) - 1
         if group.status == "pending":
             plural = "s" if n_removed != 1 else ""
-            action = f"keep [{group.current_pick + 1}] {rich_escape(group.paths[group.current_pick].name)}"
+            action = (
+                f"keep [{group.current_pick + 1}] "
+                f"{rich_escape(self._display_path(group.paths[group.current_pick]))}"
+            )
             if n_removed > 0:
                 action += f", move {n_removed} other file{plural}"
             if group.current_pick != group.suggested_idx:
                 line3 = (
                     f"your pick [{group.current_pick + 1}]  ·  "
-                    f"★ suggested [{group.suggested_idx + 1}] {rich_escape(group.paths[group.suggested_idx].name)}"
+                    f"★ suggested [{group.suggested_idx + 1}] "
+                    f"{rich_escape(self._display_path(group.paths[group.suggested_idx]))}"
                 )
             else:
                 line3 = ""
@@ -967,58 +1154,24 @@ class DuplicateReviewApp(App):
     def _apply(self, i: int, keep_idx: int) -> None:
         # Clear any stale entries for this group from previous partial
         # failures (see _unapply — it only processes the first match, so
-        # a sequence of partial failures can orphan entries).  The new
-        # entry appended in the finally block below will reflect the
-        # actual state of this attempt.
+        # a sequence of partial failures can orphan entries). apply_group's
+        # own finally appends the entry reflecting this attempt's actual
+        # state.
         self.manifest[:] = [m for m in self.manifest if m["group"] != i]
         group = self.groups[i]
-        group.current_pick = keep_idx
-        kept_path = group.paths[keep_idx]
-        # If the kept file is a symlink, resolve to the real path so we
-        # avoid moving the real target out from under it (leaving a dangling
-        # link). The symlink itself is kept.
-        kept_real = kept_path.resolve() if kept_path.is_symlink() else None
-        moved = []
-        try:
-            for idx, path in enumerate(group.paths):
-                if idx == keep_idx:
-                    continue
-                # Skip files that are symlinks to the same real path as the
-                # kept file (they share content on disk -- moving the target
-                # would leave the kept path dangling).
-                if kept_real is not None and path.resolve() == kept_real:
-                    continue
-                dest = self._dest_for(path)
-                if not self.dry_run:
-                    shutil.move(str(path), str(dest))
-                moved.append({"from": str(path), "to": str(dest)})
-        finally:
-            # Record whatever was actually moved even if a move raised partway
-            # through (disk full, permission error) -- otherwise files already
-            # moved to disk would have no manifest entry and become unrecoverable
-            # by _unapply within this session.
-            self.manifest.append(
-                {
-                    "group": i,
-                    "kept": str(group.paths[keep_idx]),
-                    "moved": moved,
-                    "dry_run": self.dry_run,
-                }
-            )
+        apply_group(
+            group, i, keep_idx, self.dest_dir, self.dry_run, self.manifest,
+            recursive=self.recursive, scan_root=self.scan_root,
+        )
         # Only mark confirmed after all moves completed; if an exception
-        # propagates from the try block, the group stays "pending" so the
+        # propagates out of apply_group, the group stays "pending" so the
         # user can see it's in an inconsistent state.
         group.status = "confirmed"
 
     def _dest_for(self, path: Path) -> Path:
-        if not self.dry_run:
-            self.dest_dir.mkdir(parents=True, exist_ok=True)
-        dest = self.dest_dir / path.name
-        n = 1
-        while dest.exists():
-            dest = self.dest_dir / f"{path.stem}_dup{n}{path.suffix}"
-            n += 1
-        return dest
+        return _compute_dest(
+            path, self.dest_dir, self.dry_run, recursive=self.recursive, scan_root=self.scan_root
+        )
 
     async def _advance(self) -> None:
         list_view = self.query_one("#group-list", ListView)
@@ -1060,7 +1213,16 @@ def main() -> None:
         default=None,
         help="Folder to move non-kept duplicates into (default: <directory>/_duplicates)",
     )
+    parser.add_argument(
+        "--recursive", "-r", action="store_true", help="Scan subdirectories too, not just the top level."
+    )
     parser.add_argument("--dry-run", action="store_true", help="Don't move any files, just show what would happen.")
+    parser.add_argument(
+        "--auto",
+        "--yes",
+        action="store_true",
+        help="Non-interactive: skip the review UI and keep each group's suggested (top-scored) file automatically.",
+    )
     args = parser.parse_args()
 
     directory = args.directory
@@ -1074,13 +1236,32 @@ def main() -> None:
     dest_dir = (args.dest or (directory / "_duplicates")).resolve()
 
     print(f"Scanning {directory} ...")
-    groups = build_groups(directory, args.threshold)
+    groups = build_groups(directory, args.threshold, recursive=args.recursive, dest_dir=dest_dir)
     if not groups:
         print("No potential duplicate groups found.")
         return
 
+    if args.auto:
+        print(f"Found {len(groups)} potential duplicate group(s). Auto-applying suggested picks...")
+        summary = auto_apply_groups(groups, dest_dir, args.dry_run, recursive=args.recursive, scan_root=directory)
+        reclaimed = "(dry run)" if args.dry_run else humansize(summary["bytes_reclaimed"])
+        print(
+            f"\nDone. {summary['confirmed']} group(s) confirmed, {summary['files_moved']} file(s) "
+            f"{'would be moved' if args.dry_run else 'moved'} to {dest_dir}. Reclaimed: {reclaimed}"
+        )
+        if summary["failed"]:
+            print(f"\n{summary['failed']} group(s) FAILED and were left pending:", file=sys.stderr)
+            for f in summary["failures"]:
+                print(
+                    f"  group {f['group']}: {f['error']} "
+                    f"({f['files_moved']} file(s)/{humansize(f['bytes_moved'])} moved before the failure)",
+                    file=sys.stderr,
+                )
+            sys.exit(1)
+        return
+
     print(f"Found {len(groups)} potential duplicate group(s). Launching review UI...")
-    app = DuplicateReviewApp(groups, dest_dir, args.dry_run)
+    app = DuplicateReviewApp(groups, dest_dir, args.dry_run, recursive=args.recursive, scan_root=directory)
     app.run()
 
     confirmed = sum(1 for g in groups if g.status == "confirmed")
