@@ -94,13 +94,13 @@ def test_heic_round_trips_through_hash_and_analysis() -> None:
 
         # compare_image_quality.load_gray: must decode via its own PIL
         # fallback and return BGR uint8 (matching cv2's channel convention)
-        # plus a matching-shape grayscale float64.
+        # plus a matching-shape grayscale float32.
         img, ciq_gray = ciq.load_gray(str(p))
         assert img is not None and img.ndim == 3 and img.shape[2] == 3, (
             f"expected a BGR (H, W, 3) array from load_gray, got shape {getattr(img, 'shape', None)}"
         )
         assert ciq_gray.shape == img.shape[:2], "grayscale array must match the color array's (H, W)"
-        assert ciq_gray.dtype == np.float64
+        assert ciq_gray.dtype == np.float32
 
         # analyze() end to end: the full metrics pipeline must not raise and
         # must return sane, finite values keyed off the real HEIC dimensions.
