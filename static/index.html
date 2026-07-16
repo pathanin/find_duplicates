@@ -7,7 +7,49 @@
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<div id="app">Loading…</div>
+
+<header id="control-panel">
+  <form id="scan-form">
+    <input id="f-directory" type="text" placeholder="directory to scan" required>
+    <label>threshold <input id="f-threshold" type="number" min="0" max="64" value="10" style="width:4em"></label>
+    <label><input id="f-recursive" type="checkbox"> recursive</label>
+    <input id="f-dest" type="text" placeholder="dest (default: <dir>/_duplicates)">
+    <label><input id="f-dry-run" type="checkbox"> dry-run</label>
+    <button type="submit" id="scan-btn">Scan</button>
+    <span id="scan-status"></span>
+  </form>
+  <div id="progress-bar-wrap" hidden>
+    <div id="progress-bar"><div id="progress-fill"></div></div>
+    <span id="progress-label"></span>
+  </div>
+</header>
+
+<main id="body">
+  <nav id="sidebar">
+    <ul id="group-list"></ul>
+  </nav>
+  <section id="detail">
+    <div id="images-row"></div>
+    <table id="metrics-table"><thead></thead><tbody></tbody></table>
+    <div id="status-line"></div>
+    <div id="actions">
+      <button id="btn-confirm" title="Enter / c">Confirm keep</button>
+      <button id="btn-skip" title="Delete / s">Skip group</button>
+      <button id="btn-open" title="o">Open full-res</button>
+      <button id="btn-help" title="?">Help</button>
+    </div>
+  </section>
+</main>
+
+<div id="help-modal" class="modal" hidden>
+  <div class="modal-box">
+    <button id="help-close" class="modal-close">&times;</button>
+    <div id="help-body"></div>
+  </div>
+</div>
+
+<div id="toast" hidden></div>
+
 <script src="/static/app.js"></script>
 </body>
 </html>

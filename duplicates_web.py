@@ -31,7 +31,7 @@ from threading import Lock
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from PIL import Image as PILImage
 
 from duplicates_core import (
@@ -185,7 +185,10 @@ def _group_detail(session: Session, i: int, g: Group) -> dict:
 
 class ScanRequest(BaseModel):
     directory: str
-    threshold: int = DEFAULT_HASH_THRESHOLD
+    # 0-64 matches the CLI's _threshold_arg validation (max Hamming distance
+    # over a 64-bit hash) -- Pydantic rejects out-of-range values with a 422
+    # before this ever reaches build_groups.
+    threshold: int = Field(default=DEFAULT_HASH_THRESHOLD, ge=0, le=64)
     recursive: bool = False
     dest: str | None = None
     dry_run: bool = False
