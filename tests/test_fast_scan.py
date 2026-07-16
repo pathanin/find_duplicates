@@ -15,6 +15,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import find_duplicates as fd
+import duplicates_core as dc
 
 
 def make_texture(h: int, w: int, seed: int) -> np.ndarray:
@@ -185,12 +186,16 @@ def test_group_duplicates_skips_decode_on_all_cache_hits() -> None:
         def exploding_load(_p):
             raise AssertionError("load_hash_gray must not be called on an all-cache-hit run")
 
-        real_load = fd.load_hash_gray
-        fd.load_hash_gray = exploding_load
+        # Patched on duplicates_core, not fd: group_duplicates/_hash_one live
+        # there now and resolve the bare name `load_hash_gray` in that
+        # module's own globals -- reassigning fd.load_hash_gray only rebinds
+        # find_duplicates's re-exported alias, which _hash_one never looks at.
+        real_load = dc.load_hash_gray
+        dc.load_hash_gray = exploding_load
         try:
             groups = fd.group_duplicates(paths, fd.DEFAULT_HASH_THRESHOLD, cache)
         finally:
-            fd.load_hash_gray = real_load
+            dc.load_hash_gray = real_load
 
         assert len(groups) == 1 and len(groups[0]) == 2, "expected the pair to still be grouped from cached hashes"
         print("  ok  all-cache-hit run never re-decodes for hashing")
@@ -227,7 +232,7 @@ def test_group_duplicates_hashes_small_batch_via_thread_pool() -> None:
             def __init__(self, *a, **k):
                 raise AssertionError("group_duplicates must never construct a ProcessPoolExecutor")
 
-        real_thread_cls = fd.ThreadPoolExecutor
+        real_thread_cls = dc.ThreadPoolExecutor
         constructed = []
 
         class RecordingThreadPool(real_thread_cls):
@@ -235,14 +240,18 @@ def test_group_duplicates_hashes_small_batch_via_thread_pool() -> None:
                 constructed.append(True)
                 super().__init__(*a, **k)
 
-        real_process_pool = fd.ProcessPoolExecutor
-        fd.ProcessPoolExecutor = ExplodingProcessPool
-        fd.ThreadPoolExecutor = RecordingThreadPool
+        # Patched on duplicates_core: group_duplicates is defined there now
+        # and resolves ThreadPoolExecutor/ProcessPoolExecutor in that
+        # module's own globals -- see the load_hash_gray patch above for why
+        # patching fd's re-exported alias wouldn't be seen by the function.
+        real_process_pool = dc.ProcessPoolExecutor
+        dc.ProcessPoolExecutor = ExplodingProcessPool
+        dc.ThreadPoolExecutor = RecordingThreadPool
         try:
             groups = fd.group_duplicates(paths, fd.DEFAULT_HASH_THRESHOLD, {})
         finally:
-            fd.ProcessPoolExecutor = real_process_pool
-            fd.ThreadPoolExecutor = real_thread_cls
+            dc.ProcessPoolExecutor = real_process_pool
+            dc.ThreadPoolExecutor = real_thread_cls
         assert constructed, "expected a real ThreadPoolExecutor to be constructed for the small batch"
         assert isinstance(groups, list)
         print("  ok  a small uncached batch hashes via a real thread pool, no process pool constructed")
@@ -284,15 +293,16 @@ def test_analyze_paths_skips_pool_on_all_cache_hits() -> None:
             def __init__(self, *a, **k):
                 raise AssertionError("no pool should be constructed on an all-cache-hit run")
 
-        real_process_pool = fd.ProcessPoolExecutor
-        real_thread_pool = fd.ThreadPoolExecutor
-        fd.ProcessPoolExecutor = ExplodingPool
-        fd.ThreadPoolExecutor = ExplodingPool
+        # Patched on duplicates_core -- see the group_duplicates test above.
+        real_process_pool = dc.ProcessPoolExecutor
+        real_thread_pool = dc.ThreadPoolExecutor
+        dc.ProcessPoolExecutor = ExplodingPool
+        dc.ThreadPoolExecutor = ExplodingPool
         try:
             analyzed = fd.analyze_paths([p], cache)
         finally:
-            fd.ProcessPoolExecutor = real_process_pool
-            fd.ThreadPoolExecutor = real_thread_pool
+            dc.ProcessPoolExecutor = real_process_pool
+            dc.ThreadPoolExecutor = real_thread_pool
 
         assert analyzed[p]["file_size"] == p.stat().st_size
         assert analyzed[p]["dimensions"] == (300, 300)
@@ -336,7 +346,7 @@ def test_analyze_paths_analyzes_small_batch_via_thread_pool() -> None:
             def __init__(self, *a, **k):
                 raise AssertionError("analyze_paths must never construct a ProcessPoolExecutor")
 
-        real_thread_cls = fd.ThreadPoolExecutor
+        real_thread_cls = dc.ThreadPoolExecutor
         constructed = []
 
         class RecordingThreadPool(real_thread_cls):
@@ -344,14 +354,15 @@ def test_analyze_paths_analyzes_small_batch_via_thread_pool() -> None:
                 constructed.append(True)
                 super().__init__(*a, **k)
 
-        real_process_pool = fd.ProcessPoolExecutor
-        fd.ProcessPoolExecutor = ExplodingProcessPool
-        fd.ThreadPoolExecutor = RecordingThreadPool
+        # Patched on duplicates_core -- see the group_duplicates test above.
+        real_process_pool = dc.ProcessPoolExecutor
+        dc.ProcessPoolExecutor = ExplodingProcessPool
+        dc.ThreadPoolExecutor = RecordingThreadPool
         try:
             analyzed = fd.analyze_paths(paths, {})
         finally:
-            fd.ProcessPoolExecutor = real_process_pool
-            fd.ThreadPoolExecutor = real_thread_cls
+            dc.ProcessPoolExecutor = real_process_pool
+            dc.ThreadPoolExecutor = real_thread_cls
 
         assert constructed, "expected a real ThreadPoolExecutor to be constructed for the small batch"
         for p in paths:
