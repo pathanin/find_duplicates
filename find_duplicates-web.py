@@ -23,6 +23,7 @@ Requires:
 
 import argparse
 import secrets
+import socket
 import sys
 import webbrowser
 from pathlib import Path
@@ -33,6 +34,23 @@ from duplicates_core import DEFAULT_HASH_THRESHOLD
 from duplicates_web import ScanParams, create_app
 
 DEFAULT_PORT = 8737
+
+
+def _lan_ip() -> str | None:
+    """Best-effort discovery of this machine's LAN-facing IP, for the
+    printed URL when bound to 0.0.0.0 -- "localhost" there would be
+    actively wrong for the plan's "review from another machine" use case
+    (it only ever resolves on the host itself). Connecting a UDP socket
+    doesn't send any packets (UDP is connectionless); it just asks the OS
+    to pick the local address it would route through to reach the target,
+    which is a common trick for finding the outbound-facing interface
+    without depending on hostname resolution being configured sanely."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+    except OSError:
+        return None
 
 
 def _threshold_arg(s: str) -> int:
@@ -87,7 +105,15 @@ def main() -> None:
     )
     app = create_app(params, token)
 
-    display_host = "localhost" if args.host in ("0.0.0.0", "::") else args.host
+    # 0.0.0.0/:: bind to "any interface" -- not itself a valid address to
+    # browse to. The plan's killer use case is reviewing from *another*
+    # machine on the LAN, so show that machine's actual reachable address
+    # rather than "localhost" (which would only ever resolve on the host
+    # itself and actively mislead a remote reviewer).
+    if args.host in ("0.0.0.0", "::"):
+        display_host = _lan_ip() or socket.gethostname()
+    else:
+        display_host = args.host
     url = f"http://{display_host}:{args.port}/?token={token}"
     print(f"Scanning {directory} ...")
     print(f"Open: {url}")

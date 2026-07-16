@@ -39,11 +39,14 @@ esac
 # duplicates_core.py + compare_image_quality.py are the shared scan/score/
 # move pipeline both front ends import -- required no matter which
 # component(s) are selected. find_duplicates.py (TUI) and
-# find_duplicates-web.py + static/ (web) are only required for their
-# respective component.
+# duplicates_web.py + find_duplicates-web.py + static/ (web) are only
+# required for their respective component. duplicates_web.py is the
+# importable FastAPI app; find_duplicates-web.py is just a thin CLI shell
+# around it (`from duplicates_web import ...`) -- easy to forget since it's
+# not the file the wrapper execs directly.
 REQUIRED_FILES=(duplicates_core.py compare_image_quality.py)
 [[ "$WANT_TUI" == "1" ]] && REQUIRED_FILES+=(find_duplicates.py)
-[[ "$WANT_WEB" == "1" ]] && REQUIRED_FILES+=(find_duplicates-web.py)
+[[ "$WANT_WEB" == "1" ]] && REQUIRED_FILES+=(duplicates_web.py find_duplicates-web.py)
 for f in "${REQUIRED_FILES[@]}"; do
   if [[ ! -f "$REPO_ROOT/$f" ]]; then
     echo "error: $f not found next to this script (expected at $REPO_ROOT/$f)" >&2
@@ -108,7 +111,7 @@ EOS
 fi
 
 if [[ "$WANT_WEB" == "1" ]]; then
-  cp "$REPO_ROOT/find_duplicates-web.py" "$DATA_DIR/libexec/"
+  cp "$REPO_ROOT/duplicates_web.py" "$REPO_ROOT/find_duplicates-web.py" "$DATA_DIR/libexec/"
   rm -rf "$DATA_DIR/libexec/static"
   cp -r "$REPO_ROOT/static" "$DATA_DIR/libexec/static"
   WEB_WRAPPER="$BIN_DIR/find-duplicates-web"
