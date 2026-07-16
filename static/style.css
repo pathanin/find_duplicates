@@ -146,8 +146,13 @@ input[type="text"], input[type="number"] {
    (syncScroll) and only #images-row shows a visible scrollbar. */
 #images-row {
   display: grid;
-  gap: 0.6em;
-  padding: 0.8em;
+  /* rem, not em: #metrics-table below has its own smaller font-size
+     (0.88em), so an em-based gap/padding here and there would compute to
+     different pixel values even with identical CSS text, silently
+     reintroducing the column-offset bug this rule exists to prevent. rem is
+     relative to the root font-size, which both containers share. */
+  gap: 0.6rem;
+  padding: 0.8rem;
   overflow-x: auto;
   flex-shrink: 0;
 }
@@ -181,8 +186,17 @@ input[type="text"], input[type="number"] {
 
 #metrics-table {
   display: grid;
+  /* Must match #images-row's gap and left/right padding exactly (not just
+     its grid-template-columns) -- otherwise the two grids' column tracks
+     land at different x-offsets despite "looking" aligned at rest, and
+     their scrollWidths diverge so syncScroll's 1:1 scrollLeft mirror drifts
+     apart at the far-right edge of a wide group. margin doesn't produce the
+     same box model as #images-row's padding (margin shrinks this element's
+     own border-box width instead of insetting content within a full-width
+     box), so padding is used here too, not margin. */
+  gap: 0.6rem;
   border-collapse: collapse;
-  margin: 0 0.8em;
+  padding: 0 0.8rem 0.8rem;
   font-size: 0.88em;
   overflow-x: auto;
   /* Scrolled programmatically in sync with #images-row (see syncScroll);
