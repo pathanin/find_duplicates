@@ -81,6 +81,12 @@ class Session:
     status: str = "idle"  # idle | scanning | ready | error
     error: str | None = None
     thumb_cache: dict[tuple[int, int], bytes] = field(default_factory=dict)
+    # Bumped on every successful scan swap. (i, j) indices get reused across
+    # rescans for different images, and the browser's own HTTP cache doesn't
+    # know that -- the frontend appends ?g=<generation> to thumb/full URLs
+    # so a rescan's new photo at group 3 slot 0 doesn't render as the old
+    # one still sitting in the browser's image cache under the same URL.
+    generation: int = 0
     lock: Lock = field(default_factory=Lock)
     # Separate lock for progress: updated frequently from the scan's worker
     # thread and polled frequently by the SSE endpoint -- keeping it apart
@@ -123,6 +129,7 @@ def _launch_scan(session: Session, params: ScanParams, loop: asyncio.AbstractEve
             session.groups = groups
             session.manifest = []
             session.thumb_cache = {}
+            session.generation += 1
             session.status = "ready"
             session.error = None
 
@@ -153,6 +160,19 @@ def _group_summary(i: int, g: Group) -> dict:
         "suggested_idx": g.suggested_idx,
         "is_close_call": g.is_close_call,
     }
+
+
+def _require_not_scanning(session: Session) -> None:
+    """A rescan's on_done swaps session.groups/manifest wholesale on
+    success. A pick/confirm/skip that lands mid-scan (multi-tab, or a
+    control-panel rescan fired while reviewing) would mutate/move files
+    against groups that are about to be replaced -- the move itself would
+    still be real and non-destructive (files land in dest_dir, never
+    deleted), but the manifest entry recording it would be wiped by the
+    swap, breaking the "manifest reflects filesystem state for the
+    session" invariant unapply relies on. Caller must hold session.lock."""
+    if session.status == "scanning":
+        raise HTTPException(409, "a scan is in progress; try again once it finishes")
 
 
 def _group_detail(session: Session, i: int, g: Group) -> dict:
@@ -211,6 +231,7 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
             return JSONResponse({
                 "status": session.status,
                 "error": session.error,
+                "generation": session.generation,
                 "params": {
                     "directory": str(session.params.directory),
                     "threshold": session.params.threshold,
@@ -270,6 +291,7 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
     @app.post("/api/group/{i}/pick")
     async def pick_group(i: int, body: PickRequest, _: str = Depends(require_token)) -> JSONResponse:
         with session.lock:
+            _require_not_scanning(session)
             if not (0 <= i < len(session.groups)):
                 raise HTTPException(404, "no such group")
             g = session.groups[i]
@@ -286,6 +308,7 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
         unapply-then-reapply (a no-op unless a prior attempt partially
         failed) for pending/skipped groups."""
         with session.lock:
+            _require_not_scanning(session)
             if not (0 <= i < len(session.groups)):
                 raise HTTPException(404, "no such group")
             g = session.groups[i]
@@ -317,6 +340,7 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
         """Mirrors DuplicateReviewApp.action_skip: pending/confirmed -> skipped
         (unapplying first if confirmed), skipped -> pending (toggle back)."""
         with session.lock:
+            _require_not_scanning(session)
             if not (0 <= i < len(session.groups)):
                 raise HTTPException(404, "no such group")
             g = session.groups[i]
