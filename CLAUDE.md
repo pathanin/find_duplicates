@@ -13,7 +13,7 @@ python3 find_duplicates.py [directory] [--threshold N] [--dest DIR] [--dry-run]
 python3 compare_image_quality.py imageA.jpg imageB.jpg   # standalone 2-image comparison, no grouping/TUI
 ```
 
-Runtime deps: `opencv-python-headless numpy pillow textual textual-image`. There's no requirements.txt — install via `./contrib/install.sh` (creates an isolated venv with prebuilt wheels).
+Runtime deps: `opencv-python-headless numpy pillow pillow-heif textual textual-image`. There's no requirements.txt — install via `./contrib/install.sh` (creates an isolated venv with prebuilt wheels).
 
 ## Tests
 
@@ -24,6 +24,7 @@ python3 tests/test_claude_md_test_list_sync.py
 python3 tests/test_effective_resolution_downsampling.py
 python3 tests/test_fast_scan.py
 python3 tests/test_footer_click_safety.py
+python3 tests/test_heic_support.py
 python3 tests/test_help_and_labels.py
 python3 tests/test_keyboard_aliases.py
 python3 tests/test_manifest_crash_safety.py
