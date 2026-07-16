@@ -285,13 +285,21 @@ def _print_progress(label: str, done: int, total: int, tty: bool) -> None:
         print(f"{label}: {done}/{total}")
 
 
-def group_duplicates(paths: list[Path], threshold: int, cache: dict) -> list[list[Path]]:
+def group_duplicates(
+    paths: list[Path], threshold: int, cache: dict, progress_callback=None
+) -> list[list[Path]]:
     """Groups `paths` by perceptual-hash Hamming distance, reusing `cache`
     for files whose (mtime, size) haven't changed (see cached_hash/
     store_hash above) so a re-scan of an already-hashed directory doesn't
     re-decode every old file. The uncached subset always hashes through a
     thread pool -- see THREAD_POOL_WORKERS for why threads (not a process
-    pool) win here."""
+    pool) win here.
+
+    *progress_callback*, if given, is called as progress_callback(label,
+    done, total) as each uncached item completes, instead of the default
+    TTY-aware print via _print_progress -- lets a caller (e.g. the web
+    front end) route progress to something other than stdout without
+    touching the CLI/TUI's default behavior."""
     stats = {p: p.stat() for p in paths}
     hashes: dict[Path, int | None] = {}
     to_compute = []
@@ -313,8 +321,11 @@ def group_duplicates(paths: list[Path], threshold: int, cache: dict) -> list[lis
                 for done, (p, h) in enumerate(zip(to_compute, computed), start=1):
                     store_hash(cache, p, stats[p], h)
                     hashes[p] = h
-                    _print_progress("Hashing", done, total, tty)
-            if tty:
+                    if progress_callback is not None:
+                        progress_callback("Hashing", done, total)
+                    else:
+                        _print_progress("Hashing", done, total, tty)
+            if progress_callback is None and tty:
                 print()
         finally:
             cv2.setNumThreads(original_cv2_threads)
@@ -593,14 +604,20 @@ def _analyze_one(path_str: str) -> dict | None:
 
 
 def analyze_paths(paths: list[Path], cache: dict,
-                  precomputed_stats: dict[Path, os.stat_result] | None = None) -> dict[Path, dict]:
+                  precomputed_stats: dict[Path, os.stat_result] | None = None,
+                  progress_callback=None) -> dict[Path, dict]:
     """analyze() every path, reusing `cache` for files whose (mtime, size)
     haven't changed and running the rest through a thread pool (analyze()'s
     cv2/numpy calls release the GIL -- see the comments at
     THREAD_POOL_WORKERS's definition).
 
     If *precomputed_stats* is provided, it must cover every path in *paths*
-    and will be used instead of calling stat() again."""
+    and will be used instead of calling stat() again.
+
+    *progress_callback*, if given, is called as progress_callback(label,
+    done, total) as each uncached item completes, instead of the default
+    TTY-aware print via _print_progress -- see group_duplicates's matching
+    parameter."""
     results: dict[Path, dict] = {}
     if precomputed_stats is not None:
         stats = precomputed_stats
@@ -627,10 +644,13 @@ def analyze_paths(paths: list[Path], cache: dict,
                     if r is not None:
                         store_result(cache, p, stats[p], r)
                         results[p] = r
-                    _print_progress("Analyzing", done, total, tty)
+                    if progress_callback is not None:
+                        progress_callback("Analyzing", done, total)
+                    else:
+                        _print_progress("Analyzing", done, total, tty)
         finally:
             cv2.setNumThreads(original_cv2_threads)
-        if tty:
+        if progress_callback is None and tty:
             print()
 
     for p in results:
@@ -639,8 +659,13 @@ def analyze_paths(paths: list[Path], cache: dict,
 
 
 def build_groups(
-    directory: Path, threshold: int, recursive: bool = False, dest_dir: Path | None = None
+    directory: Path, threshold: int, recursive: bool = False, dest_dir: Path | None = None,
+    progress_callback=None,
 ) -> list[Group]:
+    """*progress_callback*, if given, is passed straight through to
+    group_duplicates/analyze_paths -- see their matching parameter. None
+    (the default) preserves the CLI/TUI's existing TTY-aware stdout
+    printing unchanged."""
     paths = find_images(directory, recursive=recursive, exclude_dir=dest_dir)
 
     hash_cache = load_hash_cache(directory)
@@ -653,7 +678,7 @@ def build_groups(
     # value would never get persisted and the file would be recomputed on
     # every subsequent scan.
     hash_cache_snapshot = dict(hash_cache)
-    raw_groups = group_duplicates(paths, threshold, hash_cache)
+    raw_groups = group_duplicates(paths, threshold, hash_cache, progress_callback=progress_callback)
     if hash_cache != hash_cache_snapshot:
         save_hash_cache(directory, hash_cache)
 
@@ -664,7 +689,9 @@ def build_groups(
     # during the hash phase (the same Path objects are reused).
     grouped_paths = [p for members in raw_groups for p in members]
     grouped_stats = {p: p.stat() for p in grouped_paths}
-    analyzed = analyze_paths(grouped_paths, cache, precomputed_stats=grouped_stats)
+    analyzed = analyze_paths(
+        grouped_paths, cache, precomputed_stats=grouped_stats, progress_callback=progress_callback
+    )
     if cache != cache_snapshot:
         save_cache(directory, cache)
 
