@@ -283,16 +283,16 @@ def group_duplicates(paths: list[Path], threshold: int, cache: dict) -> list[lis
 
     if to_compute:
         total = len(to_compute)
+        tty = sys.stdout.isatty()
         original_cv2_threads = cv2.getNumThreads()
         cv2.setNumThreads(1)
         try:
             with ThreadPoolExecutor(max_workers=THREAD_POOL_WORKERS) as executor:
                 computed = executor.map(_hash_one, to_compute)
-            tty = sys.stdout.isatty()
-            for done, (p, h) in enumerate(zip(to_compute, computed), start=1):
-                store_hash(cache, p, stats[p], h)
-                hashes[p] = h
-                _print_progress("Hashing", done, total, tty)
+                for done, (p, h) in enumerate(zip(to_compute, computed), start=1):
+                    store_hash(cache, p, stats[p], h)
+                    hashes[p] = h
+                    _print_progress("Hashing", done, total, tty)
             if tty:
                 print()
         finally:
@@ -475,20 +475,28 @@ def build_groups(directory: Path, threshold: int) -> list[Group]:
     paths = find_images(directory)
 
     hash_cache = load_hash_cache(directory)
-    hash_cache_pre_count = len(hash_cache)
+    # A shallow copy suffices to detect changes: store_hash always assigns a
+    # brand-new dict literal to cache[key] rather than mutating an existing
+    # entry in place, so a stale key's value in this snapshot keeps pointing
+    # at the old dict even after group_duplicates rewrites cache[key]. A
+    # plain len() comparison misses that case -- rehashing a modified file
+    # replaces its entry without changing the key count, so the refreshed
+    # value would never get persisted and the file would be recomputed on
+    # every subsequent scan.
+    hash_cache_snapshot = dict(hash_cache)
     raw_groups = group_duplicates(paths, threshold, hash_cache)
-    if len(hash_cache) != hash_cache_pre_count:
+    if hash_cache != hash_cache_snapshot:
         save_hash_cache(directory, hash_cache)
 
     cache = load_cache(directory)
-    cache_pre_count = len(cache)
+    cache_snapshot = dict(cache)
     # Compute stats for the grouped files once and pass to analyze_paths,
     # rather than letting it call stat() again on files already stat()'d
     # during the hash phase (the same Path objects are reused).
     grouped_paths = [p for members in raw_groups for p in members]
     grouped_stats = {p: p.stat() for p in grouped_paths}
     analyzed = analyze_paths(grouped_paths, cache, precomputed_stats=grouped_stats)
-    if len(cache) != cache_pre_count:
+    if cache != cache_snapshot:
         save_cache(directory, cache)
 
     groups = []
@@ -862,6 +870,14 @@ class DuplicateReviewApp(App):
             self._unapply(i)
             self._apply(i, group.current_pick)
         elif group.status == "pending" or group.status == "skipped":
+            # A prior _apply() may have failed partway through (disk full,
+            # permission error) and left the group "pending" with a manifest
+            # entry recording whatever it did manage to move (see _apply's
+            # comment on that invariant). _unapply is a no-op when there's
+            # no such entry, so this is safe to call unconditionally -- it
+            # reverses that leftover state before retrying rather than
+            # trying to move files that are already gone from their source.
+            self._unapply(i)
             self._apply(i, group.current_pick)
         await self._relabel(i)
         await self._advance()
@@ -873,6 +889,11 @@ class DuplicateReviewApp(App):
         group = self.groups[i]
 
         if group.status == "pending":
+            # As in action_confirm: a prior failed _apply() may have left a
+            # partial move recorded against this still-"pending" group.
+            # Reverse it before skipping, or the moved files would be
+            # stranded in dest_dir/ while the group reads "skipped".
+            self._unapply(i)
             group.status = "skipped"
             await self._relabel(i)
             await self._advance()
@@ -906,6 +927,13 @@ class DuplicateReviewApp(App):
         manifest. Does NOT change the group status — the caller decides."""
         entry = next((m for m in self.manifest if m["group"] == i), None)
         if not entry:
+            return
+        if entry["dry_run"]:
+            # Dry-run moves never touch the filesystem (see _apply), so
+            # there's nothing to check for on disk -- the manifest entry
+            # itself is the only state a dry-run "move" left behind, and
+            # reversing it is just dropping that entry.
+            self.manifest.remove(entry)
             return
         restored = []
         try:
