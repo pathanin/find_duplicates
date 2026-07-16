@@ -965,6 +965,12 @@ class DuplicateReviewApp(App):
                 self.manifest.remove(entry)
 
     def _apply(self, i: int, keep_idx: int) -> None:
+        # Clear any stale entries for this group from previous partial
+        # failures (see _unapply — it only processes the first match, so
+        # a sequence of partial failures can orphan entries).  The new
+        # entry appended in the finally block below will reflect the
+        # actual state of this attempt.
+        self.manifest[:] = [m for m in self.manifest if m["group"] != i]
         group = self.groups[i]
         group.current_pick = keep_idx
         kept_path = group.paths[keep_idx]
