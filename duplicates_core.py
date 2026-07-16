@@ -800,8 +800,17 @@ def build_groups(
 
         order = sorted(range(len(results)), key=lambda i: -results[i]["quality_score"])
         suggested_idx = order[0]
-        close_call = len(order) > 1 and (
-            results[order[0]]["quality_score"] - results[order[1]]["quality_score"] < CLOSE_CALL_MARGIN
+        # bool(...): quality_score can be a numpy float64 (propagated from
+        # analyze()'s metrics), and `<` against one produces numpy.bool_,
+        # not Python bool -- `and` returns its second operand as-is rather
+        # than coercing it, so close_call would silently end up numpy.bool_
+        # too. That's fine for the TUI's truthy "if g.is_close_call" check,
+        # but numpy.bool_ (unlike numpy.float64) isn't a subclass of its
+        # Python equivalent and isn't JSON-serializable -- the web front
+        # end's /api/state was the first consumer to actually hit this.
+        close_call = bool(
+            len(order) > 1
+            and results[order[0]]["quality_score"] - results[order[1]]["quality_score"] < CLOSE_CALL_MARGIN
         )
         groups.append(
             Group(
