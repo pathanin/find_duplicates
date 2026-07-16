@@ -11,7 +11,7 @@ python3 find_duplicates.py [directory] [--threshold N] [--dest DIR] [--dry-run]
 1. **Perceptual hash** — each image gets a 64-bit DCT hash. Images within a configurable Hamming distance (default 10/64) are grouped as duplicates.
 2. **Quality scoring** — every image in a group is evaluated on sharpness, effective resolution (FFT-based, resistant to fake upscaling), noise, and blockiness. Scores are min-max normalized within each group and weighted into a composite quality score.
 3. **Interactive review** — a Textual TUI shows thumbnails and per-image metrics. Navigate with `←` `→`, pick your keeper with `c`, skip the group with `s`.
-4. **Safe cleanup** — non-kept files are moved to `_duplicates/` (never deleted). Every decision is logged to `decisions.json`. Pass `--dry-run` to preview without moving anything.
+4. **Safe cleanup** — non-kept files are moved to `_duplicates/` (never deleted), so you can always move one back by hand if you change your mind. Pass `--dry-run` to preview without moving anything.
 
 ## Install
 

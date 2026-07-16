@@ -62,9 +62,7 @@ def make_group() -> fd.Group:
 
 def new_app() -> fd.DuplicateReviewApp:
     scratch = Path(tempfile.mkdtemp())
-    return fd.DuplicateReviewApp(
-        [make_group()], scratch / "_dup", dry_run=True, manifest_path=scratch / "decisions.json"
-    )
+    return fd.DuplicateReviewApp([make_group()], scratch / "_dup", dry_run=True)
 
 
 async def test_enter_confirms_regardless_of_focus() -> None:

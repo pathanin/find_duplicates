@@ -55,7 +55,7 @@ def make_group() -> fd.Group:
 def new_app(app_cls: type | None = None) -> fd.DuplicateReviewApp:
     cls = app_cls or fd.DuplicateReviewApp
     scratch = Path(tempfile.mkdtemp())
-    return cls([make_group()], scratch / "_dup", dry_run=True, manifest_path=scratch / "decisions.json")
+    return cls([make_group()], scratch / "_dup", dry_run=True)
 
 
 async def click_footer_action(app: fd.DuplicateReviewApp, action: str, pilot) -> None:

@@ -104,7 +104,7 @@ async def render_and_measure(app: fd.DuplicateReviewApp, n_groups: int) -> list[
 def new_app(groups: list[fd.Group], app_cls: type | None = None) -> fd.DuplicateReviewApp:
     cls = app_cls or fd.DuplicateReviewApp
     scratch = Path(tempfile.mkdtemp())
-    return cls(groups, scratch / "_dup_test", dry_run=True, manifest_path=scratch / "decisions.json")
+    return cls(groups, scratch / "_dup_test", dry_run=True)
 
 
 async def test_aspect_preserved() -> None:
@@ -216,6 +216,68 @@ async def test_detector_catches_label_overflow() -> None:
     print(f"  ok  without the width/nowrap/ellipsis CSS, the images do shift ({before} -> {after})")
 
 
+async def test_only_the_picked_box_gets_a_distinguishing_border() -> None:
+    """Regression: a colored border on the suggested-but-not-picked box (in
+    addition to the picked box's green one) read as a second selection
+    state and confused users about which file was actually kept. Only the
+    picked box may carry the "picked" class; a suggested box that isn't
+    also the pick must fall back to .preview-box's plain default border,
+    identical to a box that's neither picked nor suggested -- the "★
+    suggested" label tag (see _pick_label_text) is the suggestion's only
+    marker now."""
+    app = new_app([make_named_group(REALISTIC_NAMES + ["c.jpg"], suggested_idx=1, current_pick=0)])
+    async with app.run_test(size=(170, 50)) as pilot:
+        await pilot.pause()
+        boxes = app.query_one("#images-row").children
+
+        assert "picked" in boxes[0].classes, "the picked box must carry the 'picked' class"
+        assert "picked" not in boxes[1].classes, (
+            "the suggested-but-not-picked box must not carry 'picked' or any other "
+            f"distinguishing class, got {boxes[1].classes}"
+        )
+        assert boxes[1].classes == boxes[2].classes, (
+            "a suggested-but-not-picked box must render identically (same classes, "
+            f"same border) to a box that's neither picked nor suggested; got "
+            f"{boxes[1].classes} vs {boxes[2].classes}"
+        )
+
+        await pilot.press("right")  # pick moves from 0 to 1, onto the suggested box
+        await pilot.pause()
+        assert "picked" in boxes[1].classes and "picked" not in boxes[0].classes, (
+            "moving the pick onto the suggested box must make it the only one with 'picked'"
+        )
+    print("  ok  only the picked box has a distinguishing border; suggested alone looks like any other box")
+
+
+async def test_detector_would_catch_the_confusing_double_border() -> None:
+    """Proof the check above can fail: replaying the same scenario against a
+    replica that also colors the suggested-but-not-picked box (the
+    shipped/reported bug -- a yellow border on the suggestion read as a
+    second, competing selection indicator) must produce two differently
+    classed, differently bordered boxes instead of one."""
+
+    class DoubleBorderApp(fd.DuplicateReviewApp):
+        def _pick_box_classes(self, group, idx):
+            classes = "preview-box"
+            if idx == group.current_pick:
+                classes += " picked"
+            elif idx == group.suggested_idx:
+                classes += " suggested"  # colors the suggestion too -- the reported confusion
+            return classes
+
+    app = new_app(
+        [make_named_group(REALISTIC_NAMES + ["c.jpg"], suggested_idx=1, current_pick=0)], DoubleBorderApp
+    )
+    async with app.run_test(size=(170, 50)) as pilot:
+        await pilot.pause()
+        boxes = app.query_one("#images-row").children
+        assert boxes[1].classes != boxes[2].classes, (
+            "expected the double-border replica to render the suggested box differently "
+            "from an unrelated box, proving the check above can fail"
+        )
+    print("  ok  without the fix, the suggested box would render distinctly from a plain box (not vacuous)")
+
+
 def test_make_thumbnail_returns_placeholder_for_corrupt_file() -> None:
     """Failure case: a file that passes the extension filter but isn't a
     real/openable image (truncated download, wrong-extension file, etc)
@@ -257,6 +319,8 @@ async def main() -> None:
         test_detector_catches_stretch,
         test_pick_change_does_not_move_the_images,
         test_detector_catches_label_overflow,
+        test_only_the_picked_box_gets_a_distinguishing_border,
+        test_detector_would_catch_the_confusing_double_border,
     ):
         print(f"{test.__name__}:")
         await test()

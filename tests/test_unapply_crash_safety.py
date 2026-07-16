@@ -16,14 +16,13 @@ coverage for the reverse direction, and had two real bugs:
 
 2. Its finally block removed the whole manifest entry unconditionally, even
    if the restore loop only partially succeeded before raising. A partial
-   failure meant losing decisions.json's only record of files still sitting
-   in dest_dir/ -- silently breaking the "never delete, always track in
-   decisions.json" invariant on the one path meant to guard it.
+   failure meant losing the in-memory manifest's only record of files still
+   sitting in dest_dir/ -- silently breaking the "never delete, always track
+   in self.manifest" invariant on the one path meant to guard it.
 
 Run: python3 test_unapply_crash_safety.py
 """
 
-import json
 import sys
 import tempfile
 from pathlib import Path
@@ -68,9 +67,7 @@ def make_real_group(directory: Path, n: int) -> fd.Group:
 
 def new_app(directory: Path) -> fd.DuplicateReviewApp:
     group = make_real_group(directory, n=3)
-    return fd.DuplicateReviewApp(
-        [group], directory / "_duplicates", dry_run=False, manifest_path=directory / "decisions.json"
-    )
+    return fd.DuplicateReviewApp([group], directory / "_duplicates", dry_run=False)
 
 
 class FlakyMove:
@@ -103,8 +100,6 @@ def test_full_restore_removes_the_manifest_entry() -> None:
         app._unapply(0)
         assert app.manifest == [], "a fully-successful restore must remove the manifest entry"
         assert p1.exists() and p2.exists(), "both moved files must be back at their original paths"
-        on_disk = json.loads(app.manifest_path.read_text())
-        assert on_disk == [], "decisions.json must reflect the now-empty manifest"
     print("  ok  a clean restore still removes the manifest entry (no regression)")
 
 
@@ -144,9 +139,6 @@ def test_partial_restore_failure_keeps_the_unrestored_file_tracked() -> None:
             f"only the file still sitting in dest_dir/ should remain tracked, got {entry_after['moved']}"
         )
         assert Path(entry_after["moved"][0]["from"]).name == p2.name
-
-        on_disk = json.loads(app.manifest_path.read_text())
-        assert on_disk == app.manifest, "decisions.json must reflect the partial manifest even after the crash"
     print("  ok  a restore failure partway through a group still tracks the file left in dest_dir/")
 
 
@@ -172,7 +164,6 @@ def test_detector_without_the_fix_would_lose_the_untracked_file() -> None:
             if restored:
                 entry["moved"] = restored
             app.manifest.remove(entry)  # unconditional -- this is the bug
-            app._write_manifest()
 
     with tempfile.TemporaryDirectory() as tmp:
         directory = Path(tmp)

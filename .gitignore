@@ -2,8 +2,6 @@ __pycache__/
 *.pyc
 
 # tool output, not source
-decisions.json
-decisions_*.json
 _duplicates/
 .find_duplicates_cache.json
 .find_duplicates_hash_cache.json

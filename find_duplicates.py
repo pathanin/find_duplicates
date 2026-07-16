@@ -5,8 +5,9 @@ Scans the current directory (top level only) for images that look like the
 same photo saved at different sizes/qualities, groups them with a perceptual
 hash, scores each candidate using compare_image_quality.analyze(), and lets
 you confirm which one to keep in a Textual TUI. Non-kept files are moved to
-./_duplicates/ (nothing is deleted) and every decision is logged to
-decisions.json.
+./_duplicates/, never deleted -- restoring one is a manual move back out of
+that folder (the scan is top-level only, so the original location is always
+the scanned directory).
 
 Usage:
     python find_duplicates.py [directory] [--threshold N] [--dest DIR] [--dry-run]
@@ -26,7 +27,6 @@ import subprocess
 import sys
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 
 import cv2
@@ -621,7 +621,6 @@ class DuplicateReviewApp(App):
     }
 
     .preview-box.picked { border: heavy $success; }
-    .preview-box.suggested { border: heavy $warning; }
     .preview-label { width: 100%; text-wrap: nowrap; text-overflow: ellipsis; }
     .preview-image { width: auto; height: auto; }
     #metrics-table { height: 1fr; }
@@ -669,12 +668,15 @@ class DuplicateReviewApp(App):
         for key in binding.key.split(",")
     )
 
-    def __init__(self, groups: list[Group], dest_dir: Path, dry_run: bool, manifest_path: Path):
+    def __init__(self, groups: list[Group], dest_dir: Path, dry_run: bool):
         super().__init__()
         self.groups = groups
         self.dest_dir = dest_dir
         self.dry_run = dry_run
-        self.manifest_path = manifest_path
+        # In-memory only -- tracks moves within this session so a re-pick or
+        # un-confirm can find what to reverse (see _apply/_unapply). Not
+        # persisted to disk: moved files are never deleted, so restoring one
+        # after the app exits is just a manual move back out of dest_dir.
         self.manifest: list[dict] = []
         self.active_index = 0
 
@@ -725,11 +727,16 @@ class DuplicateReviewApp(App):
             await self.refresh_detail(self.active_index)
 
     def _pick_box_classes(self, group: Group, idx: int) -> str:
+        # Only the picked box gets a distinguishing (green) border. A
+        # colored border on the suggested-but-not-picked box, too, read as a
+        # second selection state and confused users about which file was
+        # actually kept -- so the suggestion is marked by the "★ suggested"
+        # label tag alone (see _pick_label_text) and the box otherwise falls
+        # back to .preview-box's plain default border, same as any other
+        # non-picked box.
         classes = "preview-box"
         if idx == group.current_pick:
             classes += " picked"
-        if idx == group.suggested_idx:
-            classes += " suggested"
         return classes
 
     def _pick_label_text(self, group: Group, idx: int) -> str:
@@ -895,8 +902,8 @@ class DuplicateReviewApp(App):
         self.push_screen(HelpScreen())
 
     def _unapply(self, i: int) -> None:
-        """Reverse file moves for a confirmed group using the manifest.
-        Does NOT change the group status — the caller decides."""
+        """Reverse file moves for a confirmed group using the in-memory
+        manifest. Does NOT change the group status — the caller decides."""
         entry = next((m for m in self.manifest if m["group"] == i), None)
         if not entry:
             return
@@ -917,17 +924,17 @@ class DuplicateReviewApp(App):
         finally:
             # Keep tracking whatever wasn't restored (never just the fact
             # that *something* was restored) even if a move raised partway
-            # through, so decisions.json always reflects real filesystem
-            # state -- the same invariant _apply preserves on the forward
-            # move (see test_manifest_crash_safety.py). Dropping the whole
-            # entry here regardless of partial failure would silently lose
-            # track of files still sitting in dest_dir/.
+            # through, so self.manifest always reflects real filesystem
+            # state for the rest of this session -- the same invariant
+            # _apply preserves on the forward move (see
+            # test_manifest_crash_safety.py). Dropping the whole entry here
+            # regardless of partial failure would silently lose track of
+            # files still sitting in dest_dir/.
             remaining = [m for m in entry["moved"] if m not in restored]
             if remaining:
                 entry["moved"] = remaining
             else:
                 self.manifest.remove(entry)
-            self._write_manifest()
 
     def _apply(self, i: int, keep_idx: int) -> None:
         group = self.groups[i]
@@ -954,7 +961,8 @@ class DuplicateReviewApp(App):
         finally:
             # Record whatever was actually moved even if a move raised partway
             # through (disk full, permission error) -- otherwise files already
-            # moved to disk would have no manifest entry and become unrecoverable.
+            # moved to disk would have no manifest entry and become unrecoverable
+            # by _unapply within this session.
             self.manifest.append(
                 {
                     "group": i,
@@ -963,7 +971,6 @@ class DuplicateReviewApp(App):
                     "dry_run": self.dry_run,
                 }
             )
-            self._write_manifest()
         # Only mark confirmed after all moves completed; if an exception
         # propagates from the try block, the group stays "pending" so the
         # user can see it's in an inconsistent state.
@@ -978,10 +985,6 @@ class DuplicateReviewApp(App):
             dest = self.dest_dir / f"{path.stem}_dup{n}{path.suffix}"
             n += 1
         return dest
-
-    def _write_manifest(self) -> None:
-        with open(self.manifest_path, "w") as f:
-            json.dump(self.manifest, f, indent=2)
 
     async def _advance(self) -> None:
         list_view = self.query_one("#group-list", ListView)
@@ -1035,10 +1038,6 @@ def main() -> None:
         sys.exit(1)
     directory = directory.resolve()
     dest_dir = (args.dest or (directory / "_duplicates")).resolve()
-    manifest_path = directory / "decisions.json"
-    if manifest_path.exists():
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        manifest_path = directory / f"decisions_{timestamp}.json"
 
     print(f"Scanning {directory} ...")
     groups = build_groups(directory, args.threshold)
@@ -1047,7 +1046,7 @@ def main() -> None:
         return
 
     print(f"Found {len(groups)} potential duplicate group(s). Launching review UI...")
-    app = DuplicateReviewApp(groups, dest_dir, args.dry_run, manifest_path)
+    app = DuplicateReviewApp(groups, dest_dir, args.dry_run)
     app.run()
 
     confirmed = sum(1 for g in groups if g.status == "confirmed")
@@ -1057,7 +1056,6 @@ def main() -> None:
         f"\nDone. {confirmed} group(s) confirmed, {skipped} skipped, {moved_total} file(s) "
         f"{'would be moved' if args.dry_run else 'moved'} to {dest_dir}"
     )
-    print(f"Decisions logged to {manifest_path}")
 
 
 if __name__ == "__main__":

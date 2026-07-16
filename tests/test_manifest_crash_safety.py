@@ -4,15 +4,14 @@ it already moved if a later move in the same group raises partway through
 
 Before this fix, the manifest entry for a group was only appended *after*
 the whole move loop completed -- so a mid-loop exception meant any files
-already relocated to _duplicates/ had no decisions.json record at all,
-making them unrecoverable via _unapply. _apply() now appends whatever was
-actually moved from inside a `finally`, so a partial failure still leaves
-an accurate, reversible manifest entry.
+already relocated to _duplicates/ had no manifest record at all, making them
+unrecoverable via _unapply for the rest of the session. _apply() now appends
+whatever was actually moved from inside a `finally`, so a partial failure
+still leaves an accurate, reversible manifest entry.
 
 Run: python3 test_manifest_crash_safety.py
 """
 
-import json
 import sys
 import tempfile
 from pathlib import Path
@@ -61,9 +60,7 @@ def make_real_group(directory: Path, n: int) -> fd.Group:
 
 def new_app(directory: Path) -> fd.DuplicateReviewApp:
     group = make_real_group(directory, n=3)
-    return fd.DuplicateReviewApp(
-        [group], directory / "_duplicates", dry_run=False, manifest_path=directory / "decisions.json"
-    )
+    return fd.DuplicateReviewApp([group], directory / "_duplicates", dry_run=False)
 
 
 class FlakyMove:
@@ -117,9 +114,6 @@ def test_partial_move_failure_is_still_recorded_in_the_manifest() -> None:
         assert moved_from == p1, "the first file in iteration order should be the one that succeeded"
         assert not moved_from.exists() and moved_to.exists(), "the succeeded move must actually be on disk"
         assert p2.exists(), "the file that failed to move must be left untouched at its original location"
-
-        on_disk = json.loads(app.manifest_path.read_text())
-        assert on_disk == app.manifest, "decisions.json must reflect the partial manifest even after the crash"
     print("  ok  a move failure partway through a group still records what was actually moved")
 
 
@@ -144,7 +138,6 @@ def test_detector_without_finally_would_lose_the_partial_move() -> None:
         app.manifest.append(
             {"group": i, "kept": str(group.paths[keep_idx]), "moved": moved, "dry_run": app.dry_run}
         )
-        app._write_manifest()
 
     with tempfile.TemporaryDirectory() as tmp:
         directory = Path(tmp)
