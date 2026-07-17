@@ -86,7 +86,8 @@ input[type="text"], input[type="number"] {
   padding: 0.6em 1em;
   flex-shrink: 0;
 }
-#scan-form {
+#scan-form { display: flex; flex-direction: column; gap: 0.5em; }
+.scan-form-row {
   display: flex;
   align-items: center;
   gap: 0.8em;
@@ -95,6 +96,13 @@ input[type="text"], input[type="number"] {
 #f-directory { flex: 1 1 260px; min-width: 160px; }
 #f-dest { flex: 1 1 220px; min-width: 140px; }
 #scan-status { color: var(--fg-dim); font-size: 0.9em; }
+/* threshold/recursive/dest/dry-run change rarely -- almost every scan
+   reuses the last directory's defaults -- so they're tucked behind this
+   toggle (#options-toggle) instead of permanently crowding the primary
+   directory+Scan row. populateFormFromParams force-opens this panel
+   whenever any of them is non-default, so an active-but-unusual setting
+   (dry-run left on, a custom dest) is never silently hidden. */
+#options-toggle { font-size: 0.9em; }
 
 #progress-bar-wrap {
   display: flex;
@@ -154,14 +162,45 @@ input[type="text"], input[type="number"] {
   padding: 0.5em 0.9em;
   border-bottom: 1px solid var(--border);
   cursor: pointer;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
 }
 .group-item:hover { background: var(--bg-alt); }
 .group-item.active { background: var(--bg-alt); font-weight: 600; border-left: 3px solid var(--accent); }
 .group-item.status-done { color: var(--fg-dim); }
 .group-item.status-done.active { color: var(--fg); }
+.group-item-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Status is a fixed, bounded vocabulary (pending/confirmed/skipped) --
+   coloring it as a small chip reads faster down a long list than the bare
+   glyph alone did. The glyph stays inside the chip so shape, not just
+   color, still carries the signal. */
+.status-chip {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.4em;
+  height: 1.4em;
+  border-radius: 50%;
+  font-size: 0.8em;
+  line-height: 1;
+  border: 1.5px solid var(--border);
+  color: var(--fg-dim);
+}
+.status-chip.status-confirmed { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+.status-chip.status-skipped { background: var(--bg-alt); }
+/* Amber, not a filled badge: close calls are the common case in a typical
+   scan (most groups have two near-identical top candidates), not a rare
+   exception, so a loud badge here would blow past the point where "flagged"
+   still reads as meaningful. A colored glyph is enough weight. */
+.close-call-flag { flex-shrink: 0; color: var(--warn); }
 
 #detail {
   flex: 1;
@@ -169,6 +208,16 @@ input[type="text"], input[type="number"] {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+/* Brief dim while a group switch's fetch is in flight (see loadGroup) --
+   the previous group's images/table stay on screen rather than flashing to
+   empty, but dimmed enough to read as "not settled yet". The transition
+   lives on the base rule below (#images-row/#metrics-table), not here --
+   a transition declared only on the .is-loading selector only animates the
+   change that happens *while* .is-loading still matches (the undim, when
+   the class is removed), leaving the dim-in an instant snap. */
+#detail.is-loading #images-row, #detail.is-loading #metrics-table {
+  opacity: 0.5;
 }
 
 /* #images-row and #metrics-table are two independently-scrollable elements
@@ -192,8 +241,15 @@ input[type="text"], input[type="number"] {
   padding: 0.8rem;
   overflow-x: auto;
   flex-shrink: 0;
+  transition: opacity 0.15s ease-out;
 }
 .images-spacer { flex-shrink: 0; }
+.empty-state {
+  grid-column: 1 / -1;
+  text-align: center;
+  color: var(--fg-dim);
+  padding: 3em 1em;
+}
 .preview-box {
   min-width: 0;
   border: 2px solid var(--border);
@@ -205,6 +261,12 @@ input[type="text"], input[type="number"] {
   align-items: center;
 }
 .preview-box.picked { border-color: var(--accent); }
+/* Dashed, not solid: distinguishes "the algorithm's suggestion" from
+   .picked's solid border ("what you're actually keeping") when the two
+   differ -- e.g. after re-picking away from the suggested file on a close
+   call. Same accent color on purpose (still "the good one"), different
+   border style so the two meanings don't collide when a box is neither. */
+.preview-box.suggested { border-style: dashed; border-color: var(--accent); }
 .preview-label {
   font-size: 0.82em;
   white-space: nowrap;
@@ -230,12 +292,14 @@ input[type="text"], input[type="number"] {
      apart at the far-right edge of a wide group. margin doesn't produce the
      same box model as #images-row's padding (margin shrinks this element's
      own border-box width instead of insetting content within a full-width
-     box), so padding is used here too, not margin. */
+     box), so padding is used here too, not margin. border-collapse is not
+     included here -- it's a <table>-display-only property and does nothing
+     once display is overridden to grid below. */
   gap: 0.6rem;
-  border-collapse: collapse;
   padding: 0 0.8rem 0.8rem;
   font-size: 0.88em;
   overflow-x: auto;
+  transition: opacity 0.15s ease-out;
   /* Scrolled programmatically in sync with #images-row (see syncScroll);
      its own scrollbar is redundant with the visible one above the images
      and would just be a second, confusing scroll affordance. */
@@ -243,21 +307,119 @@ input[type="text"], input[type="number"] {
 }
 #metrics-table::-webkit-scrollbar { display: none; }
 #metrics-table thead, #metrics-table tbody, #metrics-table tr { display: contents; }
+/* A full grid of boxed cells (border on every side of every th/td) reads as
+   a dense spreadsheet even for 3-4 columns -- row separators plus the
+   column `gap` above are enough to keep cells legible without outlining
+   each one individually. */
 #metrics-table th, #metrics-table td {
-  border: 1px solid var(--border);
-  padding: 0.3em 0.7em;
-  text-align: left;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  padding: 0.4em 0.7em;
+  text-align: right;
   white-space: nowrap;
 }
 #metrics-table thead th:first-child, #metrics-table tbody th {
+  text-align: left;
   white-space: normal; /* the label column has a fixed width; wrap rather than clip a long metric name */
 }
-#metrics-table thead th { background: var(--bg-alt); }
+#metrics-table thead th { background: var(--bg-alt); border-bottom: 2px solid var(--border); font-weight: 600; }
 #metrics-table tbody th { font-weight: 500; color: var(--fg-dim); }
 /* Fixed-width digits so values in the same row (e.g. 0.167 vs 0.833) align
    by column instead of drifting with each digit's proportional width --
    this table exists specifically to be compared number-by-number. */
 #metrics-table td { font-variant-numeric: tabular-nums; }
+
+/* Zebra striping + hover, applied via a JS-assigned class (app.js's
+   renderDetail) rather than :nth-child -- thead/tbody/tr are all
+   `display: contents` (grid needs the th/td as direct grid items, see
+   above), so a <tr> never paints a box of its own to stripe; the actual
+   grid cells are what need the background. */
+#metrics-table tr.metric-row-alt > td, #metrics-table tr.metric-row-alt > th {
+  background: var(--bg-alt);
+}
+#metrics-table tbody tr:hover > td, #metrics-table tbody tr:hover > th {
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-alt));
+}
+
+/* Dimensions/File size are shown for reference only and never factor into
+   quality_score (see the '?' help text) -- dimming them signals that
+   up front instead of leaving it discoverable only via the help modal. */
+#metrics-table tr.metric-row-reference th, #metrics-table tr.metric-row-reference td {
+  color: var(--fg-dim);
+  font-style: italic;
+}
+#metrics-table tr.metric-row-first-scored th, #metrics-table tr.metric-row-first-scored td {
+  border-top: 1px solid var(--border);
+}
+
+/* quality_score is already min-max normalized 0-1 within the group (see
+   score_group's docstring) -- a direct fit for a data bar instead of a bare
+   decimal, and it's the one row this whole screen's decision actually
+   rests on, so the row also gets its own border/weight treatment below. */
+#metrics-table tr.metric-row-score th, #metrics-table tr.metric-row-score td {
+  border-top: 2px solid var(--accent);
+  font-weight: 700;
+}
+#metrics-table td.metric-score-cell { position: relative; }
+.score-bar-track {
+  position: absolute;
+  inset: 0.25em 0.5em;
+  border-radius: 3px;
+  overflow: hidden;
+  pointer-events: none;
+}
+.score-bar-fill {
+  position: absolute;
+  inset: 0;
+  right: auto;
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.score-value { position: relative; }
+
+/* Sticky label column: a wide group (several files) scrolls #metrics-table
+   horizontally (see syncScroll below), and without this the row's own name
+   -- the only thing that makes a number on the far right meaningful --
+   scrolls out of view first. Only this column is pinned; #images-row's
+   matching spacer stays static since it has no label content worth
+   pinning (see gridColumns/renderDetail for why the two grids otherwise
+   share identical column tracks despite this one difference). */
+#metrics-table thead th:first-child, #metrics-table tbody th {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--bg);
+  border-right: 1px solid var(--border);
+}
+#metrics-table thead th:first-child { background: var(--bg-alt); }
+
+/* Mirrors the picked file's accent border in #images-row (.preview-box.picked)
+   down the matching table column, so the table reads as linked to the KEEP
+   marker above it instead of a detached block of numbers. !important is
+   deliberate and narrow (two declarations, both here): `.metric-row-alt >
+   td` (specificity 1,1,2) and `tbody tr:hover > td` (1,1,3) both beat a
+   plain `td.metric-col-pick`/`td.metric-best` (1,1,1) on the *type* count
+   alone, no matter which rule is declared last -- source order only breaks
+   ties between EQUAL specificities, it doesn't override a higher one. An
+   earlier version of this file claimed "declared last so it wins", which is
+   wrong; without !important the pick-column tint silently disappears on
+   every odd (zebra-striped) row. */
+#metrics-table td.metric-col-pick, #metrics-table th.metric-col-pick {
+  background: color-mix(in srgb, var(--accent) 8%, transparent) !important;
+}
+
+/* The winning value in each scored row, computed client-side from that
+   row's own "(higher/lower better)" direction (bestIndices in app.js).
+   Reuses --accent since that color already means "the good one" everywhere
+   else on this screen (picked preview box border, confirmed sidebar rows)
+   -- an extension of an existing signal, not a new one. !important for the
+   same specificity reason as .metric-col-pick above: this is the one signal
+   that must survive both zebra striping and row hover, since hover is
+   exactly when a user is comparing values closest. */
+#metrics-table td.metric-best {
+  font-weight: 700;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent) !important;
+}
 
 #status-line {
   margin: 0.8em;

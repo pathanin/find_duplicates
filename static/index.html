@@ -10,13 +10,18 @@
 
 <header id="control-panel">
   <form id="scan-form">
-    <input id="f-directory" type="text" placeholder="directory to scan" required>
-    <label>threshold <input id="f-threshold" type="number" min="0" max="64" value="10" style="width:4em"></label>
-    <label><input id="f-recursive" type="checkbox"> recursive</label>
-    <input id="f-dest" type="text" placeholder="dest (default: <dir>/_duplicates)">
-    <label><input id="f-dry-run" type="checkbox"> dry-run</label>
-    <button type="submit" id="scan-btn">Scan</button>
-    <span id="scan-status"></span>
+    <div class="scan-form-row">
+      <input id="f-directory" type="text" placeholder="directory to scan" required>
+      <button type="submit" id="scan-btn" class="btn-primary">Scan</button>
+      <button type="button" id="options-toggle" class="btn-ghost" aria-expanded="false" aria-controls="scan-options" title="Threshold, recursive scan, destination folder, dry-run">Options ▾</button>
+      <span id="scan-status"></span>
+    </div>
+    <div id="scan-options" class="scan-form-row" hidden>
+      <label>threshold <input id="f-threshold" type="number" min="0" max="64" value="10" style="width:4em"></label>
+      <label><input id="f-recursive" type="checkbox"> recursive</label>
+      <input id="f-dest" type="text" placeholder="dest (default: <dir>/_duplicates)">
+      <label><input id="f-dry-run" type="checkbox"> dry-run</label>
+    </div>
   </form>
   <div id="progress-bar-wrap" hidden>
     <div id="progress-bar"><div id="progress-fill"></div></div>
@@ -26,7 +31,7 @@
 
 <div id="error-banner" class="banner banner-error" hidden></div>
 <div id="dry-run-banner" class="banner banner-warn" hidden>
-  Dry run — no files will actually be moved. Confirm/skip still update review status.
+  ⚠ Dry run — no files will actually be moved. Confirm/skip still update review status.
 </div>
 <div id="review-progress" class="banner banner-info" hidden></div>
 

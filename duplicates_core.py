@@ -20,6 +20,7 @@ import sys
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable, NamedTuple
 
 import cv2
 import numpy as np
@@ -99,24 +100,60 @@ METRIC_DESCRIPTIONS = {
     "niqe": "no-reference perceptual quality score (needs optional `pyiqa` package)",
 }
 
+class MetricRow(NamedTuple):
+    """One row of the metrics table, shared by the TUI's DataTable and the
+    web UI's /api/group/{i} response so neither has to re-derive a row's
+    meaning by parsing `label` -- label text is for human display only (and
+    free to be reworded), never a machine-readable contract. That used to be
+    exactly what the web frontend did (matching a "(higher better)"/"(lower
+    better)" suffix and a "Quality score" prefix out of the label string),
+    which a purely cosmetic label rewording could silently break with no
+    error and no test catching it.
+
+    key: the METRIC_WEIGHTS key this row's raw value comes from, or None for
+        rows that don't derive from a single weighted metric (Dimensions/File
+        size, and quality_score itself -- kind="score" already says
+        everything about that row).
+    kind: "reference" (Dimensions/File size -- shown but never scored),
+        "metric" (an individual weighted input -- comparable/highlightable
+        against the other files in the group), or "score" (the single
+        combined quality_score row).
+    """
+    label: str
+    fn: Callable[[dict], str]
+    key: str | None
+    kind: str
+
+    @property
+    def direction(self) -> int:
+        """+1 if a higher raw value is better, -1 if lower is better, 0 if
+        this row isn't scored at all (kind == "reference"). Derived from
+        METRIC_WEIGHTS' sign rather than hand-duplicated, so an edit to a
+        weight's sign can't silently disagree with what this row claims."""
+        if self.kind == "score":
+            return 1  # a normalized composite of already-direction-corrected metrics: always higher-is-better
+        if self.key is None:
+            return 0
+        return 1 if METRIC_WEIGHTS[self.key] > 0 else -1
+
+
 # Every scored row is labeled with what a bigger/smaller number means, since
 # a raw number is meaningless without knowing which direction is "better".
 # Dimensions/file size carry no such label since they aren't part of the
 # score at all -- that's explained once, in the '?' help screen, rather than
-# on every row. UI-agnostic (plain strings + a dict-in/str-out lambda per
-# row), so both the TUI's DataTable and the web UI's metrics JSON reuse it
-# rather than keeping two label lists in sync by hand.
+# on every row. UI-agnostic, so both the TUI's DataTable and the web UI's
+# metrics JSON reuse it rather than keeping two label lists in sync by hand.
 METRIC_ROWS = [
-    ("Dimensions", lambda r: f"{r['dimensions'][0]}x{r['dimensions'][1]}"),
-    ("File size", lambda r: humansize(r["file_size"])),
-    ("Sharpness (higher better)", lambda r: f"{r['sharpness_normalized']:.1f}"),
-    ("Eff. res. fraction (higher better)", lambda r: f"{r['effective_resolution_fraction']:.3f}"),
-    ("Eff. res. px equiv (higher better)", lambda r: f"{r['effective_resolution_px_equiv']:.0f}"),
-    ("Noise sigma (lower better)", lambda r: f"{r['noise_sigma']:.3f}"),
-    ("Blockiness (lower better)", lambda r: f"{r['blockiness']:.3f}"),
-    ("BRISQUE (lower better)", lambda r: f"{r['brisque']:.2f}" if r.get("brisque") is not None else "n/a"),
-    ("NIQE (lower better)", lambda r: f"{r['niqe']:.2f}" if r.get("niqe") is not None else "n/a"),
-    ("Quality score (higher better)", lambda r: f"{r['quality_score']:.3f}"),
+    MetricRow("Dimensions", lambda r: f"{r['dimensions'][0]}x{r['dimensions'][1]}", None, "reference"),
+    MetricRow("File size", lambda r: humansize(r["file_size"]), None, "reference"),
+    MetricRow("Sharpness (higher better)", lambda r: f"{r['sharpness_normalized']:.1f}", "sharpness_normalized", "metric"),
+    MetricRow("Eff. res. fraction (higher better)", lambda r: f"{r['effective_resolution_fraction']:.3f}", "effective_resolution_fraction", "metric"),
+    MetricRow("Eff. res. px equiv (higher better)", lambda r: f"{r['effective_resolution_px_equiv']:.0f}", "effective_resolution_px_equiv", "metric"),
+    MetricRow("Noise sigma (lower better)", lambda r: f"{r['noise_sigma']:.3f}", "noise_sigma", "metric"),
+    MetricRow("Blockiness (lower better)", lambda r: f"{r['blockiness']:.3f}", "blockiness", "metric"),
+    MetricRow("BRISQUE (lower better)", lambda r: f"{r['brisque']:.2f}" if r.get("brisque") is not None else "n/a", "brisque", "metric"),
+    MetricRow("NIQE (lower better)", lambda r: f"{r['niqe']:.2f}" if r.get("niqe") is not None else "n/a", "niqe", "metric"),
+    MetricRow("Quality score (higher better)", lambda r: f"{r['quality_score']:.3f}", None, "score"),
 ]
 
 

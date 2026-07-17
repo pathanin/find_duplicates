@@ -64,19 +64,70 @@ async function refreshState() {
   return data;
 }
 
+// Monotonic per-call token: if group B is clicked before group A's fetch
+// resolves, A's response must not clobber B's once B has already landed (or
+// flicker the loading dim off while B is still in flight). Mirrors the
+// generation-counter pattern duplicates_web.py's Session already uses for
+// the same class of staleness problem (see the ?g= cache-buster on thumb/
+// full-res URLs).
+let loadGroupToken = 0;
+
 async function loadGroup(i) {
   if (i < 0 || i >= state.groups.length) return;
-  const data = await api(`/api/group/${i}`);
-  state.activeIndex = i;
-  state.detail = data;
-  renderSidebar();
-  renderDetail();
+  const token = ++loadGroupToken;
+  const detailEl = document.getElementById("detail");
+  detailEl.classList.add("is-loading");
+  try {
+    const data = await api(`/api/group/${i}`);
+    if (token !== loadGroupToken) return; // superseded by a newer loadGroup call
+    state.activeIndex = i;
+    state.detail = data;
+    renderSidebar();
+    renderDetail();
+  } catch (e) {
+    if (token === loadGroupToken) showToast(`Failed to load group: ${e.message}`, true);
+  } finally {
+    if (token === loadGroupToken) detailEl.classList.remove("is-loading");
+  }
 }
+
+// Winning index/indices for one row. Values are the exact strings the
+// server already formatted (METRIC_ROWS' lambdas) -- always a plain decimal
+// or "n/a" in this table, so parseFloat is enough and "n/a" naturally drops
+// out as NaN rather than needing special-casing. Requires at least 2 real
+// values: BRISQUE/NIQE can be "n/a" for some files and a real number for
+// others (per-image analysis failure, not just the package being missing --
+// see compare_image_quality.py), and a single lone value has nothing to have
+// "won" against.
+function bestIndices(direction, values) {
+  if (!direction) return [];
+  const nums = values.map((v) => parseFloat(v));
+  const finite = nums.filter((n) => !Number.isNaN(n));
+  if (finite.length < 2) return [];
+  const best = direction > 0 ? Math.max(...finite) : Math.min(...finite);
+  return nums.flatMap((n, i) => (n === best ? [i] : []));
+}
+
+// Shared by the image-row labels and the metrics-table header -- both need
+// to say "this is the file you're keeping" / "this is the algorithm's top
+// pick" for column j, so one function decides it instead of two copies that
+// can drift apart.
+function columnMarker(j, d) {
+  const picked = j === d.current_pick;
+  const suggested = j === d.suggested_idx;
+  let title = "";
+  if (picked && suggested) title = "Currently kept (also the suggested keeper -- top scored)";
+  else if (picked) title = "Currently kept";
+  else if (suggested) title = "Suggested keeper (top scored)";
+  return { picked, suggested, title };
+}
+
+const STATUS_MARKERS = { pending: "◻", confirmed: "✔", skipped: "—" };
+const STATUS_LABELS = { pending: "Pending", confirmed: "Confirmed", skipped: "Skipped" };
 
 function renderSidebar() {
   const ul = document.getElementById("group-list");
   ul.innerHTML = "";
-  const MARKERS = { pending: "◻", confirmed: "✔", skipped: "—" };
   state.groups.forEach((g, i) => {
     const li = document.createElement("li");
     // Status glyph alone doesn't let a long queue be scanned at a glance --
@@ -87,11 +138,40 @@ function renderSidebar() {
     li.className = "group-item"
       + (i === state.activeIndex ? " active" : "")
       + (g.status !== "pending" ? " status-done" : "");
-    const close = g.is_close_call ? " ⚠" : "";
+
+    // Status is a bounded, fixed-vocabulary field (pending/confirmed/skipped)
+    // -- a colored chip reads at a glance across a long list the way a bare
+    // glyph character doesn't; the glyph is kept inside it so shape (not
+    // just color) still carries the signal for colorblind-safety.
+    const chip = document.createElement("span");
+    chip.className = `status-chip status-${g.status}`;
+    chip.textContent = STATUS_MARKERS[g.status];
+    chip.title = STATUS_LABELS[g.status];
+
+    const label = document.createElement("span");
+    label.className = "group-item-text";
     const pick = g.status === "confirmed" ? ` → [${g.current_pick + 1}]` : "";
-    const text = `${MARKERS[g.status]} Group ${i + 1} (${g.file_count} files)${close}${pick}`;
-    li.textContent = text;
-    li.title = g.is_close_call ? `${text} -- close call: the top two picks scored nearly the same` : text;
+    label.textContent = `Group ${i + 1} (${g.file_count} files)${pick}`;
+
+    li.appendChild(chip);
+    li.appendChild(label);
+
+    // Kept a low-key colored glyph rather than a filled badge deliberately:
+    // close calls are common (most groups in a typical scan), not rare, so
+    // giving this the same visual weight as a true "needs attention" badge
+    // would blow past the ~10% red-chip guideline and stop reading as
+    // urgent at all.
+    if (g.is_close_call) {
+      const warn = document.createElement("span");
+      warn.className = "close-call-flag";
+      warn.textContent = "⚠";
+      warn.title = "Close call -- the top two picks scored nearly the same";
+      li.appendChild(warn);
+    }
+
+    li.title = g.is_close_call
+      ? `${label.textContent} -- close call: the top two picks scored nearly the same`
+      : label.textContent;
     li.addEventListener("click", () => loadGroup(i));
     ul.appendChild(li);
   });
@@ -123,7 +203,7 @@ function updateDocumentTitle() {
 function renderBanners() {
   const errorBanner = document.getElementById("error-banner");
   if (state.status === "error" && state.error) {
-    errorBanner.textContent = `Scan failed: ${state.error}`;
+    errorBanner.textContent = `⚠ Scan failed: ${state.error}`;
     errorBanner.hidden = false;
   } else {
     errorBanner.hidden = true;
@@ -165,11 +245,21 @@ function renderDetail() {
   updateActionButtons();
   if (!d) {
     table.style.gridTemplateColumns = "";
-    document.getElementById("status-line").textContent = state.groups.length
-      ? "Select a group from the sidebar."
-      : (state.status === "ready" ? "No potential duplicate groups found." : "");
     document.querySelector("#metrics-table thead").innerHTML = "";
     document.querySelector("#metrics-table tbody").innerHTML = "";
+    document.getElementById("status-line").textContent = "";
+    // A blank images-row reads as "broken", not "nothing to show yet" --
+    // spell out which of the two it is. Left blank while state.status is
+    // "scanning" since the header's progress bar already owns that message.
+    const message = state.groups.length
+      ? "Select a group from the sidebar to review it."
+      : (state.status === "ready" ? "No potential duplicate groups found in this directory." : "");
+    if (message) {
+      const empty = document.createElement("div");
+      empty.className = "empty-state";
+      empty.textContent = message;
+      row.appendChild(empty);
+    }
     return;
   }
 
@@ -186,14 +276,15 @@ function renderDetail() {
   row.appendChild(spacer);
 
   d.paths.forEach((path, j) => {
+    const marker = columnMarker(j, d);
     const box = document.createElement("div");
-    box.className = "preview-box" + (j === d.current_pick ? " picked" : "");
+    box.className = "preview-box"
+      + (marker.picked ? " picked" : "")
+      + (marker.suggested && !marker.picked ? " suggested" : "");
     box.title = path;
     const label = document.createElement("div");
     label.className = "preview-label";
-    let tag = "";
-    if (j === d.current_pick) tag = "✔ KEEP  ";
-    else if (j === d.suggested_idx) tag = "★ suggested  ";
+    const tag = marker.picked ? "✔ KEEP  " : (marker.suggested ? "★ suggested  " : "");
     label.textContent = `${tag}[${j + 1}] ${path}`;
     const img = document.createElement("img");
     img.src = `/api/thumb/${d.index}/${j}?g=${state.generation}`;
@@ -216,18 +307,57 @@ function renderDetail() {
   headRow.appendChild(cornerTh);
   d.paths.forEach((_, j) => {
     const th = document.createElement("th");
-    th.textContent = `[${j + 1}]` + (j === d.suggested_idx ? " ★" : "");
+    const marker = columnMarker(j, d);
+    th.textContent = (marker.picked ? "✔ " : "") + `[${j + 1}]` + (marker.suggested ? " ★" : "");
+    if (marker.picked) th.classList.add("metric-col-pick");
+    if (marker.title) th.title = marker.title;
     headRow.appendChild(th);
   });
   thead.appendChild(headRow);
-  d.metrics.forEach(({ label, values }) => {
+
+  let prevWasReference = null;
+  d.metrics.forEach(({ label, values, direction, kind }, rowIdx) => {
+    const isScoreRow = kind === "score";
+    const winners = isScoreRow ? [] : bestIndices(direction, values);
+    const isReference = kind === "reference";
+
     const tr = document.createElement("tr");
+    if (rowIdx % 2 === 1) tr.classList.add("metric-row-alt");
+    if (isReference) tr.classList.add("metric-row-reference");
+    else if (prevWasReference) tr.classList.add("metric-row-first-scored");
+    if (isScoreRow) tr.classList.add("metric-row-score");
+    prevWasReference = isReference;
+
     const th = document.createElement("th");
     th.textContent = label;
     tr.appendChild(th);
-    values.forEach((v) => {
+
+    values.forEach((v, j) => {
       const td = document.createElement("td");
-      td.textContent = v;
+      if (j === d.current_pick) td.classList.add("metric-col-pick");
+      if (isScoreRow) {
+        const frac = Math.max(0, Math.min(1, parseFloat(v) || 0));
+        td.classList.add("metric-score-cell");
+        const track = document.createElement("div");
+        track.className = "score-bar-track";
+        const fill = document.createElement("div");
+        fill.className = "score-bar-fill";
+        fill.style.width = `${frac * 100}%`;
+        track.appendChild(fill);
+        const value = document.createElement("span");
+        value.className = "score-value";
+        value.textContent = v;
+        td.appendChild(track);
+        td.appendChild(value);
+      } else {
+        td.textContent = v;
+        if (winners.includes(j)) {
+          td.classList.add("metric-best");
+          td.title = "Best value in this row";
+        } else if (v === "n/a") {
+          td.title = "Optional dependency not installed -- see Help for details";
+        }
+      }
       tr.appendChild(td);
     });
     tbody.appendChild(tr);
@@ -375,6 +505,29 @@ function populateFormFromParams() {
   document.getElementById("f-recursive").checked = state.params.recursive;
   document.getElementById("f-dest").value = state.params.dest || "";
   document.getElementById("f-dry-run").checked = state.params.dry_run;
+  // Only threshold/recursive/dest/dry-run are tucked behind "Options" --
+  // directory + Scan are the frequent, high-importance action and stay
+  // always visible (see the scan-form-row split in index.html). But an
+  // already-non-default setting (e.g. dry-run left on from a previous scan)
+  // must never be silently hidden -- that's a trap, not decluttering -- so
+  // the panel opens itself whenever reality disagrees with the defaults.
+  setOptionsExpanded(!scanOptionsAreDefault());
+}
+
+function scanOptionsAreDefault() {
+  const threshold = document.getElementById("f-threshold");
+  return threshold.value === threshold.defaultValue
+    && !document.getElementById("f-recursive").checked
+    && !document.getElementById("f-dest").value
+    && !document.getElementById("f-dry-run").checked;
+}
+
+function setOptionsExpanded(expanded) {
+  const panel = document.getElementById("scan-options");
+  const toggle = document.getElementById("options-toggle");
+  panel.hidden = !expanded;
+  toggle.setAttribute("aria-expanded", String(expanded));
+  toggle.textContent = expanded ? "Options ▴" : "Options ▾";
 }
 
 function connectProgress() {
@@ -537,6 +690,9 @@ function attachButtonHandlers() {
   document.getElementById("help-close").addEventListener("click", closeHelp);
   document.getElementById("help-modal").addEventListener("click", (e) => {
     if (e.target.id === "help-modal") closeHelp();
+  });
+  document.getElementById("options-toggle").addEventListener("click", () => {
+    setOptionsExpanded(document.getElementById("scan-options").hidden);
   });
 }
 

@@ -89,7 +89,7 @@ from duplicates_core import (
 # cell_padding=1 per side) and to size a matching blank spacer at the start
 # of the image-preview row, so the two independently-laid-out widgets'
 # column boundaries line up -- see refresh_detail/_sync_metric_column_widths.
-METRIC_LABEL_COL_WIDTH = max(len("Metric"), max(len(label) for label, _ in METRIC_ROWS))
+METRIC_LABEL_COL_WIDTH = max(len("Metric"), max(len(row.label) for row in METRIC_ROWS))
 
 
 @functools.cache
@@ -372,8 +372,8 @@ class DuplicateReviewApp(App):
             header = f"[{idx + 1}]" + (" ★" if idx == group.suggested_idx else "")
             width = image_col_widths[idx] if image_col_widths is not None else None
             table.add_column(header, width=width)
-        for label, fn in METRIC_ROWS:
-            table.add_row(label, *[fn(r) for r in group.results])
+        for row in METRIC_ROWS:
+            table.add_row(row.label, *[row.fn(r) for r in group.results])
 
     def _sync_metric_column_widths(self, i: int) -> None:
         """Runs once the preview boxes mounted in refresh_detail have

@@ -58,14 +58,52 @@ REFERENCE_ONLY_ROWS = {"Dimensions", "File size"}  # not part of the score; expl
 
 
 def test_every_scored_metric_row_states_its_direction() -> None:
-    for label, _ in fd.METRIC_ROWS:
-        if label in REFERENCE_ONLY_ROWS:
+    for row in fd.METRIC_ROWS:
+        if row.label in REFERENCE_ONLY_ROWS:
             continue
-        assert "better" in label, (
-            f"metric row {label!r} doesn't state a direction -- "
+        assert "better" in row.label, (
+            f"metric row {row.label!r} doesn't state a direction -- "
             "a bare number here is meaningless without one"
         )
     print("  ok  every scored METRIC_ROWS label states a direction")
+
+
+def test_metric_row_direction_matches_kind_and_weight_sign() -> None:
+    """MetricRow.direction is a computed property (see duplicates_core.py):
+    for a "metric" row it's *defined* as sign(METRIC_WEIGHTS[row.key]), so it
+    can never mathematically disagree with its own key's weight -- asserting
+    that agreement would be vacuous, always true by construction. What can
+    still drift is `key` itself pointing at the wrong metric, or the
+    human-readable label wording disagreeing with what `key` implies. This
+    reuses the co_consts introspection from
+    test_every_weighted_metric_has_a_display_row to check the first (a
+    "metric" row's declared key must be the same dict key its own `fn`
+    lambda actually reads), and checks the second directly against the
+    label text."""
+    for row in fd.METRIC_ROWS:
+        if row.kind == "reference":
+            assert row.direction == 0 and row.key is None, f"{row.label!r}: reference row should have no key/direction"
+            continue
+        if row.kind == "score":
+            assert row.direction == 1, f"{row.label!r}: the score row should always be direction 1"
+            continue
+        assert row.kind == "metric", f"unrecognized MetricRow.kind {row.kind!r} for {row.label!r}"
+        assert row.key is not None, f"{row.label!r} is a metric row but has no METRIC_WEIGHTS key"
+        assert row.key in fd.METRIC_WEIGHTS, f"{row.label!r}'s key {row.key!r} isn't in METRIC_WEIGHTS"
+        referenced = {c for c in row.fn.__code__.co_consts if isinstance(c, str)}
+        assert row.key in referenced, (
+            f"{row.label!r} declares key {row.key!r} but its own lambda never reads r[{row.key!r}] -- "
+            "the declared key and the value actually being formatted have drifted apart"
+        )
+        label_says_higher = "higher better" in row.label
+        label_says_lower = "lower better" in row.label
+        assert label_says_higher or label_says_lower, f"{row.label!r} doesn't state a direction"
+        expected = 1 if label_says_higher else -1
+        assert row.direction == expected, (
+            f"{row.label!r} says {'higher' if label_says_higher else 'lower'} better, "
+            f"but key {row.key!r}'s weight ({fd.METRIC_WEIGHTS[row.key]!r}) implies direction {row.direction}"
+        )
+    print("  ok  every metric row's key matches what it formats, and its label agrees with that key's weight sign")
 
 
 def test_help_body_covers_every_weighted_metric() -> None:
@@ -86,8 +124,8 @@ def test_every_weighted_metric_has_a_display_row() -> None:
     every weighted metric is actually referenced by some row without needing
     to render the table."""
     referenced = set()
-    for _, fn in fd.METRIC_ROWS:
-        referenced.update(c for c in fn.__code__.co_consts if isinstance(c, str))
+    for row in fd.METRIC_ROWS:
+        referenced.update(c for c in row.fn.__code__.co_consts if isinstance(c, str))
     for name in fd.METRIC_WEIGHTS:
         assert name in referenced, (
             f"{name!r} is scored (in METRIC_WEIGHTS) but no METRIC_ROWS row references it -- "
@@ -99,13 +137,13 @@ def test_every_weighted_metric_has_a_display_row() -> None:
 def test_detector_catches_a_dropped_display_row() -> None:
     """Proof the check above can actually fail: with the NIQE row removed,
     the check must flag 'niqe' as no longer referenced."""
-    rows_without_niqe = [row for row, _ in fd.METRIC_ROWS if "NIQE" not in row]
+    rows_without_niqe = [row for row in fd.METRIC_ROWS if "NIQE" not in row.label]
     assert len(rows_without_niqe) == len(fd.METRIC_ROWS) - 1, "expected to drop exactly one row (NIQE)"
     referenced = set()
-    for label, fn in fd.METRIC_ROWS:
-        if "NIQE" in label:
+    for row in fd.METRIC_ROWS:
+        if "NIQE" in row.label:
             continue
-        referenced.update(c for c in fn.__code__.co_consts if isinstance(c, str))
+        referenced.update(c for c in row.fn.__code__.co_consts if isinstance(c, str))
     assert "niqe" not in referenced, "dropping the NIQE row should have removed 'niqe' from referenced keys"
     print("  ok  the coupling check correctly flags a dropped display row (not vacuous)")
 
@@ -139,13 +177,14 @@ async def test_metric_labels_reach_the_table() -> None:
         await pilot.pause()
         table = app.query_one(DataTable)
         rendered_labels = [str(table.get_cell_at((r, 0))) for r in range(table.row_count)]
-        assert rendered_labels == [label for label, _ in fd.METRIC_ROWS]
+        assert rendered_labels == [row.label for row in fd.METRIC_ROWS]
     print("  ok  annotated labels render in the metrics table")
 
 
 async def main() -> None:
     fd.PreviewImage = HalfcellImage  # deterministic headless renderer, no real terminal needed
     test_every_scored_metric_row_states_its_direction()
+    test_metric_row_direction_matches_kind_and_weight_sign()
     test_help_body_covers_every_weighted_metric()
     test_every_weighted_metric_has_a_display_row()
     test_detector_catches_a_dropped_display_row()

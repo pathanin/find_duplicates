@@ -179,7 +179,13 @@ def _group_detail(session: Session, i: int, g: Group) -> dict:
     return {
         **_group_summary(i, g),
         "paths": [_display_path(session, p) for p in g.paths],
-        "metrics": [{"label": label, "values": [fn(r) for r in g.results]} for label, fn in METRIC_ROWS],
+        # direction/kind are structured alongside the display label so the
+        # frontend never has to re-derive a row's meaning by pattern-matching
+        # `label` text -- see MetricRow's docstring in duplicates_core.py.
+        "metrics": [
+            {"label": row.label, "values": [row.fn(r) for r in g.results], "direction": row.direction, "kind": row.kind}
+            for row in METRIC_ROWS
+        ],
     }
 
 
