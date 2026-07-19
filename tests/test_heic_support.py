@@ -6,7 +6,7 @@ load_gray/analyze), via a PIL + pillow-heif fallback -- cv2.imread cannot
 decode HEIC/HEIF at all without OS-level codecs that aren't reliably
 present.
 
-pillow-heif is an optional dependency (see contrib/install.sh). If it isn't
+pillow-heif is an optional dependency (see install.sh). If it isn't
 installed, or can't encode a real HEIC file in this environment, the
 round-trip test prints a skip note and passes rather than failing -- the
 same convention this repo already uses for brisque/niqe in

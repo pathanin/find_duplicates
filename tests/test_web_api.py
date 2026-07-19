@@ -16,7 +16,7 @@ the time this was written) constructs its underlying httpx.Client with the
 this file fails with `TypeError: Client.__init__() got an unexpected
 keyword argument 'app'` -- that's an httpx/starlette version mismatch, not
 a real bug. httpx itself is test-only, not a runtime dependency of the web
-front end (contrib/install.sh does not install it).
+front end (install.sh does not install it).
 
 Run: python3 tests/test_web_api.py
 """

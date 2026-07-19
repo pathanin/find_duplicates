@@ -22,7 +22,7 @@ python3 find_duplicates-web.py [directory] [--threshold N] [--dest DIR] [--recur
 # on your PATH
 git clone https://github.com/pathanin/find_duplicates.git
 cd find_duplicates
-./contrib/install.sh          # both front ends; add --tui or --web for just one
+./install.sh                  # both front ends; add --tui or --web for just one
 ```
 
 ## Terminal UI

@@ -3,7 +3,7 @@
 # puts a `find-duplicates` (TUI) and/or `find-duplicates-web` (browser UI)
 # wrapper on PATH.
 #
-# Usage: ./contrib/install.sh [--tui|--web|--all]
+# Usage: ./install.sh [--tui|--web|--all]
 #   --tui   Textual terminal UI only (adds textual/textual-image)
 #   --web   Browser UI only (adds fastapi/uvicorn) -- e.g. for a headless
 #           NAS box that will never run a TUI in a terminal.
@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/find-duplicates"
 VENV_DIR="$DATA_DIR/venv"
 BIN_DIR="$HOME/.local/bin"
