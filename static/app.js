@@ -164,7 +164,10 @@ function renderSidebar() {
     if (g.is_close_call) {
       const warn = document.createElement("span");
       warn.className = "close-call-flag";
-      warn.textContent = "⚠";
+      // Spelled out, not a bare glyph: a caution-triangle alone reads as
+      // "something's wrong", but a close call isn't an error -- it just
+      // means the top two picks scored nearly the same and deserve a look.
+      warn.textContent = "⚠ close";
       warn.title = "Close call -- the top two picks scored nearly the same";
       li.appendChild(warn);
     }

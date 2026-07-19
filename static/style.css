@@ -199,8 +199,9 @@ input[type="text"], input[type="number"] {
 /* Amber, not a filled badge: close calls are the common case in a typical
    scan (most groups have two near-identical top candidates), not a rare
    exception, so a loud badge here would blow past the point where "flagged"
-   still reads as meaningful. A colored glyph is enough weight. */
-.close-call-flag { flex-shrink: 0; color: var(--warn); }
+   still reads as meaningful. Spelled out as "close", not a bare glyph --
+   a caution-triangle alone reads as an error rather than "these two tied". */
+.close-call-flag { flex-shrink: 0; color: var(--warn); font-size: 0.85em; white-space: nowrap; }
 
 #detail {
   flex: 1;
