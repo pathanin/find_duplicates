@@ -16,10 +16,21 @@ python3 find_duplicates-web.py [directory] [--threshold N] [--dest DIR] [--recur
 
 ## Install
 
+Requires Python 3.10+. The install script creates an isolated venv via pip
+(prebuilt wheels, seconds) and puts `find-duplicates` / `find-duplicates-web`
+on your PATH.
+
 ```bash
-# Install script (Python 3.10+) — creates an isolated venv via pip
-# (prebuilt wheels, seconds) and puts find-duplicates / find-duplicates-web
-# on your PATH
+# One-liner (no clone needed) — installs both front ends
+curl -LsSf https://raw.githubusercontent.com/pathanin/find_duplicates/main/install.sh | sh
+
+# ...add --tui or --web for just one front end
+curl -LsSf https://raw.githubusercontent.com/pathanin/find_duplicates/main/install.sh | sh -s -- --tui
+```
+
+Or, from a clone:
+
+```bash
 git clone https://github.com/pathanin/find_duplicates.git
 cd find_duplicates
 ./install.sh                  # both front ends; add --tui or --web for just one
