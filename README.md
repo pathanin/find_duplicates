@@ -20,11 +20,15 @@ Requires Python 3.10+. The install script creates an isolated venv via pip
 (prebuilt wheels, seconds) and puts `find-duplicates` / `find-duplicates-web`
 on your PATH.
 
-```bash
-# One-liner (no clone needed) — installs both front ends
-curl -LsSf https://raw.githubusercontent.com/pathanin/find_duplicates/main/install.sh | sh
+One-liner (no clone needed) — installs both front ends:
 
-# ...add --tui or --web for just one front end
+```bash
+curl -LsSf https://raw.githubusercontent.com/pathanin/find_duplicates/main/install.sh | sh
+```
+
+Add `--tui` or `--web` to install just one front end:
+
+```bash
 curl -LsSf https://raw.githubusercontent.com/pathanin/find_duplicates/main/install.sh | sh -s -- --tui
 ```
 
