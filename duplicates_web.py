@@ -40,10 +40,11 @@ from duplicates_core import (
     METRIC_DESCRIPTIONS,
     METRIC_ROWS,
     METRIC_WEIGHTS,
+    PREVIEW_MAX_SIDE,
+    THUMBNAIL_FAILURE_COLOR,
     apply_pick,
     build_groups,
     humansize,
-    make_thumbnail,
     pick_needs_reapply,
     unapply,
 )
@@ -55,6 +56,14 @@ COOKIE_NAME = "fd_token"
 # duplicates_core.IMAGE_EXTS (jpg/png/webp/bmp/tiff) is served as-is via
 # /api/full; these need transcoding to JPEG on the fly.
 HEIC_EXTS = {".heic", ".heif"}
+
+# The browser UI shows one candidate at a time at display scale (see the
+# direction contract in static/index.html), so it needs a render well above
+# PREVIEW_MAX_SIDE's 800px -- upscaling a 800px preview to fill a 1400px
+# stage blurs away the exact sharpness difference the stage exists to show.
+# PREVIEW_MAX_SIDE is shared with the TUI and deliberately tuned, so this is
+# a separate size rather than a bump of it.
+STAGE_MAX_SIDE = 1600
 
 
 @dataclass
@@ -80,7 +89,11 @@ class Session:
     manifest: list[dict] = field(default_factory=list)
     status: str = "idle"  # idle | scanning | ready | error
     error: str | None = None
-    thumb_cache: dict[tuple[int, int], bytes] = field(default_factory=dict)
+    # Keyed (group, file, max_side): the switcher strip's 800px previews and
+    # the stage's 1600px renders of the same file are both cached here, and a
+    # (group, file) key alone would serve whichever was rendered first for
+    # both sizes.
+    image_cache: dict[tuple[int, int, int], bytes] = field(default_factory=dict)
     # Bumped on every successful scan swap. (i, j) indices get reused across
     # rescans for different images, and the browser's own HTTP cache doesn't
     # know that -- the frontend appends ?g=<generation> to thumb/full URLs
@@ -128,7 +141,7 @@ def _launch_scan(session: Session, params: ScanParams, loop: asyncio.AbstractEve
             session.params = params
             session.groups = groups
             session.manifest = []
-            session.thumb_cache = {}
+            session.image_cache = {}
             session.generation += 1
             session.status = "ready"
             session.error = None
@@ -175,10 +188,45 @@ def _require_not_scanning(session: Session) -> None:
         raise HTTPException(409, "a scan is in progress; try again once it finishes")
 
 
+def _render_scaled_jpeg(path: Path, max_side: int, quality: int) -> bytes:
+    """JPEG bytes of *path* fitted inside a *max_side* box, or a neutral gray
+    placeholder of that size if the file can't be decoded -- same contract as
+    duplicates_core.make_thumbnail, with the size as a parameter so the
+    switcher strip (PREVIEW_MAX_SIDE) and the stage (STAGE_MAX_SIDE) share
+    one code path instead of drifting apart."""
+    try:
+        img = PILImage.open(path)
+        img = img.convert("RGB")
+        img.thumbnail((max_side, max_side))
+    except Exception:  # noqa: BLE001 -- an undecodable file must not 500 the review
+        img = PILImage.new("RGB", (max_side, max_side), THUMBNAIL_FAILURE_COLOR)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=quality)
+    return buf.getvalue()
+
+
 def _group_detail(session: Session, i: int, g: Group) -> dict:
     return {
         **_group_summary(i, g),
         "paths": [_display_path(session, p) for p in g.paths],
+        # Numeric siblings of the formatted METRIC_ROWS strings below. The
+        # stage needs real numbers -- pixel dimensions to size its 1:1 zoom
+        # layer, byte counts and scores for the candidate strip -- and
+        # re-parsing the display strings would couple the frontend to their
+        # formatting. Explicit int()/float(): these come off numpy-derived
+        # analyze() results, and a numpy scalar in a JSON response is the bug
+        # is_close_call's bool() cast exists to prevent.
+        "dimensions": [[int(r["dimensions"][0]), int(r["dimensions"][1])] for r in g.results],
+        "sizes": [int(r["file_size"]) for r in g.results],
+        "size_labels": [humansize(r["file_size"]) for r in g.results],
+        "scores": [float(r["quality_score"]) for r in g.results],
+        # Only meaningful for a confirmed group: True once its current_pick
+        # has diverged from what the manifest says is actually on disk, which
+        # is what the frontend's "confirm again to apply it" line keys off.
+        # (For a pending group there's no manifest entry at all, so this is
+        # trivially True and the frontend ignores it -- same condition
+        # confirm_group re-checks server-side before moving anything.)
+        "needs_reapply": bool(pick_needs_reapply(session.manifest, i, g)),
         # direction/kind are structured alongside the display label so the
         # frontend never has to re-derive a row's meaning by pattern-matching
         # `label` text -- see MetricRow's docstring in duplicates_core.py.
@@ -262,8 +310,7 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
                 raise HTTPException(404, "no such group")
             return JSONResponse(_group_detail(session, i, session.groups[i]))
 
-    @app.get("/api/thumb/{i}/{j}")
-    async def get_thumb(i: int, j: int, _: str = Depends(require_token)) -> Response:
+    def _cached_render(i: int, j: int, max_side: int, quality: int) -> Response:
         with session.lock:
             if not (0 <= i < len(session.groups)):
                 raise HTTPException(404, "no such group")
@@ -271,15 +318,24 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
             if not (0 <= j < len(g.paths)):
                 raise HTTPException(404, "no such file in group")
             path = g.paths[j]
-            cached = session.thumb_cache.get((i, j))
+            cached = session.image_cache.get((i, j, max_side))
         if cached is None:
-            img = make_thumbnail(path)
-            buf = io.BytesIO()
-            img.save(buf, format="JPEG", quality=85)
-            cached = buf.getvalue()
+            cached = _render_scaled_jpeg(path, max_side, quality)
             with session.lock:
-                session.thumb_cache[(i, j)] = cached
+                session.image_cache[(i, j, max_side)] = cached
         return Response(content=cached, media_type="image/jpeg")
+
+    @app.get("/api/thumb/{i}/{j}")
+    async def get_thumb(i: int, j: int, _: str = Depends(require_token)) -> Response:
+        return _cached_render(i, j, PREVIEW_MAX_SIDE, 85)
+
+    @app.get("/api/stage/{i}/{j}")
+    async def get_stage(i: int, j: int, _: str = Depends(require_token)) -> Response:
+        """The review stage's image: the same file as /api/thumb rendered
+        large enough to fill it without upscaling (see STAGE_MAX_SIDE), at a
+        higher JPEG quality since this is the render the keeper decision is
+        actually made on."""
+        return _cached_render(i, j, STAGE_MAX_SIDE, 92)
 
     @app.get("/api/full/{i}/{j}")
     async def get_full(i: int, j: int, _: str = Depends(require_token)) -> Response:

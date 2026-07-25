@@ -1,8 +1,13 @@
-// Vanilla JS, no build step -- see PLAN.md's "Frontend" decision. Mirrors
-// find_duplicates.py's DuplicateReviewApp: same status vocabulary, same
-// keyboard shortcuts (with layout-independent aliases via
-// KeyboardEvent.code -- see attachKeyboardHandler), same confirm/skip
-// semantics via the same server-side primitives the TUI uses.
+// Vanilla JS, no build step. Mirrors find_duplicates.py's DuplicateReviewApp:
+// same status vocabulary, same confirm/skip semantics via the same
+// server-side primitives, and keyboard bindings on KeyboardEvent.code
+// (physical position) rather than .key -- an alternate layout remaps .key to
+// a different character before the browser sees it, the exact concern the
+// TUI's control-key aliases exist to solve.
+//
+// The organising idea of this UI is the stage: one candidate visible at a
+// time, every candidate laid out at the identical scene rectangle, flipped
+// with no transition. See the direction contract at the top of index.html.
 
 const state = {
   status: "idle",
@@ -11,9 +16,18 @@ const state = {
   params: null,
   groups: [],       // summaries: {index, status, file_count, current_pick, suggested_idx, is_close_call}
   activeIndex: -1,
-  detail: null,     // full detail of the active group: {index, status, current_pick, suggested_idx, is_close_call, paths, metrics}
+  detail: null,     // {index, status, current_pick, suggested_idx, is_close_call, paths, dimensions, sizes, size_labels, scores, metrics}
   eventSource: null,
+  ledgerOpen: true,
 };
+
+// Stage view: which scene point is centred and whether we're inspecting at
+// 1:1. Kept in normalized image coordinates so it survives a flip between
+// candidates of different pixel dimensions -- inspecting the same corner of
+// the photo in every file is the whole point of the stage.
+const view = { zoom: false, u: 0.5, v: 0.5 };
+
+const $ = (id) => document.getElementById(id);
 
 async function api(path, opts = {}) {
   const res = await fetch(path, {
@@ -26,9 +40,7 @@ async function api(path, opts = {}) {
       const detail = (await res.json()).detail;
       // FastAPI/Pydantic validation failures (422) return `detail` as an
       // array of {msg, loc, ...} objects, not a string -- new Error(array)
-      // stringifies to "[object Object]", which told the user nothing.
-      // Every other error path here (HTTPException(...)) returns a plain
-      // string, so only the array case needs special handling.
+      // stringifies to "[object Object]", which tells the user nothing.
       message = Array.isArray(detail)
         ? detail.map((d) => (d && d.msg) || JSON.stringify(d)).join("; ")
         : detail;
@@ -39,16 +51,20 @@ async function api(path, opts = {}) {
 }
 
 function showToast(message, isError = false) {
-  const el = document.getElementById("toast");
+  const el = $("toast");
   el.textContent = message;
-  el.className = isError ? "error" : "";
+  el.className = isError ? "toast is-error" : "toast";
   el.hidden = false;
   clearTimeout(showToast._t);
-  showToast._t = setTimeout(() => { el.hidden = true; }, 4000);
+  showToast._t = setTimeout(() => { el.hidden = true; }, 5000);
+}
+
+function fmtInt(n) {
+  return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ");
 }
 
 // ---------------------------------------------------------------------------
-// State loading + rendering
+// State loading
 // ---------------------------------------------------------------------------
 
 async function refreshState() {
@@ -58,47 +74,491 @@ async function refreshState() {
   state.generation = data.generation;
   state.params = data.params;
   state.groups = data.groups;
-  renderSidebar();
-  updateScanStatusText();
-  renderBanners();
+  renderQueue();
+  renderScope();
+  renderNotices();
+  renderAppState();
   return data;
 }
 
 // Monotonic per-call token: if group B is clicked before group A's fetch
-// resolves, A's response must not clobber B's once B has already landed (or
-// flicker the loading dim off while B is still in flight). Mirrors the
-// generation-counter pattern duplicates_web.py's Session already uses for
-// the same class of staleness problem (see the ?g= cache-buster on thumb/
-// full-res URLs).
+// resolves, A's response must not clobber B's once B has already landed.
 let loadGroupToken = 0;
 
 async function loadGroup(i) {
   if (i < 0 || i >= state.groups.length) return;
   const token = ++loadGroupToken;
-  const detailEl = document.getElementById("detail");
-  detailEl.classList.add("is-loading");
   try {
     const data = await api(`/api/group/${i}`);
-    if (token !== loadGroupToken) return; // superseded by a newer loadGroup call
+    if (token !== loadGroupToken) return; // superseded by a newer loadGroup
     state.activeIndex = i;
     state.detail = data;
-    renderSidebar();
-    renderDetail();
+    view.zoom = false;
+    view.u = 0.5;
+    view.v = 0.5;
+    renderQueue();
+    renderGroup();
+    prefetchNextGroup();
   } catch (e) {
-    if (token === loadGroupToken) showToast(`Failed to load group: ${e.message}`, true);
-  } finally {
-    if (token === loadGroupToken) detailEl.classList.remove("is-loading");
+    if (token === loadGroupToken) showToast(`Couldn't load group ${i + 1}: ${e.message}`, true);
   }
 }
 
-// Winning index/indices for one row. Values are the exact strings the
-// server already formatted (METRIC_ROWS' lambdas) -- always a plain decimal
-// or "n/a" in this table, so parseFloat is enough and "n/a" naturally drops
-// out as NaN rather than needing special-casing. Requires at least 2 real
-// values: BRISQUE/NIQE can be "n/a" for some files and a real number for
-// others (per-image analysis failure, not just the package being missing --
-// see compare_image_quality.py), and a single lone value has nothing to have
-// "won" against.
+// The hot path is confirm -> advance -> next group, so the next pending
+// group's first stage render is warmed while this one is being decided.
+function prefetchNextGroup() {
+  const n = state.groups.length;
+  for (let off = 1; off <= n; off++) {
+    const j = (state.activeIndex + off) % n;
+    if (j === state.activeIndex) break;
+    if (state.groups[j].status === "pending") {
+      new Image().src = `/api/stage/${j}/${state.groups[j].current_pick}?g=${state.generation}`;
+      return;
+    }
+  }
+}
+
+function reviewCounts() {
+  const confirmed = state.groups.filter((g) => g.status === "confirmed").length;
+  const skipped = state.groups.filter((g) => g.status === "skipped").length;
+  return { confirmed, skipped, pending: state.groups.length - confirmed - skipped, total: state.groups.length };
+}
+
+function appState() {
+  if (state.status === "scanning") return "scanning";
+  if (state.status === "error" && !state.groups.length) return "error";
+  if (!state.groups.length) return "empty";
+  return state.detail ? "group" : "empty";
+}
+
+function renderAppState() {
+  const mode = appState();
+  $("app").dataset.state = mode;
+  $("scanning").hidden = mode !== "scanning";
+
+  // Nothing from the last group may survive into a scan, an error or an
+  // empty result: a photo still sitting on the stage under a progress
+  // readout reads as "this is what I'm working on", which is false.
+  if (mode !== "group") {
+    $("stage-frame").innerHTML = "";
+    stageImgs.length = 0;
+    view.zoom = false;
+    $("stage").dataset.zoom = "off";
+    $("hud-group").textContent = "";
+    $("hud-zoom").textContent = "";
+    renderDecision();
+  }
+
+  const msg = $("stage-message");
+  if (mode === "group" || mode === "scanning") {
+    msg.hidden = true;
+  } else {
+    msg.hidden = false;
+    msg.innerHTML = "";
+    const h = document.createElement("h2");
+    const p = document.createElement("p");
+    if (mode === "error") {
+      h.textContent = "That scan didn't run";
+      p.textContent = `${state.error} — open the directory field above and try another path.`;
+    } else if (state.status === "ready" && !state.groups.length) {
+      h.textContent = "No duplicates here";
+      p.textContent = `Nothing in ${state.params ? state.params.directory : "this directory"} hashed close enough to anything else to be a duplicate. Raise the threshold or scan somewhere else from the directory field above.`;
+    } else {
+      h.textContent = "Nothing selected";
+      p.textContent = "Pick a group from the list to review it.";
+    }
+    msg.appendChild(h);
+    msg.appendChild(p);
+  }
+  updateActionButtons();
+  updateDocumentTitle();
+}
+
+function updateDocumentTitle() {
+  if (!state.groups.length) {
+    document.title = "Duplicate review";
+    return;
+  }
+  const { pending, total } = reviewCounts();
+  document.title = pending === 0 ? "Done — duplicate review" : `${pending}/${total} left — duplicate review`;
+}
+
+// ---------------------------------------------------------------------------
+// Command bar + notices
+// ---------------------------------------------------------------------------
+
+function renderScope() {
+  const p = state.params;
+  if (!p) return;
+  $("scope-dir").textContent = p.directory;
+  $("scope-dir").title = p.directory;
+  const bits = [`threshold ${p.threshold}/64`];
+  bits.push(p.recursive ? "recursive" : "top level only");
+  if (p.dry_run) bits.push("dry run");
+  $("scope-meta").textContent = bits.join(" · ");
+}
+
+function notice(kind, tag, text) {
+  const el = document.createElement("div");
+  el.className = `notice notice-${kind}`;
+  const strong = document.createElement("strong");
+  strong.textContent = tag;
+  const span = document.createElement("span");
+  span.textContent = text;
+  el.appendChild(strong);
+  el.appendChild(span);
+  return el;
+}
+
+// Persistent, not toasts: scan failure, dry-run mode and "everything is
+// reviewed" all have to stay on screen rather than time out.
+function renderNotices() {
+  const host = $("notices");
+  host.innerHTML = "";
+  if (state.status === "error" && state.error) {
+    host.appendChild(notice("error", "Scan failed", state.error));
+  }
+  if (state.params && state.params.dry_run) {
+    host.appendChild(notice("dry", "Dry run", "Confirm and skip update this review only. No file will be moved."));
+  }
+  const { confirmed, skipped, pending, total } = reviewCounts();
+  if (total && pending === 0) {
+    host.appendChild(notice(
+      "done",
+      "All reviewed",
+      `${total} group${total === 1 ? "" : "s"} — ${confirmed} kept, ${skipped} skipped. Nothing is half-done; you can close this tab.`,
+    ));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Queue rail
+// ---------------------------------------------------------------------------
+
+const STATUS_WORD = { pending: "Pending", confirmed: "Kept", skipped: "Skipped" };
+
+function renderQueue() {
+  const { confirmed, skipped, pending, total } = reviewCounts();
+  $("queue-left").textContent = total ? pending : "";
+  $("queue-total").textContent = total ? `left of ${total} group${total === 1 ? "" : "s"}` : "No groups yet";
+  $("meter-kept").style.width = total ? `${(100 * confirmed) / total}%` : "0";
+  $("meter-skipped").style.width = total ? `${(100 * skipped) / total}%` : "0";
+  $("queue-meter").setAttribute("aria-label", `${confirmed} kept, ${skipped} skipped, ${pending} left`);
+  $("queue-tally").textContent = total ? `${confirmed} kept · ${skipped} skipped` : "";
+
+  const list = $("queue-list");
+  list.innerHTML = "";
+  if (!total) {
+    const li = document.createElement("li");
+    li.className = "queue-empty";
+    li.textContent = state.status === "scanning" ? "Scanning…" : "Nothing to review.";
+    list.appendChild(li);
+    return;
+  }
+
+  state.groups.forEach((g, i) => {
+    const li = document.createElement("li");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "q-item"
+      + (i === state.activeIndex ? " is-active" : "")
+      + (g.status !== "pending" ? " is-done" : "");
+    if (i === state.activeIndex) btn.setAttribute("aria-current", "true");
+
+    const idx = document.createElement("span");
+    idx.className = "q-idx";
+    idx.textContent = String(i + 1).padStart(2, "0");
+
+    // Shape carries the status as well as colour: an open square, a filled
+    // square and a bar are three different silhouettes at 10px.
+    const dot = document.createElement("span");
+    dot.className = `q-dot q-dot-${g.status}`;
+
+    const label = document.createElement("span");
+    label.className = "q-label";
+    label.textContent = g.status === "confirmed"
+      ? `${g.file_count} files → keeping ${g.current_pick + 1}`
+      : `${g.file_count} files`;
+
+    btn.append(idx, dot, label);
+
+    if (g.is_close_call) {
+      // Spelled out rather than a bare caution glyph: a close call isn't an
+      // error, it just means the top two scored nearly the same.
+      const flag = document.createElement("span");
+      flag.className = "q-close";
+      flag.textContent = "Close";
+      btn.appendChild(flag);
+    }
+
+    btn.title = `Group ${i + 1} · ${STATUS_WORD[g.status]} · ${g.file_count} files`
+      + (g.is_close_call ? " · close call: the top two scored nearly the same" : "");
+    btn.addEventListener("click", () => loadGroup(i));
+    li.appendChild(btn);
+    list.appendChild(li);
+  });
+
+  const active = list.querySelector(".is-active");
+  if (active) active.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
+// ---------------------------------------------------------------------------
+// Stage
+// ---------------------------------------------------------------------------
+
+const stageImgs = [];   // one <img> per candidate, all laid out identically
+
+function buildStage() {
+  const frame = $("stage-frame");
+  frame.innerHTML = "";
+  stageImgs.length = 0;
+  const d = state.detail;
+  if (!d) return;
+  d.paths.forEach((path, j) => {
+    const img = document.createElement("img");
+    img.className = "stage-img";
+    img.alt = j === d.current_pick ? `${path} — the file you're keeping` : path;
+    img.decoding = "async";
+    img.src = `/api/stage/${d.index}/${j}?g=${state.generation}`;
+    img.dataset.full = "0";
+    frame.appendChild(img);
+    stageImgs.push(img);
+  });
+}
+
+function stageBox() {
+  const frame = $("stage-frame");
+  return { w: frame.clientWidth, h: frame.clientHeight };
+}
+
+function dimsOf(j) {
+  const d = state.detail;
+  const dim = (d.dimensions && d.dimensions[j]) || [0, 0];
+  return { w: dim[0] > 0 ? dim[0] : 1, h: dim[1] > 0 ? dim[1] : 1 };
+}
+
+// The inspect scale shows the group's largest file at its true 1:1 pixels;
+// every other candidate is scaled to the same scene rectangle, so a smaller
+// export renders visibly upscaled. That comparison -- same framing, same
+// scene, real pixels against interpolated ones -- is the verdict this whole
+// screen exists to deliver.
+function inspectMaxWidth() {
+  const d = state.detail;
+  if (!d) return 0;
+  return Math.max(...d.paths.map((_, j) => dimsOf(j).w));
+}
+
+function scaleFor(j, box) {
+  const { w, h } = dimsOf(j);
+  const contain = Math.min(box.w / w, box.h / h);
+  if (!view.zoom) return contain;
+  return Math.max(contain, inspectMaxWidth() / w);
+}
+
+function layoutStage() {
+  const d = state.detail;
+  if (!d || !stageImgs.length) return;
+  const box = stageBox();
+  if (!box.w || !box.h) return;
+
+  stageImgs.forEach((img, j) => {
+    const { w, h } = dimsOf(j);
+    const s = scaleFor(j, box);
+    const dw = w * s;
+    const dh = h * s;
+    const x = dw <= box.w ? (box.w - dw) / 2 : clamp(box.w / 2 - view.u * dw, box.w - dw, 0);
+    const y = dh <= box.h ? (box.h - dh) / 2 : clamp(box.h / 2 - view.v * dh, box.h - dh, 0);
+    img.style.width = `${dw}px`;
+    img.style.height = `${dh}px`;
+    img.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
+    img.classList.toggle("is-active", j === d.current_pick);
+    // Only fetch the original once the stage render (STAGE_MAX_SIDE) is
+    // actually being magnified past its own pixels -- /api/full re-encodes
+    // HEIC on every request and can be tens of megabytes.
+    if (view.zoom && img.dataset.full === "0" && dw > 1600 * 1.05) upgradeToFullRes(img, d.index, j);
+  });
+
+  const zoomable = inspectMaxWidth() > box.w;
+  $("stage").dataset.zoomable = zoomable ? "yes" : "no";
+  $("stage").dataset.zoom = view.zoom ? "on" : "off";
+  renderHud();
+}
+
+function clamp(v, lo, hi) { return Math.min(Math.max(v, lo), hi); }
+
+function upgradeToFullRes(img, i, j) {
+  img.dataset.full = "1";
+  const pre = new Image();
+  // Geometry comes from the API's pixel dimensions, not from the loaded
+  // bitmap, so swapping in a bigger source can't shift the framing.
+  pre.onload = () => { img.src = pre.src; };
+  pre.onerror = () => { img.dataset.full = "0"; };
+  pre.src = `/api/full/${i}/${j}?g=${state.generation}`;
+}
+
+function renderHud() {
+  const d = state.detail;
+  if (!d) { $("hud-group").textContent = ""; $("hud-zoom").textContent = ""; return; }
+  $("hud-group").textContent = `Group ${d.index + 1} of ${state.groups.length} · file ${d.current_pick + 1} of ${d.paths.length}`;
+
+  if (!view.zoom) {
+    $("hud-zoom").textContent = $("stage").dataset.zoomable === "no"
+      ? "Fits at full pixels"
+      : "Click to inspect 1:1 · Z";
+    return;
+  }
+  const factor = inspectMaxWidth() / dimsOf(d.current_pick).w;
+  $("hud-zoom").textContent = factor > 1.02
+    ? `Inspecting 1:1 · this file upscaled ${factor.toFixed(1)}× · drag to pan`
+    : "Inspecting 1:1 · true pixels · drag to pan";
+}
+
+function setZoom(on, u, v) {
+  if (on && $("stage").dataset.zoomable === "no") return;
+  view.zoom = on;
+  if (u !== undefined) { view.u = clamp(u, 0, 1); view.v = clamp(v, 0, 1); }
+  layoutStage();
+}
+
+function pointToScene(ev) {
+  const d = state.detail;
+  const box = stageBox();
+  const rect = $("stage-frame").getBoundingClientRect();
+  const { w, h } = dimsOf(d.current_pick);
+  const s = scaleFor(d.current_pick, box);
+  const dw = w * s;
+  const dh = h * s;
+  const x = dw <= box.w ? (box.w - dw) / 2 : clamp(box.w / 2 - view.u * dw, box.w - dw, 0);
+  const y = dh <= box.h ? (box.h - dh) / 2 : clamp(box.h / 2 - view.v * dh, box.h - dh, 0);
+  return {
+    u: clamp((ev.clientX - rect.left - x) / dw, 0, 1),
+    v: clamp((ev.clientY - rect.top - y) / dh, 0, 1),
+  };
+}
+
+function attachStageHandlers() {
+  const stage = $("stage");
+  let drag = null;
+
+  stage.addEventListener("pointerdown", (ev) => {
+    if (!state.detail || ev.button !== 0) return;
+    drag = { x: ev.clientX, y: ev.clientY, moved: false, u: view.u, v: view.v };
+    if (view.zoom) {
+      stage.classList.add("is-panning");
+      stage.setPointerCapture(ev.pointerId);
+    }
+  });
+
+  stage.addEventListener("pointermove", (ev) => {
+    if (!drag || !view.zoom) return;
+    const box = stageBox();
+    const { w, h } = dimsOf(state.detail.current_pick);
+    const s = scaleFor(state.detail.current_pick, box);
+    const dx = ev.clientX - drag.x;
+    const dy = ev.clientY - drag.y;
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) drag.moved = true;
+    view.u = clamp(drag.u - dx / (w * s), 0, 1);
+    view.v = clamp(drag.v - dy / (h * s), 0, 1);
+    layoutStage();
+  });
+
+  const endDrag = (ev) => {
+    if (!drag) return;
+    stage.classList.remove("is-panning");
+    if (stage.hasPointerCapture && stage.hasPointerCapture(ev.pointerId)) stage.releasePointerCapture(ev.pointerId);
+    const wasDrag = drag.moved;
+    drag = null;
+    if (wasDrag || !state.detail) return;
+    if (view.zoom) setZoom(false);
+    else { const p = pointToScene(ev); setZoom(true, p.u, p.v); }
+  };
+  stage.addEventListener("pointerup", endDrag);
+  stage.addEventListener("pointercancel", () => { drag = null; stage.classList.remove("is-panning"); });
+
+  new ResizeObserver(() => layoutStage()).observe($("stage-frame"));
+}
+
+// ---------------------------------------------------------------------------
+// Candidate switcher
+// ---------------------------------------------------------------------------
+
+function renderSwitcher() {
+  const host = $("switcher");
+  host.innerHTML = "";
+  const d = state.detail;
+  if (!d) return;
+  const best = Math.max(...d.scores);
+
+  d.paths.forEach((path, j) => {
+    const active = j === d.current_pick;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "cand" + (active ? " is-active" : "");
+    btn.setAttribute("role", "tab");
+    btn.setAttribute("aria-selected", String(active));
+    btn.tabIndex = active ? 0 : -1;
+
+    const top = document.createElement("span");
+    top.className = "cand-top";
+    const idx = document.createElement("span");
+    idx.className = "cand-idx";
+    idx.textContent = String(j + 1);
+    const name = document.createElement("span");
+    name.className = "cand-name";
+    name.textContent = path;
+    top.append(idx, name);
+
+    // Facts and the keeping/suggested tag share a line so the filename above
+    // them gets the tab's full width -- with six candidates it needs it.
+    const meta = document.createElement("span");
+    meta.className = "cand-meta";
+    const facts = document.createElement("span");
+    facts.className = "cand-facts";
+    const dim = d.dimensions[j];
+    facts.textContent = `${dim[0]}×${dim[1]} · ${d.size_labels[j]}`;
+    meta.appendChild(facts);
+    if (active) {
+      const tag = document.createElement("span");
+      tag.className = "cand-tag";
+      tag.textContent = "Keeping";
+      meta.appendChild(tag);
+    } else if (j === d.suggested_idx) {
+      const mark = document.createElement("span");
+      mark.className = "cand-mark";
+      mark.textContent = "Suggested";
+      meta.appendChild(mark);
+    }
+
+    const score = document.createElement("span");
+    score.className = "cand-score";
+    const track = document.createElement("span");
+    track.className = "cand-score-track";
+    const fill = document.createElement("span");
+    fill.className = "cand-score-fill";
+    fill.style.width = `${clamp(d.scores[j], 0, 1) * 100}%`;
+    track.appendChild(fill);
+    const num = document.createElement("span");
+    num.textContent = d.scores[j].toFixed(2);
+    score.append(track, num);
+
+    btn.append(top, meta, score);
+    btn.title = `${path} — quality score ${d.scores[j].toFixed(3)}`
+      + (d.scores[j] === best ? " (top scored)" : "")
+      + `. Press ${j + 1} to keep this one.`;
+    btn.addEventListener("click", () => pick(j));
+    host.appendChild(btn);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Measurement ledger
+// ---------------------------------------------------------------------------
+
+// Winning index/indices for one row. Values are the exact strings the server
+// formatted (METRIC_ROWS' lambdas) -- always a plain decimal or "n/a", so
+// parseFloat is enough and "n/a" drops out as NaN. Needs at least 2 real
+// values: BRISQUE/NIQE can be "n/a" for one file and a number for another,
+// and a lone value has nothing to have won against.
 function bestIndices(direction, values) {
   if (!direction) return [];
   const nums = values.map((v) => parseFloat(v));
@@ -108,300 +568,82 @@ function bestIndices(direction, values) {
   return nums.flatMap((n, i) => (n === best ? [i] : []));
 }
 
-// Shared by the image-row labels and the metrics-table header -- both need
-// to say "this is the file you're keeping" / "this is the algorithm's top
-// pick" for column j, so one function decides it instead of two copies that
-// can drift apart.
-function columnMarker(j, d) {
-  const picked = j === d.current_pick;
-  const suggested = j === d.suggested_idx;
-  let title = "";
-  if (picked && suggested) title = "Currently kept (also the suggested keeper -- top scored)";
-  else if (picked) title = "Currently kept";
-  else if (suggested) title = "Suggested keeper (top scored)";
-  return { picked, suggested, title };
-}
-
-const STATUS_MARKERS = { pending: "◻", confirmed: "✔", skipped: "—" };
-const STATUS_LABELS = { pending: "Pending", confirmed: "Confirmed", skipped: "Skipped" };
-
-function renderSidebar() {
-  const ul = document.getElementById("group-list");
-  ul.innerHTML = "";
-  state.groups.forEach((g, i) => {
-    const li = document.createElement("li");
-    // Status glyph alone doesn't let a long queue be scanned at a glance --
-    // every row reads with identical weight until you read each character.
-    // Dimming done rows (confirmed/skipped) lets pending rows -- the ones
-    // still needing a decision -- stand out peripherally, without dropping
-    // the glyph (color is never the only signal).
-    li.className = "group-item"
-      + (i === state.activeIndex ? " active" : "")
-      + (g.status !== "pending" ? " status-done" : "");
-
-    // Status is a bounded, fixed-vocabulary field (pending/confirmed/skipped)
-    // -- a colored chip reads at a glance across a long list the way a bare
-    // glyph character doesn't; the glyph is kept inside it so shape (not
-    // just color) still carries the signal for colorblind-safety.
-    const chip = document.createElement("span");
-    chip.className = `status-chip status-${g.status}`;
-    chip.textContent = STATUS_MARKERS[g.status];
-    chip.title = STATUS_LABELS[g.status];
-
-    const label = document.createElement("span");
-    label.className = "group-item-text";
-    const pick = g.status === "confirmed" ? ` → [${g.current_pick + 1}]` : "";
-    label.textContent = `Group ${i + 1} (${g.file_count} files)${pick}`;
-
-    li.appendChild(chip);
-    li.appendChild(label);
-
-    // Kept a low-key colored glyph rather than a filled badge deliberately:
-    // close calls are common (most groups in a typical scan), not rare, so
-    // giving this the same visual weight as a true "needs attention" badge
-    // would blow past the ~10% red-chip guideline and stop reading as
-    // urgent at all.
-    if (g.is_close_call) {
-      const warn = document.createElement("span");
-      warn.className = "close-call-flag";
-      // Spelled out, not a bare glyph: a caution-triangle alone reads as
-      // "something's wrong", but a close call isn't an error -- it just
-      // means the top two picks scored nearly the same and deserve a look.
-      warn.textContent = "⚠ close";
-      warn.title = "Close call -- the top two picks scored nearly the same";
-      li.appendChild(warn);
-    }
-
-    li.title = g.is_close_call
-      ? `${label.textContent} -- close call: the top two picks scored nearly the same`
-      : label.textContent;
-    li.addEventListener("click", () => loadGroup(i));
-    ul.appendChild(li);
-  });
-  updateDocumentTitle();
-}
-
-function reviewCounts() {
-  const confirmed = state.groups.filter((g) => g.status === "confirmed").length;
-  const skipped = state.groups.filter((g) => g.status === "skipped").length;
-  const pending = state.groups.length - confirmed - skipped;
-  return { confirmed, skipped, pending, total: state.groups.length };
-}
-
-function updateDocumentTitle() {
-  if (state.groups.length === 0) {
-    document.title = "Duplicate image review";
-    return;
-  }
-  const { pending, total } = reviewCounts();
-  document.title = pending === 0 ? `✓ Done — Duplicate review` : `(${pending}/${total} left) Duplicate review`;
-}
-
-// Persistent (not a toast) home for state that must stay visible without
-// the user needing to look at any specific group: scan errors, dry-run
-// mode, and overall review progress -- including, once every group has
-// been confirmed or skipped, an explicit "you're done, it's safe to close
-// this tab" message. Nothing here is a toast because the whole point is
-// that it doesn't disappear after a few seconds.
-function renderBanners() {
-  const errorBanner = document.getElementById("error-banner");
-  if (state.status === "error" && state.error) {
-    errorBanner.textContent = `⚠ Scan failed: ${state.error}`;
-    errorBanner.hidden = false;
-  } else {
-    errorBanner.hidden = true;
-  }
-
-  document.getElementById("dry-run-banner").hidden = !(state.params && state.params.dry_run);
-
-  const progressBanner = document.getElementById("review-progress");
-  if (state.groups.length === 0) {
-    progressBanner.hidden = true;
-    return;
-  }
-  const { confirmed, skipped, pending, total } = reviewCounts();
-  progressBanner.hidden = false;
-  progressBanner.classList.toggle("all-done", pending === 0);
-  progressBanner.textContent = pending === 0
-    ? `✓ All ${total} group(s) reviewed (${confirmed} confirmed, ${skipped} skipped) -- nothing left to do. ` +
-      `It's safe to close this tab now, or scan a different directory above.`
-    : `${confirmed} confirmed · ${skipped} skipped · ${pending} of ${total} left -- ` +
-      `each Confirm/Skip applies immediately, so it's safe to stop and close this tab at any point.`;
-}
-
-// Fixed width of the leading label column, shared by #images-row's spacer
-// and #metrics-table's first column (see GRID_COLS below) -- must be wide
-// enough for the longest metric label ("Eff. res. px equiv (higher
-// better)") without wrapping; the CSS wrap fallback (see #metrics-table
-// thead th:first-child) covers anything longer.
-//
-// Measured: that label needs 233px including the cell's horizontal padding
-// at this font size. The old 220px was just under, so the two "Eff. res."
-// rows wrapped to a second line and rendered 46px tall against every other
-// row's 29px -- one wrapped label wrecking the whole table's vertical
-// rhythm. 248px clears the measurement with room for font metrics that
-// differ per platform.
-const LABEL_COL_WIDTH = "248px";
-
-function gridColumns(n) {
-  return `${LABEL_COL_WIDTH} repeat(${n}, minmax(180px, 1fr))`;
-}
-
-function renderDetail() {
+function renderLedger() {
   const d = state.detail;
-  const row = document.getElementById("images-row");
-  const table = document.getElementById("metrics-table");
-  row.innerHTML = "";
-  updateActionButtons();
-  if (!d) {
-    table.style.gridTemplateColumns = "";
-    document.querySelector("#metrics-table thead").innerHTML = "";
-    document.querySelector("#metrics-table tbody").innerHTML = "";
-    document.getElementById("status-line").textContent = "";
-    // A blank images-row reads as "broken", not "nothing to show yet" --
-    // spell out which of the two it is. Left blank while state.status is
-    // "scanning" since the header's progress bar already owns that message.
-    const message = state.groups.length
-      ? "Select a group from the sidebar to review it."
-      : (state.status === "ready" ? "No potential duplicate groups found in this directory." : "");
-    if (message) {
-      const empty = document.createElement("div");
-      empty.className = "empty-state";
-      empty.textContent = message;
-      row.appendChild(empty);
-    }
-    return;
-  }
-
-  // Both grids get the identical column template -- this (not a
-  // TUI-style post-layout measurement pass) is what keeps image box [j]
-  // lined up with metrics column [j]: see the CSS comment above
-  // #images-row for the full explanation.
-  const cols = gridColumns(d.paths.length);
-  row.style.gridTemplateColumns = cols;
-  table.style.gridTemplateColumns = cols;
-
-  const spacer = document.createElement("div");
-  spacer.className = "images-spacer";
-  row.appendChild(spacer);
-
-  d.paths.forEach((path, j) => {
-    const marker = columnMarker(j, d);
-    const box = document.createElement("div");
-    box.className = "preview-box"
-      + (marker.picked ? " picked" : "")
-      + (marker.suggested && !marker.picked ? " suggested" : "");
-    box.title = path;
-    const label = document.createElement("div");
-    label.className = "preview-label";
-    const tag = marker.picked ? "✔ KEEP  " : (marker.suggested ? "★ suggested  " : "");
-    label.textContent = `${tag}[${j + 1}] ${path}`;
-    const img = document.createElement("img");
-    img.src = `/api/thumb/${d.index}/${j}?g=${state.generation}`;
-    img.alt = path;
-    img.title = "Click to pick this file";
-    img.addEventListener("click", () => pick(j));
-    box.appendChild(label);
-    box.appendChild(img);
-    box.addEventListener("click", (e) => { if (e.target !== img) pick(j); });
-    row.appendChild(box);
-  });
-
   const thead = document.querySelector("#metrics-table thead");
   const tbody = document.querySelector("#metrics-table tbody");
   thead.innerHTML = "";
   tbody.innerHTML = "";
-  // Every explicit role below exists because display:contents on tr/thead/
-  // tbody drops the native table semantics -- see index.html's comment.
+  if (!d) return;
+
   const headRow = document.createElement("tr");
-  headRow.setAttribute("role", "row");
-  const cornerTh = document.createElement("th");
-  cornerTh.setAttribute("role", "columnheader");
-  // Not "Metric": three of this column's rows aren't weighted metrics --
-  // Dimensions and File size are reference-only, and Quality score is the
-  // composite they feed. The help text says so in as many words, so a header
-  // calling all ten "Metric" contradicts the app's own explanation.
-  cornerTh.textContent = "Measurement";
-  headRow.appendChild(cornerTh);
+  const corner = document.createElement("th");
+  corner.scope = "col";
+  // Not "Metric": dimensions and file size are reference only, and quality
+  // score is the composite they don't feed.
+  corner.textContent = "Measurement";
+  headRow.appendChild(corner);
   d.paths.forEach((path, j) => {
     const th = document.createElement("th");
-    th.setAttribute("role", "columnheader");
-    const marker = columnMarker(j, d);
-    // "KEEP", not the "✔" this used to show: ✔ already means "confirmed" in
-    // the sidebar's status chip, and one glyph carrying two different
-    // meanings on one screen is worth more than the four characters saved.
-    // The TUI's header never had a keep marker at all, so nothing diverges.
-    th.textContent = (marker.picked ? "KEEP " : "") + `[${j + 1}]` + (marker.suggested ? " ★" : "");
-    if (marker.picked) th.classList.add("metric-col-pick");
-    if (marker.title) th.title = marker.title;
-    // The visible header is just "[3]" -- the filename it stands for lives on
-    // a different element entirely (the preview box above it), so a screen
-    // reader announcing this column header gave a bare index with no way to
-    // tell which file the cell under it belongs to. aria-label replaces the
-    // cell's text as its accessible name, which is exactly what's wanted.
-    th.setAttribute("aria-label", marker.title ? `[${j + 1}] ${path}, ${marker.title}` : `[${j + 1}] ${path}`);
+    th.scope = "col";
+    if (j === d.current_pick) th.classList.add("col-pick");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "col-head-btn";
+    btn.textContent = j === d.current_pick ? `${j + 1} · keeping` : String(j + 1);
+    btn.title = `${path} — click to keep this one instead`;
+    btn.addEventListener("click", () => pick(j));
+    th.appendChild(btn);
     headRow.appendChild(th);
   });
   thead.appendChild(headRow);
 
   let prevWasReference = null;
-  d.metrics.forEach(({ label, values, direction, kind }, rowIdx) => {
-    const isScoreRow = kind === "score";
-    const winners = isScoreRow ? [] : bestIndices(direction, values);
+  d.metrics.forEach(({ label, values, direction, kind }) => {
+    const isScore = kind === "score";
     const isReference = kind === "reference";
+    const winners = isScore ? [] : bestIndices(direction, values);
 
     const tr = document.createElement("tr");
-    tr.setAttribute("role", "row");
-    if (rowIdx % 2 === 1) tr.classList.add("metric-row-alt");
-    if (isReference) tr.classList.add("metric-row-reference");
-    else if (prevWasReference) tr.classList.add("metric-row-first-scored");
-    if (isScoreRow) tr.classList.add("metric-row-score");
+    if (isReference) tr.classList.add("row-reference");
+    else if (prevWasReference) tr.classList.add("row-first-scored");
+    if (isScore) tr.classList.add("row-score");
     prevWasReference = isReference;
 
     const th = document.createElement("th");
-    th.setAttribute("role", "rowheader");
+    th.scope = "row";
     th.textContent = label;
     tr.appendChild(th);
 
     values.forEach((v, j) => {
       const td = document.createElement("td");
-      td.setAttribute("role", "cell");
-      if (j === d.current_pick) td.classList.add("metric-col-pick");
-      if (isScoreRow) {
-        const frac = Math.max(0, Math.min(1, parseFloat(v) || 0));
-        td.classList.add("metric-score-cell");
-        // The bar is a second rendering of the number beside it, so it's
-        // hidden from assistive tech -- that leaves the value span as the
-        // cell's only content, which is what should name the cell.
-        const track = document.createElement("div");
-        track.className = "score-bar-track";
+      if (j === d.current_pick) td.classList.add("col-pick");
+      if (isScore) {
+        const cell = document.createElement("span");
+        cell.className = "score-cell";
+        const track = document.createElement("span");
+        track.className = "score-track";
         track.setAttribute("aria-hidden", "true");
-        const fill = document.createElement("div");
-        fill.className = "score-bar-fill";
-        fill.style.width = `${frac * 100}%`;
+        const fill = document.createElement("span");
+        fill.className = "score-fill";
+        fill.style.width = `${clamp(parseFloat(v) || 0, 0, 1) * 100}%`;
         track.appendChild(fill);
-        const value = document.createElement("span");
-        value.className = "score-value";
-        value.textContent = v;
-        td.appendChild(track);
-        td.appendChild(value);
+        const num = document.createElement("span");
+        num.className = "score-num";
+        num.textContent = v;
+        cell.append(track, num);
+        td.appendChild(cell);
       } else {
         td.textContent = v;
-        // No aria-label on these cells on purpose: with role="cell" above,
-        // the cell's accessible name comes from its text content (the
-        // number) and `title` becomes its description, which is exactly the
-        // split wanted. Labelling them would put the note in both the name
-        // and the description, announcing it twice.
         if (winners.includes(j)) {
-          td.classList.add("metric-best");
+          td.classList.add("is-best");
           td.title = "Best value in this row";
         } else if (v === "n/a") {
-          // Deliberately names the state, not a cause. "n/a" means either the
-          // optional package isn't installed *or* the measurement failed on
-          // this one file (see bestIndices' note above) -- the UI can't tell
-          // which, and guessing "not installed" sends you off checking your
-          // install when the real problem is a single bad image.
-          td.title = "Not measured for this file -- either the optional metric isn't installed, or it failed on this image. See Help.";
+          td.classList.add("is-na");
+          // Names the state, not a cause: "n/a" means either the optional
+          // package isn't installed or the measurement failed on this one
+          // file, and the UI can't tell which.
+          td.title = "Not measured for this file — either the optional metric isn't installed, or it failed on this image. See Help.";
         }
       }
       tr.appendChild(td);
@@ -409,114 +651,194 @@ function renderDetail() {
     tbody.appendChild(tr);
   });
 
-  document.getElementById("status-line").textContent = statusText(d);
+  $("ledger-note").textContent = d.is_close_call
+    ? "Close call — the top two scored nearly the same"
+    : "";
+  $("ledger-note").className = d.is_close_call ? "ledger-note is-close" : "ledger-note";
 }
 
-// A dimmed button that doesn't say why reads as broken rather than as
-// "not yet". While there's no group on screen these three swap their
-// tooltip for the reason; style.css only drops the pointer cursor on
-// :disabled, it doesn't set pointer-events: none, so the title still
-// reaches a hovering pointer. Help is deliberately never disabled -- the
-// one control that explains the app has to work when there's nothing to
-// review yet.
-const NO_GROUP_REASON = "Nothing to act on yet -- pick a group in the sidebar first.";
-
-function updateActionButtons() {
-  const hasGroup = !!state.detail;
-  for (const id of ["btn-confirm", "btn-skip", "btn-open"]) {
-    const btn = document.getElementById(id);
-    // Stash the markup's own tooltip on first use so restoring it can't
-    // drift from what index.html actually says.
-    if (!btn.dataset.enabledTitle) btn.dataset.enabledTitle = btn.title;
-    btn.disabled = !hasGroup;
-    btn.title = hasGroup ? btn.dataset.enabledTitle : NO_GROUP_REASON;
-  }
+function setLedgerOpen(open) {
+  state.ledgerOpen = open;
+  $("ledger-scroll").hidden = !open;
+  $("ledger-toggle").setAttribute("aria-expanded", String(open));
+  layoutStage();
 }
 
-// Per-group action text only -- overall progress (confirmed/skipped/
-// pending counts, dry-run mode, "all done") lives in the persistent
-// #review-progress/#dry-run-banner banners (renderBanners) instead, so it
-// stays visible even when no group is selected rather than being buried
-// in this per-group line.
-function statusText(d) {
-  const nRemoved = d.paths.length - 1;
-  const plural = nRemoved !== 1 ? "s" : "";
-  let action = `keep [${d.current_pick + 1}] ${d.paths[d.current_pick]}`;
-  if (nRemoved > 0) action += `, move ${nRemoved} other file${plural}`;
-  const pickIsSuggested = d.current_pick === d.suggested_idx;
-  if (!pickIsSuggested) {
-    action += `  ·  ★ suggested [${d.suggested_idx + 1}] ${d.paths[d.suggested_idx]}`;
+// ---------------------------------------------------------------------------
+// Decision bar
+// ---------------------------------------------------------------------------
+
+function renderDecision() {
+  const el = $("consequence");
+  el.innerHTML = "";
+  const d = state.detail;
+  if (!d) {
+    if (state.status === "scanning") el.textContent = "Scanning — confirm and skip resume when it finishes.";
+    else el.textContent = state.groups.length ? "No group selected." : "";
+    return;
   }
+  const nMoved = d.paths.length - 1;
+  const dest = state.params ? state.params.dest : "the destination folder";
+  const keptName = d.paths[d.current_pick];
+
+  const add = (text, cls) => {
+    const s = document.createElement(cls ? "span" : "span");
+    if (cls) s.className = cls;
+    s.textContent = text;
+    el.appendChild(s);
+  };
+  const strong = (text) => {
+    const s = document.createElement("strong");
+    s.textContent = text;
+    el.appendChild(s);
+  };
 
   if (d.status === "confirmed") {
-    return pickIsSuggested
-      ? `confirmed → [${d.current_pick + 1}]`
-      : `confirmed → [${d.current_pick + 1}]. Pick changed since confirming -- press Confirm again to apply it.`;
-  }
-  if (d.status === "skipped") {
-    return `skipped (was: ${action})`;
-  }
-  return action;
-}
-
-function updateScanStatusText() {
-  // The error case is covered by the more prominent, persistent
-  // #error-banner (renderBanners) instead of duplicating the message here.
-  const el = document.getElementById("scan-status");
-  if (state.status === "scanning") {
-    el.textContent = "scanning…";
-  } else if (state.status === "ready") {
-    el.textContent = `${state.groups.length} group(s) found`;
+    const stale = !!d.needs_reapply;
+    add("Kept ");
+    strong(`[${d.current_pick + 1}] ${keptName}`);
+    add(`. ${nMoved} file${nMoved === 1 ? "" : "s"} moved to ${dest}.`);
+    if (stale) add("  Pick changed since confirming — confirm again to apply it.", "warn");
+  } else if (d.status === "skipped") {
+    add("Skipped — every file left where it is. Confirming would keep ");
+    strong(`[${d.current_pick + 1}] ${keptName}`);
+    add(` and move ${nMoved} other${nMoved === 1 ? "" : "s"}.`);
   } else {
-    el.textContent = "";
+    add("Confirm keeps ");
+    strong(`[${d.current_pick + 1}] ${keptName}`);
+    add(nMoved ? ` and moves ${nMoved} file${nMoved === 1 ? "" : "s"} to ${dest}.` : " and moves nothing else.");
+    if (d.current_pick !== d.suggested_idx) {
+      add(`  Suggested was [${d.suggested_idx + 1}] ${d.paths[d.suggested_idx]}.`);
+    }
   }
-  document.getElementById("scan-btn").disabled = state.status === "scanning";
+}
+
+// A dimmed control that doesn't say why reads as broken rather than as "not
+// yet". Help is never disabled: the one control that explains the app has to
+// work when there's nothing to review.
+const NO_GROUP_REASON = "Nothing to act on yet — pick a group in the list first.";
+
+function updateActionButtons() {
+  const hasGroup = !!state.detail && state.status !== "scanning";
+  for (const id of ["btn-confirm", "btn-skip", "btn-open"]) {
+    const btn = $(id);
+    if (!btn.dataset.enabledTitle) btn.dataset.enabledTitle = btn.title;
+    btn.disabled = !hasGroup;
+    btn.title = hasGroup
+      ? btn.dataset.enabledTitle
+      : (state.status === "scanning" ? "Locked while a scan is running." : NO_GROUP_REASON);
+  }
+  $("btn-skip").textContent = state.detail && state.detail.status === "skipped" ? "Un-skip group" : "Skip group";
 }
 
 // ---------------------------------------------------------------------------
-// Actions: pick / confirm / skip -- mirror DuplicateReviewApp.action_pick /
-// action_confirm / action_skip, via the same server-side primitives.
+// Rendering entry points
 // ---------------------------------------------------------------------------
 
-function applyGroupPatch(i, data) {
+function renderGroup() {
+  buildStage();
+  renderSwitcher();
+  renderLedger();
+  renderDecision();
+  renderAppState();
+  layoutStage();
+}
+
+// Re-render everything that depends on the active group without rebuilding
+// the stage's <img> layers -- rebuilding them on every pick would re-decode
+// the images and destroy the instant flip.
+function renderPickChange() {
+  const d = state.detail;
+  if (d) {
+    stageImgs.forEach((img, j) => {
+      img.classList.toggle("is-active", j === d.current_pick);
+      img.alt = j === d.current_pick ? `${d.paths[j]} — the file you're keeping` : d.paths[j];
+    });
+  }
+  renderSwitcher();
+  renderLedger();
+  renderDecision();
+  layoutStage();
+}
+
+// ---------------------------------------------------------------------------
+// Actions -- mirror DuplicateReviewApp.action_pick / action_confirm /
+// action_skip via the same server-side primitives.
+// ---------------------------------------------------------------------------
+
+function applyGroupPatch(i, data, keepLocalPick = false) {
+  const localPick = state.detail && i === state.activeIndex ? state.detail.current_pick : data.current_pick;
+  const pick = keepLocalPick ? localPick : data.current_pick;
   state.groups[i] = {
     index: i,
     status: data.status,
     file_count: data.paths.length,
-    current_pick: data.current_pick,
+    current_pick: pick,
     suggested_idx: data.suggested_idx,
     is_close_call: data.is_close_call,
   };
-  if (i === state.activeIndex) state.detail = data;
-  renderSidebar();
-  renderDetail();
-  renderBanners();
+  if (i === state.activeIndex) state.detail = { ...data, current_pick: pick };
+  renderQueue();
+  renderNotices();
+  if (i === state.activeIndex) renderPickChange();
+  renderAppState();
 }
 
-async function pick(j) {
+// Every /pick runs through one promise chain, so the last key pressed is
+// always the last write the server sees. Two picks in flight at once could
+// otherwise land out of order and leave the server holding an earlier
+// choice -- and /confirm moves files against the server's pick, not this
+// tab's. confirmGroup() awaits this chain before acting for the same reason.
+let pickChain = Promise.resolve();
+let pendingPicks = 0;
+
+function pick(j) {
   const i = state.activeIndex;
-  if (i < 0) return;
-  try {
-    const data = await api(`/api/group/${i}/pick`, { method: "POST", body: JSON.stringify({ idx: j }) });
-    applyGroupPatch(i, data);
-  } catch (e) {
-    showToast(`Pick failed: ${e.message}`, true);
-  }
+  const d = state.detail;
+  if (i < 0 || !d || j < 0 || j >= d.paths.length) return pickChain;
+  if (state.status === "scanning") { showToast("A scan is running — decisions are locked until it finishes."); return pickChain; }
+
+  // Optimistic: the flip must be instant, that's the point of the stage.
+  d.current_pick = j;
+  state.groups[i].current_pick = j;
+  renderPickChange();
+  renderQueue();
+
+  pendingPicks += 1;
+  pickChain = pickChain
+    .then(() => api(`/api/group/${i}/pick`, { method: "POST", body: JSON.stringify({ idx: j }) }))
+    .then((data) => {
+      pendingPicks -= 1;
+      // While more picks are queued, this response is already stale for the
+      // pick field -- keep the local one and take the rest.
+      applyGroupPatch(i, data, pendingPicks > 0);
+    })
+    .catch((e) => {
+      pendingPicks -= 1;
+      showToast(`Couldn't change the pick: ${e.message}`, true);
+    });
+  return pickChain;
 }
 
-async function pickRelative(delta) {
+function pickRelative(delta) {
   const d = state.detail;
   if (!d) return;
   const n = d.paths.length;
-  await pick(((d.current_pick + delta) % n + n) % n);
+  pick(((d.current_pick + delta) % n + n) % n);
 }
 
 async function confirmGroup() {
   const i = state.activeIndex;
-  if (i < 0) return;
+  if (i < 0 || !state.detail) return;
+  const pickAtPress = state.detail.current_pick;
   try {
+    await pickChain;  // the server must be holding the pick that's on screen
     const data = await api(`/api/group/${i}/confirm`, { method: "POST" });
     applyGroupPatch(i, data);
+    const moved = data.paths.length - 1;
+    if (state.params && state.params.dry_run) {
+      showToast(`Dry run: group ${i + 1} would keep ${data.paths[pickAtPress]} and move ${moved} file${moved === 1 ? "" : "s"}.`);
+    }
     advance();
   } catch (e) {
     showToast(`Confirm failed: ${e.message}`, true);
@@ -525,8 +847,9 @@ async function confirmGroup() {
 
 async function skipGroup() {
   const i = state.activeIndex;
-  if (i < 0) return;
+  if (i < 0 || !state.detail) return;
   try {
+    await pickChain;
     const data = await api(`/api/group/${i}/skip`, { method: "POST" });
     applyGroupPatch(i, data);
     if (data.status === "skipped") advance();
@@ -537,197 +860,215 @@ async function skipGroup() {
 
 function advance() {
   const n = state.groups.length;
-  if (n === 0) return;
+  if (!n) return;
   for (let off = 1; off <= n; off++) {
     const j = (state.activeIndex + off) % n;
-    if (state.groups[j].status === "pending") {
-      loadGroup(j);
-      return;
-    }
+    if (state.groups[j].status === "pending") { loadGroup(j); return; }
   }
-  showToast("All groups reviewed.");
+  showToast("That was the last one — every group is reviewed.");
+}
+
+function stepGroup(delta) {
+  const n = state.groups.length;
+  if (!n) return;
+  const next = state.activeIndex < 0 ? 0 : (state.activeIndex + delta + n) % n;
+  loadGroup(next);
 }
 
 function openFullRes() {
   const d = state.detail;
   if (!d) return;
-  window.open(`/api/full/${d.index}/${d.current_pick}?g=${state.generation}`, "_blank");
+  window.open(`/api/full/${d.index}/${d.current_pick}?g=${state.generation}`, "_blank", "noopener");
 }
 
 // ---------------------------------------------------------------------------
-// Scan control panel + SSE progress
+// Scan panel + SSE progress
 // ---------------------------------------------------------------------------
 
-function populateFormFromParams() {
-  if (!state.params) return;
-  document.getElementById("f-directory").value = state.params.directory;
-  document.getElementById("f-threshold").value = state.params.threshold;
-  document.getElementById("f-recursive").checked = state.params.recursive;
-  document.getElementById("f-dest").value = state.params.dest || "";
-  document.getElementById("f-dry-run").checked = state.params.dry_run;
-  // Only threshold/recursive/dest/dry-run are tucked behind "Options" --
-  // directory + Scan are the frequent, high-importance action and stay
-  // always visible (see the scan-form-row split in index.html). But an
-  // already-non-default setting (e.g. dry-run left on from a previous scan)
-  // must never be silently hidden -- that's a trap, not decluttering -- so
-  // the panel opens itself whenever reality disagrees with the defaults.
-  setOptionsExpanded(!scanOptionsAreDefault());
+function setScanPanelOpen(open) {
+  $("scan-panel").hidden = !open;
+  $("scope-toggle").setAttribute("aria-expanded", String(open));
+  if (open) $("f-directory").focus();
+  layoutStage();
 }
 
-function scanOptionsAreDefault() {
-  const threshold = document.getElementById("f-threshold");
-  return threshold.value === threshold.defaultValue
-    && !document.getElementById("f-recursive").checked
-    && !document.getElementById("f-dest").value
-    && !document.getElementById("f-dry-run").checked;
+function populateForm() {
+  const p = state.params;
+  if (!p) return;
+  $("f-directory").value = p.directory;
+  $("f-threshold").value = p.threshold;
+  $("f-recursive").checked = p.recursive;
+  $("f-dest").value = p.dest || "";
+  $("f-dry-run").checked = p.dry_run;
 }
 
-function setOptionsExpanded(expanded) {
-  const panel = document.getElementById("scan-options");
-  const toggle = document.getElementById("options-toggle");
-  panel.hidden = !expanded;
-  toggle.setAttribute("aria-expanded", String(expanded));
-  toggle.textContent = expanded ? "Options ▴" : "Options ▾";
+function renderProgress(data) {
+  const pct = data.total > 0 ? (100 * data.done) / data.total : 0;
+  $("scanning-fill").style.width = `${pct}%`;
+  // Just the phase: the directory being scanned is already the biggest
+  // thing in the command bar, and uppercased at this size it reads as
+  // shouting a path at someone who chose it ten seconds ago.
+  $("scanning-phase").textContent = data.label || "Reading the directory";
+  $("scanning-count").textContent = data.total > 0
+    ? `${fmtInt(data.done)} / ${fmtInt(data.total)}`
+    : "…";
 }
 
 function connectProgress() {
   if (state.eventSource) state.eventSource.close();
   const es = new EventSource("/api/progress");
   state.eventSource = es;
-  document.getElementById("progress-bar-wrap").hidden = false;
+  state.status = "scanning";
+  renderAppState();
+  renderQueue();
 
   es.onmessage = (ev) => {
     const data = JSON.parse(ev.data);
-    const fill = document.getElementById("progress-fill");
-    const label = document.getElementById("progress-label");
-    const pct = data.total > 0 ? Math.round((100 * data.done) / data.total) : 0;
-    fill.style.width = `${pct}%`;
-    label.textContent = data.label ? `${data.label}: ${data.done}/${data.total}` : "";
+    renderProgress(data);
+    if (data.status === "scanning") return;
 
-    if (data.status !== "scanning") {
-      // Must close explicitly: a browser EventSource treats a closed
-      // stream as an error and auto-reconnects a few seconds later, which
-      // would just re-open this same endpoint forever once a scan is done.
-      es.close();
-      state.eventSource = null;
-      document.getElementById("progress-bar-wrap").hidden = true;
-      refreshState().then(() => {
-        state.detail = null;
-        state.activeIndex = -1;
-        if (state.groups.length > 0) {
-          const firstPending = state.groups.findIndex((g) => g.status === "pending");
-          loadGroup(firstPending >= 0 ? firstPending : 0);
-        } else {
-          renderDetail();
-        }
-      });
-    }
+    // Must close explicitly: a browser EventSource treats a closed stream as
+    // an error and reconnects a few seconds later, which would re-open this
+    // endpoint forever once the scan is done.
+    es.close();
+    state.eventSource = null;
+    refreshState().then(() => {
+      state.detail = null;
+      state.activeIndex = -1;
+      if (state.groups.length) {
+        const firstPending = state.groups.findIndex((g) => g.status === "pending");
+        loadGroup(firstPending >= 0 ? firstPending : 0);
+      } else {
+        renderGroup();
+      }
+    });
   };
 }
 
-document.getElementById("scan-form").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const body = {
-    directory: document.getElementById("f-directory").value,
-    threshold: parseInt(document.getElementById("f-threshold").value, 10),
-    recursive: document.getElementById("f-recursive").checked,
-    dest: document.getElementById("f-dest").value || null,
-    dry_run: document.getElementById("f-dry-run").checked,
-  };
-  try {
-    await api("/api/scan", { method: "POST", body: JSON.stringify(body) });
-    state.status = "scanning";
-    updateScanStatusText();
-    connectProgress();
-  } catch (err) {
-    showToast(`Scan failed to start: ${err.message}`, true);
-  }
-});
-
 // ---------------------------------------------------------------------------
-// Help modal, rendered from /api/metrics-info so it can't drift from what's
+// Help sheet, rendered from /api/metrics-info so it can't drift from what's
 // actually scored -- same principle as find_duplicates.py's _help_body.
 // ---------------------------------------------------------------------------
 
+let lastFocused = null;
+
 async function showHelp() {
-  const info = await api("/api/metrics-info");
-  const entries = Object.entries(info.weights).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
-  let html = `
-    <h2>Quality score</h2>
-    <p>A weighted composite of the metrics below, normalized 0-1 within this group only
-    (min-max against the other files here -- not comparable across different photos).
-    It's a hand-tuned heuristic, not a lab measurement: treat it as a strong hint,
-    not a verdict, especially on a close call (⚠).</p>
-    <p>Dimensions and file size are shown for reference only and do NOT factor into the score.</p>
-    <h3>Weighted metrics, sorted by influence</h3>
-    <ul>`;
-  for (const [name, weight] of entries) {
-    const direction = weight > 0 ? "higher better" : "lower better";
-    html += `<li><strong>${Math.abs(weight).toFixed(2)}</strong> ${name} (${direction})<br>
-      <span class="dim">${info.descriptions[name]}</span></li>`;
+  const body = $("help-body");
+  try {
+    const info = await api("/api/metrics-info");
+    body.innerHTML = "";
+    body.appendChild(helpContent(info));
+  } catch (e) {
+    body.textContent = `Couldn't load the metric list: ${e.message}`;
   }
-  html += `</ul>
-    <h3>Sidebar status</h3>
-    <p>◻ pending &middot; ✔ confirmed &middot; — skipped &middot; ⚠ close call (top two picks scored nearly the same)</p>
-    <h3>Reading the comparison table</h3>
-    <p>Columns are numbered <strong>[1]</strong> onward, matching the previews above them and the number keys.
-    <strong>KEEP</strong> marks the file you're currently keeping; <strong>★</strong> marks the suggested
-    (top-scored) one. A highlighted cell is the best value in that row.</p>
-    <p>Each row is one of the metrics listed above, under a shortened name — plus Dimensions and File size,
-    which are reference only, and the combined Quality score at the bottom.</p>
-    <p><strong>n/a</strong> means that metric has no value for that file — either its optional package isn't
-    installed, or the measurement failed on that one image. Either way, a metric that's missing for
-    <em>any</em> file in a group is dropped from that whole group's score, and the remaining weights are
-    rescaled to make up the difference — so a group with an n/a row is still scored, just on fewer inputs.</p>
-    <h3>Keyboard shortcuts</h3>
-    <ul>
-      <li>&larr; / &rarr; -- move pick</li>
-      <li>1-9 -- pick a specific file</li>
-      <li>Enter / c -- confirm keep</li>
-      <li>Delete / s -- skip group</li>
-      <li>o -- open full-res in a new tab</li>
-      <li>? / F1 -- this help</li>
-    </ul>
-    <h3>Stopping and finishing</h3>
-    <p>Confirm and Skip apply immediately -- there's no separate "save" step
-    and nothing is left half-done. That means it's <strong>safe to close this
-    tab at any point</strong>, reviewed or not; your progress is exactly what
-    you see on screen. The server itself keeps running (so you can reopen
-    this URL and pick up where you left off) until it's stopped from the
-    terminal it was started in.</p>`;
-  document.getElementById("help-body").innerHTML = html;
-  document.getElementById("help-modal").hidden = false;
+  lastFocused = document.activeElement;
+  $("help-sheet").hidden = false;
+  document.querySelector(".sheet-panel").focus();
+}
+
+function helpContent(info) {
+  const frag = document.createDocumentFragment();
+  const h = (tag, text, cls) => {
+    const el = document.createElement(tag);
+    if (text) el.textContent = text;
+    if (cls) el.className = cls;
+    return el;
+  };
+
+  frag.appendChild(h("h3", "The quality score"));
+  frag.appendChild(h("p", "A weighted composite of the measurements below, normalized 0–1 within this group only — min-max against the other files here, so it never compares across different photos. It's a hand-tuned heuristic, not a lab measurement: treat it as a strong hint, and look harder when the group is flagged as a close call."));
+  frag.appendChild(h("p", "Dimensions and file size are shown for reference and do not feed the score."));
+
+  frag.appendChild(h("h3", "Weighted measurements, by influence"));
+  const ul = h("ul", null, "metric-list");
+  Object.entries(info.weights)
+    .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
+    .forEach(([name, weight]) => {
+      const li = document.createElement("li");
+      li.appendChild(h("span", Math.abs(weight).toFixed(2), "weight"));
+      const right = document.createElement("span");
+      right.appendChild(h("span", name, "metric-name"));
+      right.appendChild(h("span", ` ${weight > 0 ? "higher is better" : "lower is better"}`, "metric-dir"));
+      right.appendChild(document.createElement("br"));
+      right.appendChild(h("span", info.descriptions[name], "metric-desc"));
+      li.appendChild(right);
+      ul.appendChild(li);
+    });
+  frag.appendChild(ul);
+
+  frag.appendChild(h("h3", "Reading the stage"));
+  frag.appendChild(h("p", "One file fills the stage at a time and every file in the group is laid out in exactly the same frame, so moving between them changes the pixels and nothing else — the sharper file is the one that stops looking soft. The file on the stage is the file you're keeping."));
+  frag.appendChild(h("p", "Click the stage (or press Z) to inspect at 1:1. At that zoom the largest file in the group is shown at its true pixels and the others are scaled to match the same part of the scene, so an export upscaled from a smaller original gives itself away. Drag to pan; the spot you're inspecting stays put as you move between files."));
+  frag.appendChild(h("p", "n/a in the table means that measurement has no value for that file — either its optional package isn't installed, or it failed on that one image. A measurement missing for any file is dropped from the whole group's score and the remaining weights are rescaled, so the group is still scored, just on fewer inputs."));
+
+  frag.appendChild(h("h3", "Keyboard"));
+  const keys = document.createElement("dl");
+  keys.className = "keys";
+  [
+    ["← →", "Move between the files in this group"],
+    ["1 – 9", "Keep a specific file"],
+    ["↑ ↓", "Move between groups"],
+    ["Enter / C", "Confirm keep"],
+    ["Delete / S", "Skip group"],
+    ["Z", "Inspect at 1:1"],
+    ["O", "Open the kept file full-res in a new tab"],
+    ["M", "Show or hide the measurements"],
+    ["? / F1", "This panel"],
+  ].forEach(([k, v]) => {
+    keys.appendChild(h("dt", k));
+    keys.appendChild(h("dd", v));
+  });
+  frag.appendChild(keys);
+
+  frag.appendChild(h("h3", "Stopping and finishing"));
+  frag.appendChild(h("p", "Confirm and skip apply immediately — there's no save step and nothing is left half-done, so it's safe to close this tab at any point. Non-kept files are moved, never deleted. The server keeps running until you stop it from the terminal, so reopening this URL picks up where you left off."));
+  return frag;
 }
 
 function closeHelp() {
-  document.getElementById("help-modal").hidden = true;
+  $("help-sheet").hidden = true;
+  if (lastFocused && lastFocused.focus) lastFocused.focus();
 }
 
+function helpOpen() { return !$("help-sheet").hidden; }
+
 // ---------------------------------------------------------------------------
-// Keyboard shortcuts, mirroring DuplicateReviewApp.BINDINGS. Uses
-// KeyboardEvent.code (physical key position) rather than .key for letter
-// bindings and their control-key aliases -- an alternate keyboard layout
-// remaps .key to a different character before the browser even sees it,
-// the exact concern the TUI's control-key aliases exist to solve.
+// Keyboard, mirroring DuplicateReviewApp.BINDINGS. Bindings read
+// KeyboardEvent.code (physical key position) rather than .key: an alternate
+// layout remaps .key to a different character before the browser sees it.
 // ---------------------------------------------------------------------------
 
 function attachKeyboardHandler() {
   document.addEventListener("keydown", (e) => {
-    const help = document.getElementById("help-modal");
-    if (!help.hidden) {
-      if (e.code === "Escape" || e.key === "?" || e.code === "KeyQ") { closeHelp(); e.preventDefault(); }
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+    if (helpOpen()) {
+      if (e.code === "Escape" || e.key === "?" || e.code === "F1") { closeHelp(); e.preventDefault(); }
       return;
     }
-    const active = document.activeElement;
-    const typing = active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA");
-    if (typing) return;
+
+    const el = document.activeElement;
+    if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA")) {
+      if (e.code === "Escape") { setScanPanelOpen(false); $("scope-toggle").focus(); e.preventDefault(); }
+      return;
+    }
+
+    if (e.code === "F1" || e.key === "?") { showHelp(); e.preventDefault(); return; }
+    if (e.code === "Escape") {
+      if (view.zoom) { setZoom(false); e.preventDefault(); }
+      else if (!$("scan-panel").hidden) { setScanPanelOpen(false); e.preventDefault(); }
+      return;
+    }
 
     if (e.code === "ArrowLeft") { pickRelative(-1); e.preventDefault(); }
     else if (e.code === "ArrowRight") { pickRelative(1); e.preventDefault(); }
+    else if (e.code === "ArrowUp") { stepGroup(-1); e.preventDefault(); }
+    else if (e.code === "ArrowDown") { stepGroup(1); e.preventDefault(); }
     else if (e.code === "Enter" || e.code === "KeyC") { confirmGroup(); e.preventDefault(); }
     else if (e.code === "Delete" || e.code === "Backspace" || e.code === "KeyS") { skipGroup(); e.preventDefault(); }
+    else if (e.code === "KeyZ") { setZoom(!view.zoom); e.preventDefault(); }
     else if (e.code === "KeyO") { openFullRes(); e.preventDefault(); }
-    else if (e.code === "F1" || e.key === "?") { showHelp(); e.preventDefault(); }
+    else if (e.code === "KeyM") { setLedgerOpen(!state.ledgerOpen); e.preventDefault(); }
     else if (e.code.startsWith("Digit")) {
       const n = parseInt(e.code.slice(5), 10);
       if (n >= 1 && n <= 9 && state.detail && n <= state.detail.paths.length) { pick(n - 1); e.preventDefault(); }
@@ -735,54 +1076,65 @@ function attachKeyboardHandler() {
   });
 }
 
-// #images-row and #metrics-table are two separate scroll containers with
-// identical column widths (see gridColumns) -- mirror scrollLeft between
-// them 1:1 so a wide group (many files) stays column-aligned while
-// scrolled, not just at rest. #metrics-table's own scrollbar is hidden via
-// CSS since this makes it redundant.
-function syncScroll(a, b) {
-  let syncing = false;
-  const mirror = (from, to) => {
-    if (syncing) return;
-    syncing = true;
-    to.scrollLeft = from.scrollLeft;
-    syncing = false;
-  };
-  a.addEventListener("scroll", () => mirror(a, b));
-  b.addEventListener("scroll", () => mirror(b, a));
-}
-
-function attachButtonHandlers() {
-  document.getElementById("btn-confirm").addEventListener("click", confirmGroup);
-  document.getElementById("btn-skip").addEventListener("click", skipGroup);
-  document.getElementById("btn-open").addEventListener("click", openFullRes);
-  document.getElementById("btn-help").addEventListener("click", showHelp);
-  document.getElementById("help-close").addEventListener("click", closeHelp);
-  document.getElementById("help-modal").addEventListener("click", (e) => {
-    if (e.target.id === "help-modal") closeHelp();
-  });
-  document.getElementById("options-toggle").addEventListener("click", () => {
-    setOptionsExpanded(document.getElementById("scan-options").hidden);
-  });
-}
-
 // ---------------------------------------------------------------------------
-// Init
+// Wiring
 // ---------------------------------------------------------------------------
+
+function attachHandlers() {
+  $("scope-toggle").addEventListener("click", () => setScanPanelOpen($("scan-panel").hidden));
+  $("btn-confirm").addEventListener("click", confirmGroup);
+  $("btn-skip").addEventListener("click", skipGroup);
+  $("btn-open").addEventListener("click", openFullRes);
+  $("btn-help").addEventListener("click", showHelp);
+  $("help-close").addEventListener("click", closeHelp);
+  $("help-scrim").addEventListener("click", closeHelp);
+  $("ledger-toggle").addEventListener("click", () => setLedgerOpen(!state.ledgerOpen));
+
+  $("scan-panel").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const body = {
+      directory: $("f-directory").value,
+      threshold: parseInt($("f-threshold").value, 10),
+      recursive: $("f-recursive").checked,
+      dest: $("f-dest").value || null,
+      dry_run: $("f-dry-run").checked,
+    };
+    $("scan-btn").disabled = true;
+    try {
+      await api("/api/scan", { method: "POST", body: JSON.stringify(body) });
+      setScanPanelOpen(false);
+      state.detail = null;
+      state.activeIndex = -1;
+      renderProgress({ label: "", done: 0, total: 0 });
+      connectProgress();
+    } catch (err) {
+      showToast(`Scan didn't start: ${err.message}`, true);
+    } finally {
+      $("scan-btn").disabled = false;
+    }
+  });
+
+  attachStageHandlers();
+  attachKeyboardHandler();
+  window.addEventListener("resize", layoutStage);
+}
 
 async function init() {
-  attachKeyboardHandler();
-  attachButtonHandlers();
-  syncScroll(document.getElementById("images-row"), document.getElementById("metrics-table"));
+  attachHandlers();
+  // On a short screen the ledger would take the height the stage needs, and
+  // the stage is where the decision is actually made -- the candidate strip
+  // still carries each file's dimensions, size and score. One press of M (or
+  // the header) brings the full table back.
+  setLedgerOpen(window.innerHeight >= 940);
   await refreshState();
-  populateFormFromParams();
+  populateForm();
   if (state.status === "scanning") {
     connectProgress();
-  } else if (state.groups.length > 0) {
+  } else if (state.groups.length) {
     const firstPending = state.groups.findIndex((g) => g.status === "pending");
     await loadGroup(firstPending >= 0 ? firstPending : 0);
   } else {
-    renderDetail();
+    renderGroup();
   }
 }
 

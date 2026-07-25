@@ -2,85 +2,154 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Duplicate image review</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light">
+<title>Duplicate review</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 
-<header id="control-panel">
-  <form id="scan-form">
-    <div class="scan-form-row">
-      <input id="f-directory" type="text" placeholder="directory to scan" required>
-      <button type="submit" id="scan-btn" class="btn-primary">Scan</button>
-      <button type="button" id="options-toggle" class="btn-ghost" aria-expanded="false" aria-controls="scan-options" title="Threshold, recursive scan, destination folder, dry-run">Options ▾</button>
-      <span id="scan-status"></span>
-    </div>
-    <div id="scan-options" class="scan-form-row" hidden>
-      <label>threshold <input id="f-threshold" type="number" min="0" max="64" value="10" style="width:4em"></label>
-      <label><input id="f-recursive" type="checkbox"> recursive</label>
-      <input id="f-dest" type="text" placeholder="dest (default: <dir>/_duplicates)">
-      <label><input id="f-dry-run" type="checkbox"> dry-run</label>
-    </div>
-  </form>
-  <div id="progress-bar-wrap" hidden>
-    <div id="progress-bar"><div id="progress-fill"></div></div>
-    <span id="progress-label"></span>
-  </div>
+<!--
+  THESIS: picking a keeper is a sharpness verdict, not a table lookup. One
+  registered frame holds every candidate at identical framing so a flip
+  shows the difference instead of describing it; refuses the category's
+  thumbnail-grid-plus-spreadsheet arrangement.
+  OWN-WORLD: flat to the millimetre - zero radius, zero shadow. White
+  chrome, cloud rail, an ink stage, hairline rules, Archivo grotesque with
+  tabular figures, and one saturated blue that means exactly one thing: the
+  file you keep. Coral is a close call, teal is dry-run.
+  STORY: the queue says how much is left; the stage says which file is
+  sharper; the decision bar says what confirming will move, then advances.
+  FIRST VIEWPORT: command bar over a full-height split - 288px queue rail
+  left, ink stage filling the rest, candidate strip and measurement ledger
+  stacked beneath it, Confirm keep anchored bottom-right.
+  FORM: registered stage, candidate 4 of the ordered structural list; seed
+  key e65334a9, assigned index 4. No staging challenger committed - the one
+  dealt (held-failure tableau) has no failure state to hold in a review loop.
+-->
+
+<a class="skip-link" href="#stage">Skip to the current group</a>
+
+<header class="commandbar">
+  <span class="mark"><span class="mark-rule"></span>Find-duplicates</span>
+
+  <button type="button" id="scope-toggle" class="scope" aria-expanded="false" aria-controls="scan-panel">
+    <span class="scope-dir" id="scope-dir">no directory yet</span>
+    <span class="scope-meta" id="scope-meta"></span>
+    <span class="scope-cue" aria-hidden="true">Change</span>
+  </button>
+
+  <button type="button" id="btn-help" class="btn btn-quiet" aria-haspopup="dialog"
+    title="Metrics, scoring and keyboard shortcuts. Shortcut: ? or F1">Help</button>
 </header>
 
-<div id="error-banner" class="banner banner-error" hidden></div>
-<div id="dry-run-banner" class="banner banner-warn" hidden>
-  ⚠ Dry run — no files will actually be moved. Confirm/skip still update review status.
-</div>
-<div id="review-progress" class="banner banner-info" hidden></div>
+<form class="scanpanel" id="scan-panel" hidden>
+  <div class="field field-wide">
+    <label for="f-directory">Directory to scan</label>
+    <input id="f-directory" type="text" required spellcheck="false" autocomplete="off" placeholder="/Volumes/photos/2019">
+  </div>
+  <div class="field field-narrow">
+    <label for="f-threshold">Hash threshold</label>
+    <input id="f-threshold" type="number" min="0" max="64" value="10">
+  </div>
+  <div class="field field-wide">
+    <label for="f-dest">Move non-kept files to</label>
+    <input id="f-dest" type="text" spellcheck="false" autocomplete="off" placeholder="&lt;directory&gt;/_duplicates">
+  </div>
+  <div class="field field-checks">
+    <label class="check"><input id="f-recursive" type="checkbox"><span>Include subdirectories</span></label>
+    <label class="check"><input id="f-dry-run" type="checkbox"><span>Dry run — move nothing</span></label>
+  </div>
+  <div class="field field-submit">
+    <button type="submit" id="scan-btn" class="btn btn-primary">Scan</button>
+  </div>
+</form>
 
-<main id="body">
-  <nav id="sidebar">
-    <ul id="group-list"></ul>
-  </nav>
-  <section id="detail">
-    <div id="images-row"></div>
-    <!-- Explicit ARIA roles are load-bearing, not redundant: this table is
-         display:grid with display:contents on thead/tbody/tr (see style.css)
-         so the grid can own the cells directly, and that strips the native
-         table semantics -- without these roles every th/td is exposed as a
-         bare "generic" with no row/column association at all, leaving a
-         screen reader a flat list of ~50 unlabeled numbers. -->
-    <table id="metrics-table" role="table"><thead role="rowgroup"></thead><tbody role="rowgroup"></tbody></table>
-    <div id="status-line"></div>
-    <div id="actions">
-      <!-- Each title says what the button does and then its shortcut, in that
-           order and that shape. These used to be a bare "Enter / c", "Delete
-           / s", "o" and one prose string -- four different formats, three of
-           which never said the characters were shortcuts at all. The button's
-           own label already names the action, so the tooltip is where the
-           consequence belongs (it becomes the accessible description, with
-           the visible label staying the accessible name). -->
-      <div class="actions-decide">
-        <button id="btn-confirm" class="btn-primary"
-          title="Keep the selected file and move the others to the destination folder. Shortcut: Enter or C">Confirm keep</button>
-        <button id="btn-skip"
-          title="Leave every file in this group where it is and move on. Shortcut: Delete, Backspace or S">Skip group</button>
+<div class="notices" id="notices"></div>
+
+<main class="app" id="app" data-state="scanning">
+
+  <nav class="queue" aria-label="Duplicate groups">
+    <div class="queue-head">
+      <p class="queue-count"><span class="queue-left" id="queue-left">—</span><span class="queue-total" id="queue-total">no groups yet</span></p>
+      <div class="meter" id="queue-meter" role="img" aria-label="Review progress">
+        <span class="meter-fill meter-kept" id="meter-kept"></span>
+        <span class="meter-fill meter-skipped" id="meter-skipped"></span>
       </div>
-      <div class="actions-utility">
-        <button id="btn-open" class="btn-ghost"
-          title="Open the file you're keeping at full resolution, in a new tab. Shortcut: O">Open full-res</button>
-        <button id="btn-help" class="btn-ghost"
-          title="Metrics, scoring and keyboard shortcuts. Shortcut: ? or F1">Help</button>
+      <p class="queue-tally" id="queue-tally"></p>
+    </div>
+    <ol class="queue-list" id="queue-list"></ol>
+  </nav>
+
+  <section class="review" aria-label="Current group">
+
+    <!-- One stage, every candidate stacked in it at identical framing: the
+         flip between them is instant and unanimated on purpose, because a
+         cross-fade is exactly what hides the difference being judged. -->
+    <div class="stage" id="stage" tabindex="-1">
+      <div class="stage-frame" id="stage-frame"></div>
+
+      <div class="stage-hud">
+        <span class="hud-group" id="hud-group"></span>
+        <span class="hud-zoom" id="hud-zoom"></span>
+      </div>
+
+      <div class="stage-message" id="stage-message" hidden></div>
+
+      <div class="scanning" id="scanning" hidden>
+        <p class="scanning-phase" id="scanning-phase">Starting up</p>
+        <p class="scanning-count" id="scanning-count">—</p>
+        <div class="scanning-track"><span class="scanning-fill" id="scanning-fill"></span></div>
       </div>
     </div>
+
+    <div class="switcher" id="switcher" role="tablist" aria-label="Files in this group"></div>
+
+    <div class="ledger" id="ledger">
+      <div class="ledger-head">
+        <button type="button" id="ledger-toggle" class="ledger-toggle" aria-expanded="true" aria-controls="ledger-scroll"
+          title="Show or hide the measurement table. Shortcut: M">Measurements</button>
+        <span class="ledger-note" id="ledger-note"></span>
+      </div>
+      <!-- A plain table with its native semantics intact. The previous UI
+           made this a CSS grid to keep its columns locked to a separate row
+           of images and had to hand-write every ARIA role back; the stage
+           replaced that image row, so the table can just be a table. -->
+      <div class="ledger-scroll" id="ledger-scroll">
+        <table id="metrics-table">
+          <thead></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="decision">
+      <p class="consequence" id="consequence"></p>
+      <div class="decision-actions">
+        <button type="button" id="btn-open" class="btn btn-quiet"
+          title="Open the file you're keeping at full resolution, in a new tab. Shortcut: O">Open full-res</button>
+        <button type="button" id="btn-skip" class="btn btn-ghost"
+          title="Leave every file in this group where it is and move on. Shortcut: Delete, Backspace or S">Skip group</button>
+        <button type="button" id="btn-confirm" class="btn btn-primary"
+          title="Keep the file on the stage and move the others to the destination folder. Shortcut: Enter or C">Confirm keep</button>
+      </div>
+    </div>
+
   </section>
 </main>
 
-<div id="help-modal" class="modal" hidden>
-  <div class="modal-box">
-    <button id="help-close" class="modal-close">&times;</button>
-    <div id="help-body"></div>
+<div class="sheet" id="help-sheet" hidden>
+  <div class="sheet-scrim" id="help-scrim"></div>
+  <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="help-title" tabindex="-1">
+    <div class="sheet-head">
+      <h2 id="help-title">How this decides</h2>
+      <button type="button" id="help-close" class="btn btn-quiet">Close</button>
+    </div>
+    <div class="sheet-body" id="help-body"></div>
   </div>
 </div>
 
-<div id="toast" hidden></div>
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 
 <script src="/static/app.js"></script>
 </body>
