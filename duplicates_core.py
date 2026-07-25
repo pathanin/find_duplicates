@@ -835,8 +835,22 @@ def build_groups(
         results = list(results)
         score_group(results)
 
+        # Reorder the group best-first rather than just recording which index
+        # won, so the suggested file is always [1] -- leftmost column in the
+        # web table, first preview in both front ends. Reviewing is a
+        # high-volume loop and the eye shouldn't have to hunt for the ★ in a
+        # different position every group. Both lists are permuted by the same
+        # order, so every index downstream (current_pick, the manifest,
+        # /api/thumb's j, the digit-key shortcuts) stays consistent -- there
+        # is no "original index" left to translate back to.
+        #
+        # sorted() is stable and find_images() returns sorted paths, so files
+        # that tie on quality_score keep filename order relative to each
+        # other; identical copies don't shuffle unpredictably between scans.
         order = sorted(range(len(results)), key=lambda i: -results[i]["quality_score"])
-        suggested_idx = order[0]
+        members = [members[i] for i in order]
+        results = [results[i] for i in order]
+        suggested_idx = 0
         # bool(...): quality_score can be a numpy float64 (propagated from
         # analyze()'s metrics), and `<` against one produces numpy.bool_,
         # not Python bool -- `and` returns its second operand as-is rather
@@ -846,8 +860,8 @@ def build_groups(
         # Python equivalent and isn't JSON-serializable -- the web front
         # end's /api/state was the first consumer to actually hit this.
         close_call = bool(
-            len(order) > 1
-            and results[order[0]]["quality_score"] - results[order[1]]["quality_score"] < CLOSE_CALL_MARGIN
+            len(results) > 1
+            and results[0]["quality_score"] - results[1]["quality_score"] < CLOSE_CALL_MARGIN
         )
         groups.append(
             Group(
