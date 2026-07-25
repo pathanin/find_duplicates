@@ -364,10 +364,8 @@ function renderDetail() {
         const frac = Math.max(0, Math.min(1, parseFloat(v) || 0));
         td.classList.add("metric-score-cell");
         // The bar is a second rendering of the number beside it, so it's
-        // hidden from assistive tech and the cell names itself with the
-        // value -- otherwise the cell has no name of its own and the bar
-        // contributes an empty node.
-        td.setAttribute("aria-label", v);
+        // hidden from assistive tech -- that leaves the value span as the
+        // cell's only content, which is what should name the cell.
         const track = document.createElement("div");
         track.className = "score-bar-track";
         track.setAttribute("aria-hidden", "true");
@@ -382,15 +380,14 @@ function renderDetail() {
         td.appendChild(value);
       } else {
         td.textContent = v;
-        // A bare `title` would become these cells' whole accessible name,
-        // replacing the number rather than annotating it -- a screen reader
-        // read the winning cells as "Best value in this row" and never said
-        // 348.7 at all. An explicit aria-label keeps the value first and
-        // demotes the note to a suffix.
+        // No aria-label on these cells on purpose: with role="cell" above,
+        // the cell's accessible name comes from its text content (the
+        // number) and `title` becomes its description, which is exactly the
+        // split wanted. Labelling them would put the note in both the name
+        // and the description, announcing it twice.
         if (winners.includes(j)) {
           td.classList.add("metric-best");
           td.title = "Best value in this row";
-          td.setAttribute("aria-label", `${v}, best value in this row`);
         } else if (v === "n/a") {
           // Deliberately names the state, not a cause. "n/a" means either the
           // optional package isn't installed *or* the measurement failed on
@@ -398,7 +395,6 @@ function renderDetail() {
           // which, and guessing "not installed" sends you off checking your
           // install when the real problem is a single bad image.
           td.title = "Not measured for this file -- either the optional metric isn't installed, or it failed on this image. See Help.";
-          td.setAttribute("aria-label", "n/a, not measured for this file");
         }
       }
       tr.appendChild(td);
@@ -409,11 +405,25 @@ function renderDetail() {
   document.getElementById("status-line").textContent = statusText(d);
 }
 
+// A dimmed button that doesn't say why reads as broken rather than as
+// "not yet". While there's no group on screen these three swap their
+// tooltip for the reason; style.css only drops the pointer cursor on
+// :disabled, it doesn't set pointer-events: none, so the title still
+// reaches a hovering pointer. Help is deliberately never disabled -- the
+// one control that explains the app has to work when there's nothing to
+// review yet.
+const NO_GROUP_REASON = "Nothing to act on yet -- pick a group in the sidebar first.";
+
 function updateActionButtons() {
   const hasGroup = !!state.detail;
-  document.getElementById("btn-confirm").disabled = !hasGroup;
-  document.getElementById("btn-skip").disabled = !hasGroup;
-  document.getElementById("btn-open").disabled = !hasGroup;
+  for (const id of ["btn-confirm", "btn-skip", "btn-open"]) {
+    const btn = document.getElementById(id);
+    // Stash the markup's own tooltip on first use so restoring it can't
+    // drift from what index.html actually says.
+    if (!btn.dataset.enabledTitle) btn.dataset.enabledTitle = btn.title;
+    btn.disabled = !hasGroup;
+    btn.title = hasGroup ? btn.dataset.enabledTitle : NO_GROUP_REASON;
+  }
 }
 
 // Per-group action text only -- overall progress (confirmed/skipped/
