@@ -282,17 +282,10 @@ function renderQueue() {
 
     btn.append(idx, dot, label);
 
-    if (g.is_close_call) {
-      // Spelled out rather than a bare caution glyph: a close call isn't an
-      // error, it just means the top two scored nearly the same.
-      // The product's own term, in full: "Close" alone, uppercase and red at
-      // the right edge of a clickable row, reads as a dismiss button.
-      const flag = document.createElement("span");
-      flag.className = "q-close";
-      flag.textContent = "Close call";
-      btn.appendChild(flag);
-    }
-
+    // No close-call flag in the queue on purpose: most groups in a real scan
+    // are close calls, so flagging them here marks nearly every row and the
+    // mark stops meaning anything. It stays where it can be acted on -- the
+    // ledger note on the group being looked at -- and in the row's tooltip.
     btn.title = `Group ${i + 1} · ${STATUS_WORD[g.status]} · ${g.file_count} files`
       + (g.is_close_call ? " · close call: the top two scored nearly the same" : "");
     btn.addEventListener("click", () => loadGroup(i));

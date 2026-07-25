@@ -255,12 +255,18 @@ owner; none of it was sampled or derived from an existing asset.
 - **On Primary** (`{colors.on-primary}`): text and the checkbox tick on blue.
 
 ### Secondary
-- **Bloom Coral** (`{colors.bloom-coral}`): the close-call flag on an active
-  queue row, and the 9px close-call square in the narrow queue strip.
-- **Bloom Deep** (`{colors.bloom-deep}`): close-call text in the queue and the
-  ledger note, and the warning that a confirmed group's pick has drifted from
-  what was actually moved. Same value as `{colors.error}`, deliberately kept as a
-  separate name because the two roles are separate.
+- **Bloom Coral** (`{colors.bloom-coral}`): held in reserve for close-call
+  emphasis on a dark ground; no component currently paints it.
+- **Bloom Deep** (`{colors.bloom-deep}`): the ledger's close-call note, and the
+  warning that a confirmed group's pick has drifted from what was actually
+  moved. Same value as `{colors.error}`, deliberately kept as a separate name
+  because the two roles are separate.
+
+**The close call is stated once, where it can be acted on.** Most groups in a
+real scan are close calls, so flagging them in the queue marked nearly every
+row and the mark stopped meaning anything. The flag lives on the ledger header
+of the group being looked at, plus the queue row's tooltip — never as a
+standing mark down the rail.
 - **Bloom Wine** (`{colors.bloom-wine}`): the hairline under an error notice.
 
 ### Tertiary
@@ -378,11 +384,14 @@ fixed grid on purpose: the panel and the notices come and go, and a
 grid-template would drop the app pane into an implicit auto row the moment the
 child count changed, collapsing the stage to its min-height.
 
-The app pane is a two-column grid: a **288px queue rail** and the review column.
+The app pane is a two-column grid: a **queue rail of `--rail-w` (288px)** and
+the review column. That one measure also sizes the command bar's first cell, so
+the rail's right-hand hairline and the bar's first divider are a single
+unbroken vertical rule rather than two verticals a few dozen pixels apart.
 The review column is a four-row grid, `minmax(160px, 1fr) auto minmax(0, auto)
 auto` — stage, candidate strip, ledger, decision bar. Short viewports squeeze
 the stage to its 160px floor first and then the ledger (which owns its own
-scroll, capped at `min(34vh, 340px)`); the candidate strip never gives ground,
+scroll, capped at `min(36vh, 360px)`); the candidate strip never gives ground,
 because a clipped strip hides the filenames the decision is made on. Its
 `overflow-x` zeroes its automatic minimum size, so its 100px floor is stated
 explicitly.
@@ -394,9 +403,8 @@ uses a max-width container; the app fills the viewport and `body` never scrolls.
 Prose is measured instead: 52ch on a stage message, 62ch in the help sheet.
 
 **One breakpoint, at 900px.** Below it the rail rotates: the queue becomes a
-horizontal strip above the review column, its rows lay out inline, its tally is
-dropped, and the close-call flag becomes a 9px coral square with its text kept
-in the accessibility tree. The command bar wraps to two rows with the mark on
+horizontal strip above the review column, its rows lay out inline, and its
+tally is dropped. The command bar wraps to two rows with the mark on
 its own 44px line, the decision bar wraps its sentence above its actions, and
 the dark overlays drop to 24px padding.
 

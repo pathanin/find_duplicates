@@ -59,6 +59,10 @@
   --button-sm: 700 12.6px/1 var(--font);
 
   --bar-h: 56px;
+  /* One measure for the queue rail and the command bar's first cell, so
+     their right-hand hairlines are a single rule down the page rather than
+     two verticals 80px apart. */
+  --rail-w: 288px;
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -113,6 +117,7 @@ button { font-family: inherit; }
 }
 
 .mark {
+  flex: 0 0 var(--rail-w);
   display: flex;
   align-items: center;
   gap: 8px;
@@ -125,13 +130,20 @@ button { font-family: inherit; }
 }
 .mark-rule { width: 14px; height: 2px; background: var(--primary); }
 
+/* Full-height so its hover reaches the bar's edges and its label centres on
+   the same line as the wordmark and the path. */
+.commandbar .btn { align-self: stretch; height: auto; padding: 0 20px; }
+
 /* The scanned directory is both the label for what you're looking at and
    the control that changes it -- one thing, not a path plus a button. */
+/* The bar's cells stretch (their hairlines have to run its full height), so
+   each one centres its own contents; `align-items: baseline` here would pin
+   the whole text block to the top edge instead. */
 .scope {
   flex: 1;
   min-width: 0;
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 14px;
   padding: 0 20px;
   border: 0;
@@ -144,6 +156,15 @@ button { font-family: inherit; }
 .scope:hover { background: var(--cloud); }
 .scope[aria-expanded="true"] { background: var(--ink); color: var(--on-ink); }
 
+/* Path and its settings keep a shared baseline with each other, inside a
+   block that is itself centred in the bar. */
+.scope-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+}
 .scope-dir {
   min-width: 0;
   font: var(--body-emphasis);
@@ -265,7 +286,7 @@ button { font-family: inherit; }
 .app {
   flex: 1 1 auto;
   display: grid;
-  grid-template-columns: 288px minmax(0, 1fr);
+  grid-template-columns: var(--rail-w) minmax(0, 1fr);
   min-height: 0;
   overflow: hidden;
 }
@@ -297,7 +318,7 @@ button { font-family: inherit; }
 
 .q-item {
   display: grid;
-  grid-template-columns: 26px 10px minmax(0, 1fr) auto;
+  grid-template-columns: 26px 10px minmax(0, 1fr);
   align-items: center;
   gap: 10px;
   width: 100%;
@@ -328,14 +349,6 @@ button { font-family: inherit; }
 .q-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .q-item.is-done .q-label { color: var(--graphite); }
 .q-item.is-active.is-done .q-label { color: var(--steel); }
-
-.q-close {
-  font: var(--button-sm);
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--bloom-deep);
-}
-.q-item.is-active .q-close { color: var(--bloom-coral); }
 
 .queue-empty { padding: 18px 16px; font: var(--caption-md); color: var(--graphite); }
 
@@ -601,7 +614,7 @@ button { font-family: inherit; }
 .ledger-scroll {
   flex: 1 1 auto;
   min-height: 0;
-  max-height: min(34vh, 340px);
+  max-height: min(36vh, 360px);
   overflow: auto;
   overscroll-behavior: contain;
 }
@@ -846,22 +859,11 @@ button { font-family: inherit; }
   .queue-list { display: flex; overflow-x: auto; overflow-y: hidden; }
   .q-item {
     flex: 0 0 auto;
-    grid-template-columns: auto auto auto auto;
+    grid-template-columns: auto auto minmax(0, 1fr);
     gap: 8px;
     border-bottom: 0;
     border-right: 1px solid var(--hairline);
     padding: 0 14px;
-  }
-  /* The file count stays; the close-call flag becomes its own square rather
-     than a word, so a narrow row can't read as "01 ☐ CLOSE" with the thing
-     it counts missing. The text stays in the accessibility tree. */
-  .q-close {
-    width: 9px;
-    height: 9px;
-    background: var(--bloom-coral);
-    overflow: hidden;
-    text-indent: 120%;
-    white-space: nowrap;
   }
 
   .commandbar { height: auto; flex-wrap: wrap; }
