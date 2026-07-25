@@ -304,8 +304,12 @@ function renderDetail() {
   const tbody = document.querySelector("#metrics-table tbody");
   thead.innerHTML = "";
   tbody.innerHTML = "";
+  // Every explicit role below exists because display:contents on tr/thead/
+  // tbody drops the native table semantics -- see index.html's comment.
   const headRow = document.createElement("tr");
+  headRow.setAttribute("role", "row");
   const cornerTh = document.createElement("th");
+  cornerTh.setAttribute("role", "columnheader");
   // Not "Metric": three of this column's rows aren't weighted metrics --
   // Dimensions and File size are reference-only, and Quality score is the
   // composite they feed. The help text says so in as many words, so a header
@@ -314,6 +318,7 @@ function renderDetail() {
   headRow.appendChild(cornerTh);
   d.paths.forEach((path, j) => {
     const th = document.createElement("th");
+    th.setAttribute("role", "columnheader");
     const marker = columnMarker(j, d);
     // "KEEP", not the "✔" this used to show: ✔ already means "confirmed" in
     // the sidebar's status chip, and one glyph carrying two different
@@ -339,6 +344,7 @@ function renderDetail() {
     const isReference = kind === "reference";
 
     const tr = document.createElement("tr");
+    tr.setAttribute("role", "row");
     if (rowIdx % 2 === 1) tr.classList.add("metric-row-alt");
     if (isReference) tr.classList.add("metric-row-reference");
     else if (prevWasReference) tr.classList.add("metric-row-first-scored");
@@ -346,17 +352,25 @@ function renderDetail() {
     prevWasReference = isReference;
 
     const th = document.createElement("th");
+    th.setAttribute("role", "rowheader");
     th.textContent = label;
     tr.appendChild(th);
 
     values.forEach((v, j) => {
       const td = document.createElement("td");
+      td.setAttribute("role", "cell");
       if (j === d.current_pick) td.classList.add("metric-col-pick");
       if (isScoreRow) {
         const frac = Math.max(0, Math.min(1, parseFloat(v) || 0));
         td.classList.add("metric-score-cell");
+        // The bar is a second rendering of the number beside it, so it's
+        // hidden from assistive tech and the cell names itself with the
+        // value -- otherwise the cell has no name of its own and the bar
+        // contributes an empty node.
+        td.setAttribute("aria-label", v);
         const track = document.createElement("div");
         track.className = "score-bar-track";
+        track.setAttribute("aria-hidden", "true");
         const fill = document.createElement("div");
         fill.className = "score-bar-fill";
         fill.style.width = `${frac * 100}%`;
@@ -368,9 +382,15 @@ function renderDetail() {
         td.appendChild(value);
       } else {
         td.textContent = v;
+        // A bare `title` would become these cells' whole accessible name,
+        // replacing the number rather than annotating it -- a screen reader
+        // read the winning cells as "Best value in this row" and never said
+        // 348.7 at all. An explicit aria-label keeps the value first and
+        // demotes the note to a suffix.
         if (winners.includes(j)) {
           td.classList.add("metric-best");
           td.title = "Best value in this row";
+          td.setAttribute("aria-label", `${v}, best value in this row`);
         } else if (v === "n/a") {
           // Deliberately names the state, not a cause. "n/a" means either the
           // optional package isn't installed *or* the measurement failed on
@@ -378,6 +398,7 @@ function renderDetail() {
           // which, and guessing "not installed" sends you off checking your
           // install when the real problem is a single bad image.
           td.title = "Not measured for this file -- either the optional metric isn't installed, or it failed on this image. See Help.";
+          td.setAttribute("aria-label", "n/a, not measured for this file");
         }
       }
       tr.appendChild(td);

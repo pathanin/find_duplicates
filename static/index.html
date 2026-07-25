@@ -41,7 +41,13 @@
   </nav>
   <section id="detail">
     <div id="images-row"></div>
-    <table id="metrics-table"><thead></thead><tbody></tbody></table>
+    <!-- Explicit ARIA roles are load-bearing, not redundant: this table is
+         display:grid with display:contents on thead/tbody/tr (see style.css)
+         so the grid can own the cells directly, and that strips the native
+         table semantics -- without these roles every th/td is exposed as a
+         bare "generic" with no row/column association at all, leaving a
+         screen reader a flat list of ~50 unlabeled numbers. -->
+    <table id="metrics-table" role="table"><thead role="rowgroup"></thead><tbody role="rowgroup"></tbody></table>
     <div id="status-line"></div>
     <div id="actions">
       <div class="actions-decide">
