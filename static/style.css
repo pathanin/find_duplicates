@@ -3,15 +3,6 @@
    cloud, ink, ink-soft), hairlines, and type weight -- so anything that
    looks raised or rounded here is a bug, not a style. */
 
-@font-face {
-  font-family: "Archivo";
-  src: url("/static/fonts/Archivo-Variable-latin.woff2") format("woff2-variations");
-  font-weight: 400 700;
-  font-stretch: 100% 125%;
-  font-style: normal;
-  font-display: swap;
-}
-
 :root {
   --primary: #024ad8;
   --primary-bright: #296ef9;
@@ -42,7 +33,7 @@
   --storm-deep: #356373;
   --error: #b3262b;
 
-  --font: "Archivo", "Helvetica Neue", Helvetica, Arial, system-ui, sans-serif;
+  --font: system-ui, sans-serif;
 
   --display-xxl: 500 72px/1 var(--font);
   --display-lg: 500 44px/1 var(--font);

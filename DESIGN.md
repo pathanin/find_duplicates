@@ -28,66 +28,66 @@ colors:
   error: "#b3262b"
 typography:
   display-xxl:
-    fontFamily: "Archivo, Helvetica Neue, Helvetica, Arial, system-ui, sans-serif"
+    fontFamily: "system-ui, sans-serif"
     fontSize: "72px"
     fontWeight: 500
     lineHeight: 1
     letterSpacing: "-0.02em"
     fontVariant: "tabular-nums"
   display-lg:
-    fontFamily: "Archivo, Helvetica Neue, Helvetica, Arial, system-ui, sans-serif"
+    fontFamily: "system-ui, sans-serif"
     fontSize: "44px"
     fontWeight: 500
     lineHeight: 1
   display-md:
-    fontFamily: "Archivo, Helvetica Neue, Helvetica, Arial, system-ui, sans-serif"
+    fontFamily: "system-ui, sans-serif"
     fontSize: "32px"
     fontWeight: 500
     lineHeight: 1
     fontVariant: "tabular-nums"
   display-sm:
-    fontFamily: "Archivo, Helvetica Neue, Helvetica, Arial, system-ui, sans-serif"
+    fontFamily: "system-ui, sans-serif"
     fontSize: "24px"
     fontWeight: 500
     lineHeight: 1.17
   display-xs:
-    fontFamily: "Archivo, Helvetica Neue, Helvetica, Arial, system-ui, sans-serif"
+    fontFamily: "system-ui, sans-serif"
     fontSize: "20px"
     fontWeight: 500
     lineHeight: 1
   body-md:
-    fontFamily: "Archivo, Helvetica Neue, Helvetica, Arial, system-ui, sans-serif"
+    fontFamily: "system-ui, sans-serif"
     fontSize: "16px"
     fontWeight: 400
     lineHeight: 1.38
   body-emphasis:
-    fontFamily: "Archivo, Helvetica Neue, Helvetica, Arial, system-ui, sans-serif"
+    fontFamily: "system-ui, sans-serif"
     fontSize: "16px"
     fontWeight: 500
     lineHeight: 1.38
   caption-md:
-    fontFamily: "Archivo, Helvetica Neue, Helvetica, Arial, system-ui, sans-serif"
+    fontFamily: "system-ui, sans-serif"
     fontSize: "14px"
     fontWeight: 400
     lineHeight: 1.5
   caption-bold:
-    fontFamily: "Archivo, Helvetica Neue, Helvetica, Arial, system-ui, sans-serif"
+    fontFamily: "system-ui, sans-serif"
     fontSize: "14px"
     fontWeight: 700
     lineHeight: 1.3
   caption-sm:
-    fontFamily: "Archivo, Helvetica Neue, Helvetica, Arial, system-ui, sans-serif"
+    fontFamily: "system-ui, sans-serif"
     fontSize: "12px"
     fontWeight: 400
     lineHeight: 1.33
   button-md:
-    fontFamily: "Archivo, Helvetica Neue, Helvetica, Arial, system-ui, sans-serif"
+    fontFamily: "system-ui, sans-serif"
     fontSize: "14px"
     fontWeight: 600
     lineHeight: 1.4
     letterSpacing: "0.7px"
   button-sm:
-    fontFamily: "Archivo, Helvetica Neue, Helvetica, Arial, system-ui, sans-serif"
+    fontFamily: "system-ui, sans-serif"
     fontSize: "12.6px"
     fontWeight: 700
     lineHeight: 1
@@ -231,7 +231,7 @@ this palette is decorative.
 - Flat by commitment: zero radius, zero shadow, zero gradient
 - Four grounds and a hairline vocabulary instead of elevation
 - One saturated blue for the keeper, coral for close, teal for dry-run, red for failure
-- Archivo grotesque with tabular figures on every comparable number
+- The OS's own system font, with tabular figures on every comparable number
 - The stage never animates; motion exists only on scan progress
 
 ## Colors
@@ -322,21 +322,22 @@ guarantee.
 
 ## Typography
 
-**Display Font:** Archivo (variable, weights 400–700, width 100–125%)
-**Body Font:** Archivo
-**Fallback stack:** Helvetica Neue, Helvetica, Arial, system-ui, sans-serif
+**Display Font:** system-ui
+**Body Font:** system-ui
+**Fallback stack:** sans-serif
 
-Archivo is vendored at `static/fonts/Archivo-Variable-latin.woff2` under the SIL
-Open Font License (`OFL.txt` sits beside it), loaded with `font-display: swap`
-from a local `@font-face`. It stands in for the project owner's Forma DJR Micro,
-which is licensed and cannot ship here — the repository bans CDNs and build
-steps, so the typeface has to be a file in the tree.
+`font: system-ui, sans-serif` resolves to whatever UI face the OS already has
+loaded — San Francisco, Segoe UI, Roboto, or equivalent — so there is zero font
+weight to ship, zero license to track, and no flash-of-unstyled-text to guard
+against. `static/` stays HTML, CSS and vanilla JS with nothing in a `fonts/`
+directory.
 
-**Character:** A neutral American grotesque with a tight, mechanical rhythm. It
-is asked to do two jobs at once: hold a 72px progress count on a black field
-without drama, and set a 12px metric value that has to align digit-for-digit
-against five siblings. The ramp is pinned verbatim as a set of CSS `font:`
-shorthands; sizes are absolute px, never fluid.
+**Character:** Whatever the visiting OS's grotesque is, it is asked to do two
+jobs at once: hold a 72px progress count on a black field without drama, and
+set a 12px metric value that has to align digit-for-digit against five
+siblings — a bar the system font stack's own hinting is left to clear on each
+platform. The ramp is pinned verbatim as a set of CSS `font:` shorthands;
+sizes are absolute px, never fluid.
 
 ### Hierarchy
 - **Display XXL** (500, 72px/1, -0.02em, tabular): the live scan count on the
@@ -619,8 +620,8 @@ the checkbox tick, both drawn from borders.
 - **Don't** truncate a filename at its tail. Near-duplicate exports differ at
   the end of the name; truncate in the middle or clamp to two lines.
 - **Don't** add a font, an icon set, or a stylesheet from a CDN, and don't
-  introduce a build step. `static/` is plain HTML, CSS and vanilla JS; a
-  typeface ships as a file in the tree with its licence beside it.
+  introduce a build step or a vendored font file. `static/` is plain HTML, CSS
+  and vanilla JS; typography rides `system-ui` — whatever the OS already has.
 - **Don't** push the review column past what `auto` rows can hold — the stage's
   160px floor and the candidate strip's 100px floor are both load-bearing.
 - **Don't** let a toast cover the decision sentence, and don't demote a
