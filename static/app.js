@@ -313,6 +313,10 @@ function buildStage() {
     const img = document.createElement("img");
     img.className = "stage-img";
     img.id = `stage-img-${j}`;
+    // Without this, a mousedown-drag on the image starts the browser's own
+    // native image-drag gesture instead of ours -- it wins the pointer
+    // stream, so pan stalls the instant it begins.
+    img.draggable = false;
     // Only the visible layer is exposed: the others are the same photo at
     // other sizes, stacked underneath, and announcing all six as images is
     // noise no one can act on.
@@ -457,12 +461,14 @@ function attachStageHandlers() {
 
   stage.addEventListener("pointerdown", (ev) => {
     if (!state.detail || ev.button !== 0) return;
+    if (view.zoom) ev.preventDefault(); // stop the native image-drag from stealing the gesture
     drag = { x: ev.clientX, y: ev.clientY, moved: false, u: view.u, v: view.v };
     if (view.zoom) {
       stage.classList.add("is-panning");
       stage.setPointerCapture(ev.pointerId);
     }
   });
+  stage.addEventListener("dragstart", (ev) => ev.preventDefault());
 
   stage.addEventListener("pointermove", (ev) => {
     if (!drag || !view.zoom) return;

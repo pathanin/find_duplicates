@@ -392,6 +392,8 @@ button { font-family: inherit; }
   top: 0;
   transform-origin: 0 0;
   opacity: 0;
+  -webkit-user-drag: none;
+  user-select: none;
   /* Every candidate is laid out at the identical scene rectangle and only
      swapped by opacity: no fade, no reflow, so a flip changes the pixels
      and nothing else. */
