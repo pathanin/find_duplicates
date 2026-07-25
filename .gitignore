@@ -28,3 +28,5 @@ AGENTS.md
 
 # local agent config, not source (sole-dev project, not shared on GitHub)
 CLAUDE.md
+PRODUCT.md
+.impeccable/
