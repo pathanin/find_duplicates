@@ -82,14 +82,22 @@ from duplicates_core import (
 # TUI
 # ---------------------------------------------------------------------------
 
-# Content width (no padding) of the metrics table's "Metric" column -- fixed
-# for a given METRIC_ROWS, since that first column's content never varies
-# per-group. Used both to width that column explicitly (DataTable.add_column
-# ..., width=N is content width; render width adds 2*cell_padding, default
-# cell_padding=1 per side) and to size a matching blank spacer at the start
-# of the image-preview row, so the two independently-laid-out widgets'
-# column boundaries line up -- see refresh_detail/_sync_metric_column_widths.
-METRIC_LABEL_COL_WIDTH = max(len("Metric"), max(len(row.label) for row in METRIC_ROWS))
+# Header of the metrics table's first column. Deliberately not "Metric":
+# three of that column's rows aren't weighted metrics -- Dimensions and File
+# size are reference-only, and Quality score is the composite they feed -- so
+# a header calling all ten "Metric" contradicts the '?' help screen, which
+# says exactly that. Kept identical to the web front end's corner header
+# (static/app.js) so both front ends name the same column the same way.
+METRIC_LABEL_COL_HEADER = "Measurement"
+
+# Content width (no padding) of that first column -- fixed for a given
+# METRIC_ROWS, since the column's content never varies per-group. Used both
+# to width that column explicitly (DataTable.add_column ..., width=N is
+# content width; render width adds 2*cell_padding, default cell_padding=1 per
+# side) and to size a matching blank spacer at the start of the image-preview
+# row, so the two independently-laid-out widgets' column boundaries line up
+# -- see refresh_detail/_sync_metric_column_widths.
+METRIC_LABEL_COL_WIDTH = max(len(METRIC_LABEL_COL_HEADER), max(len(row.label) for row in METRIC_ROWS))
 
 
 @functools.cache
@@ -367,7 +375,7 @@ class DuplicateReviewApp(App):
         boxes' real rendered sizes are known (see _sync_metric_column_widths)."""
         table = self.query_one(DataTable)
         table.clear(columns=True)
-        table.add_column("Metric", width=METRIC_LABEL_COL_WIDTH)
+        table.add_column(METRIC_LABEL_COL_HEADER, width=METRIC_LABEL_COL_WIDTH)
         for idx in range(len(group.paths)):
             header = f"[{idx + 1}]" + (" ★" if idx == group.suggested_idx else "")
             width = image_col_widths[idx] if image_col_widths is not None else None

@@ -306,14 +306,28 @@ function renderDetail() {
   tbody.innerHTML = "";
   const headRow = document.createElement("tr");
   const cornerTh = document.createElement("th");
-  cornerTh.textContent = "Metric";
+  // Not "Metric": three of this column's rows aren't weighted metrics --
+  // Dimensions and File size are reference-only, and Quality score is the
+  // composite they feed. The help text says so in as many words, so a header
+  // calling all ten "Metric" contradicts the app's own explanation.
+  cornerTh.textContent = "Measurement";
   headRow.appendChild(cornerTh);
-  d.paths.forEach((_, j) => {
+  d.paths.forEach((path, j) => {
     const th = document.createElement("th");
     const marker = columnMarker(j, d);
-    th.textContent = (marker.picked ? "✔ " : "") + `[${j + 1}]` + (marker.suggested ? " ★" : "");
+    // "KEEP", not the "✔" this used to show: ✔ already means "confirmed" in
+    // the sidebar's status chip, and one glyph carrying two different
+    // meanings on one screen is worth more than the four characters saved.
+    // The TUI's header never had a keep marker at all, so nothing diverges.
+    th.textContent = (marker.picked ? "KEEP " : "") + `[${j + 1}]` + (marker.suggested ? " ★" : "");
     if (marker.picked) th.classList.add("metric-col-pick");
     if (marker.title) th.title = marker.title;
+    // The visible header is just "[3]" -- the filename it stands for lives on
+    // a different element entirely (the preview box above it), so a screen
+    // reader announcing this column header gave a bare index with no way to
+    // tell which file the cell under it belongs to. aria-label replaces the
+    // cell's text as its accessible name, which is exactly what's wanted.
+    th.setAttribute("aria-label", marker.title ? `[${j + 1}] ${path}, ${marker.title}` : `[${j + 1}] ${path}`);
     headRow.appendChild(th);
   });
   thead.appendChild(headRow);
@@ -358,7 +372,12 @@ function renderDetail() {
           td.classList.add("metric-best");
           td.title = "Best value in this row";
         } else if (v === "n/a") {
-          td.title = "Optional dependency not installed -- see Help for details";
+          // Deliberately names the state, not a cause. "n/a" means either the
+          // optional package isn't installed *or* the measurement failed on
+          // this one file (see bestIndices' note above) -- the UI can't tell
+          // which, and guessing "not installed" sends you off checking your
+          // install when the real problem is a single bad image.
+          td.title = "Not measured for this file -- either the optional metric isn't installed, or it failed on this image. See Help.";
         }
       }
       tr.appendChild(td);
@@ -612,6 +631,16 @@ async function showHelp() {
   html += `</ul>
     <h3>Sidebar status</h3>
     <p>◻ pending &middot; ✔ confirmed &middot; — skipped &middot; ⚠ close call (top two picks scored nearly the same)</p>
+    <h3>Reading the comparison table</h3>
+    <p>Columns are numbered <strong>[1]</strong> onward, matching the previews above them and the number keys.
+    <strong>KEEP</strong> marks the file you're currently keeping; <strong>★</strong> marks the suggested
+    (top-scored) one. A highlighted cell is the best value in that row.</p>
+    <p>Each row is one of the metrics listed above, under a shortened name — plus Dimensions and File size,
+    which are reference only, and the combined Quality score at the bottom.</p>
+    <p><strong>n/a</strong> means that metric has no value for that file — either its optional package isn't
+    installed, or the measurement failed on that one image. Either way, a metric that's missing for
+    <em>any</em> file in a group is dropped from that whole group's score, and the remaining weights are
+    rescaled to make up the difference — so a group with an n/a row is still scored, just on fewer inputs.</p>
     <h3>Keyboard shortcuts</h3>
     <ul>
       <li>&larr; / &rarr; -- move pick</li>
