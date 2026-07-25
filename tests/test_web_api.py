@@ -21,6 +21,7 @@ front end (install.sh does not install it).
 Run: python3 tests/test_web_api.py
 """
 
+import io
 import shutil
 import sys
 import tempfile
@@ -30,6 +31,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 from fastapi.testclient import TestClient
+from PIL import Image as PILImage
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import duplicates_core as dc
@@ -161,7 +163,87 @@ def test_group_and_thumb_404_for_out_of_range_index() -> None:
             _wait_ready(client)
             assert client.get("/api/group/99", params={"token": TOKEN}).status_code == 404
             assert client.get("/api/thumb/0/99", params={"token": TOKEN}).status_code == 404
+            assert client.get("/api/stage/0/99", params={"token": TOKEN}).status_code == 404
+            assert client.get("/api/stage/99/0", params={"token": TOKEN}).status_code == 404
         print("  ok  out-of-range group/file indices 404 instead of crashing")
+
+
+def test_stage_and_thumb_render_at_their_own_sizes() -> None:
+    """The browser UI's stage shows one candidate at display scale, so it
+    needs a bigger render than the switcher strip's preview -- upscaling an
+    800px PREVIEW_MAX_SIDE thumbnail into a 1400px stage blurs away the exact
+    sharpness difference the stage exists to show.
+
+    Both sizes share one cache dict, so this also pins its (group, file,
+    max_side) key: under the old (group, file) key whichever size was
+    requested first would be served for both, silently making the stage a
+    blown-up thumbnail (or the strip a 1600px download per tab). The
+    same-file re-request at the end is what would catch that.
+
+    Boundary: neither endpoint may upscale past the original -- a file
+    smaller than the cap comes back at its own size, not padded up to it."""
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp)
+        make_duplicate_set(directory, seed=11, n=3)
+        client, _ = _make_client(directory, directory / "_duplicates")
+        with client:
+            _wait_ready(client)
+            detail = client.get("/api/group/0", params={"token": TOKEN}).json()
+
+            for j, (w, h) in enumerate(detail["dimensions"]):
+                thumb = client.get(f"/api/thumb/0/{j}", params={"token": TOKEN})
+                stage = client.get(f"/api/stage/0/{j}", params={"token": TOKEN})
+                assert thumb.status_code == 200 and stage.status_code == 200
+                tw, th = PILImage.open(io.BytesIO(thumb.content)).size
+                sw, sh = PILImage.open(io.BytesIO(stage.content)).size
+                assert max(tw, th) == min(dc.PREVIEW_MAX_SIDE, max(w, h)), \
+                    f"thumb {j}: {(tw, th)} from a {(w, h)} original"
+                assert max(sw, sh) == min(web.STAGE_MAX_SIDE, max(w, h)), \
+                    f"stage {j}: {(sw, sh)} from a {(w, h)} original"
+
+            # Cached now: the second request for each must still come back at
+            # its own size rather than the other endpoint's.
+            again_t = PILImage.open(io.BytesIO(client.get("/api/thumb/0/0", params={"token": TOKEN}).content)).size
+            again_s = PILImage.open(io.BytesIO(client.get("/api/stage/0/0", params={"token": TOKEN}).content)).size
+            assert max(again_t) == min(dc.PREVIEW_MAX_SIDE, max(detail["dimensions"][0])), again_t
+            assert max(again_s) == min(web.STAGE_MAX_SIDE, max(detail["dimensions"][0])), again_s
+        print("  ok  /api/stage and /api/thumb render (and cache) at their own sizes")
+
+
+def test_group_detail_numeric_fields_match_their_display_strings() -> None:
+    """The browser UI lays the stage out from `dimensions` and draws the
+    candidate strip from `scores`/`size_labels` rather than re-parsing the
+    formatted METRIC_ROWS strings. Those two renderings of the same numbers
+    must not drift, and every one of them has to survive JSON -- a value
+    straight off a numpy-derived analyze() result is numpy.float64/bool_,
+    which is the failure this file already guards for is_close_call."""
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp)
+        make_duplicate_set(directory, seed=12, n=3)
+        client, _ = _make_client(directory, directory / "_duplicates")
+        with client:
+            _wait_ready(client)
+            d = client.get("/api/group/0", params={"token": TOKEN}).json()
+
+            rows = {row["label"].split(" (")[0]: row["values"] for row in d["metrics"]}
+            n = len(d["paths"])
+            assert len(d["dimensions"]) == n and len(d["scores"]) == n and len(d["size_labels"]) == n
+
+            for j in range(n):
+                w, h = d["dimensions"][j]
+                assert isinstance(w, int) and isinstance(h, int), d["dimensions"][j]
+                assert f"{w}x{h}" == rows["Dimensions"][j], (d["dimensions"][j], rows["Dimensions"][j])
+                assert d["size_labels"][j] == rows["File size"][j]
+                assert isinstance(d["sizes"][j], int) and d["sizes"][j] > 0
+                assert f"{d['scores'][j]:.3f}" == rows["Quality score"][j], (d["scores"][j], rows["Quality score"][j])
+
+            # needs_reapply is only meaningful once confirmed: no manifest
+            # entry exists before that, so it reads True for a pending group.
+            assert d["needs_reapply"] is True
+            after = client.post("/api/group/0/confirm", params={"token": TOKEN}).json()
+            assert after["status"] == "confirmed"
+            assert after["needs_reapply"] is False, "a just-confirmed group can't need re-applying"
+        print("  ok  /api/group detail's numeric fields agree with their formatted rows")
 
 
 def test_scan_rejects_invalid_directory_and_out_of_range_threshold() -> None:
@@ -358,6 +440,8 @@ def main() -> None:
         test_index_sets_cookie_and_cookie_alone_authenticates,
         test_initial_scan_populates_groups,
         test_group_and_thumb_404_for_out_of_range_index,
+        test_stage_and_thumb_render_at_their_own_sizes,
+        test_group_detail_numeric_fields_match_their_display_strings,
         test_scan_rejects_invalid_directory_and_out_of_range_threshold,
         test_close_call_group_serializes_without_500,
         test_confirm_moves_files_and_skip_unapplies,
