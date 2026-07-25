@@ -463,15 +463,32 @@ function attachStageHandlers() {
     if (!state.detail || ev.button !== 0) return;
     if (view.zoom) ev.preventDefault(); // stop the native image-drag from stealing the gesture
     drag = { x: ev.clientX, y: ev.clientY, moved: false, u: view.u, v: view.v };
-    if (view.zoom) {
-      stage.classList.add("is-panning");
-      stage.setPointerCapture(ev.pointerId);
-    }
+    // Captured unconditionally, matching `drag` above: if capture were only
+    // taken while already zoomed, a press-and-release outside #stage while
+    // unzoomed never reaches `endDrag` (it's bound to #stage), stranding
+    // `drag` non-null. Zoom later turning on some other way (the Z key, e.g.)
+    // then reads that stale `drag` and pans on bare mouse movement, no button
+    // held.
+    stage.setPointerCapture(ev.pointerId);
+    if (view.zoom) stage.classList.add("is-panning");
   });
   stage.addEventListener("dragstart", (ev) => ev.preventDefault());
 
   stage.addEventListener("pointermove", (ev) => {
     if (!drag || !view.zoom) return;
+    // Chrome can drop the pointerup entirely when the button is released
+    // outside the browser window while the pointer is captured -- confirmed
+    // by reproducing this in Chrome (including a fresh incognito window, so
+    // not stale JS) while the same drag is fine in Safari. `buttons` is
+    // re-read from the OS on every event rather than tracked from past
+    // events, so it still reflects a real release even when the discrete
+    // pointerup never fired; trust it over the stale `drag`.
+    if ((ev.buttons & 1) === 0) {
+      drag = null;
+      stage.classList.remove("is-panning");
+      if (stage.hasPointerCapture && stage.hasPointerCapture(ev.pointerId)) stage.releasePointerCapture(ev.pointerId);
+      return;
+    }
     const box = stageBox();
     const { w, h } = dimsOf(state.detail.current_pick);
     const s = scaleFor(state.detail.current_pick, box);
