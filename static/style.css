@@ -167,7 +167,10 @@ input[type="text"], input[type="number"] {
   gap: 0.5em;
 }
 .group-item:hover { background: var(--bg-alt); }
-.group-item.active { background: var(--bg-alt); font-weight: 600; border-left: 3px solid var(--accent); }
+/* No accent border-left here: hover uses the same --bg-alt background, so
+   the weight step is what actually separates "active" from "hovered" --
+   the border was a third signal for a state two already covered. */
+.group-item.active { background: var(--bg-alt); font-weight: 600; }
 .group-item.status-done { color: var(--fg-dim); }
 .group-item.status-done.active { color: var(--fg); }
 .group-item-text {
