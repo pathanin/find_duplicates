@@ -277,7 +277,7 @@ function renderQueue() {
     const label = document.createElement("span");
     label.className = "q-label";
     label.textContent = g.status === "confirmed"
-      ? `${g.file_count} files → keeping ${g.current_pick + 1}`
+      ? `${g.file_count} files · kept [${g.current_pick + 1}]`
       : `${g.file_count} files`;
 
     btn.append(idx, dot, label);
@@ -285,9 +285,11 @@ function renderQueue() {
     if (g.is_close_call) {
       // Spelled out rather than a bare caution glyph: a close call isn't an
       // error, it just means the top two scored nearly the same.
+      // The product's own term, in full: "Close" alone, uppercase and red at
+      // the right edge of a clickable row, reads as a dismiss button.
       const flag = document.createElement("span");
       flag.className = "q-close";
-      flag.textContent = "Close";
+      flag.textContent = "Close call";
       btn.appendChild(flag);
     }
 
@@ -317,7 +319,12 @@ function buildStage() {
   d.paths.forEach((path, j) => {
     const img = document.createElement("img");
     img.className = "stage-img";
-    img.alt = j === d.current_pick ? `${path} — the file you're keeping` : path;
+    img.id = `stage-img-${j}`;
+    // Only the visible layer is exposed: the others are the same photo at
+    // other sizes, stacked underneath, and announcing all six as images is
+    // noise no one can act on.
+    img.alt = j === d.current_pick ? `${path} — the file you're keeping` : "";
+    img.setAttribute("aria-hidden", j === d.current_pick ? "false" : "true");
     img.decoding = "async";
     img.src = `/api/stage/${d.index}/${j}?g=${state.generation}`;
     img.dataset.full = "0";
@@ -408,9 +415,24 @@ function renderHud() {
     return;
   }
   const factor = inspectMaxWidth() / dimsOf(d.current_pick).w;
+  const pan = "drag or shift+arrows to pan";
   $("hud-zoom").textContent = factor > 1.02
-    ? `Inspecting 1:1 · this file upscaled ${factor.toFixed(1)}× · drag to pan`
-    : "Inspecting 1:1 · true pixels · drag to pan";
+    ? `Inspecting 1:1 · this file upscaled ${factor.toFixed(1)}× · ${pan}`
+    : `Inspecting 1:1 · true pixels · ${pan}`;
+}
+
+// Keyboard pan, one tenth of the visible frame per press. Full keyboard
+// operation is a durable product constraint, and "drag to pan" was the one
+// affordance in this UI a pointer alone could reach.
+function panBy(dirU, dirV) {
+  const d = state.detail;
+  if (!d || !view.zoom) return;
+  const box = stageBox();
+  const { w, h } = dimsOf(d.current_pick);
+  const s = scaleFor(d.current_pick, box);
+  view.u = clamp(view.u + dirU * 0.1 * (box.w / (w * s)), 0, 1);
+  view.v = clamp(view.v + dirV * 0.1 * (box.h / (h * s)), 0, 1);
+  layoutStage();
 }
 
 function setZoom(on, u, v) {
@@ -482,20 +504,42 @@ function attachStageHandlers() {
 // Candidate switcher
 // ---------------------------------------------------------------------------
 
+// Truncates in the middle, never at the tail. Exports of one photo differ at
+// the end of the name ("… copy 2.jpg" against "… copy.jpg"), so an ellipsis
+// that eats the tail can render two different files as identical text.
+function shortName(name, max) {
+  if (name.length <= max) return name;
+  const head = Math.ceil((max - 1) * 0.5);
+  return `${name.slice(0, head)}…${name.slice(head + 1 - max)}`;
+}
+
+// How much name a tab can hold before the two-line clamp starts eating the
+// tail anyway: tabs share the strip, so more candidates means less room.
+function nameBudget(count) {
+  if (count >= 5) return 34;
+  if (count >= 3) return 52;
+  return 90;
+}
+
 function renderSwitcher() {
   const host = $("switcher");
   host.innerHTML = "";
   const d = state.detail;
   if (!d) return;
   const best = Math.max(...d.scores);
+  const budget = nameBudget(d.paths.length);
 
   d.paths.forEach((path, j) => {
     const active = j === d.current_pick;
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "cand" + (active ? " is-active" : "");
+    btn.id = `cand-${j}`;
     btn.setAttribute("role", "tab");
     btn.setAttribute("aria-selected", String(active));
+    // The stage is the one panel every tab controls -- it's the same box
+    // showing a different file, which is exactly the tab/tabpanel relation.
+    btn.setAttribute("aria-controls", "stage");
     btn.tabIndex = active ? 0 : -1;
 
     const top = document.createElement("span");
@@ -505,7 +549,7 @@ function renderSwitcher() {
     idx.textContent = String(j + 1);
     const name = document.createElement("span");
     name.className = "cand-name";
-    name.textContent = path;
+    name.textContent = shortName(path, budget);
     top.append(idx, name);
 
     // Facts and the keeping/suggested tag share a line so the filename above
@@ -693,20 +737,27 @@ function renderDecision() {
     el.appendChild(s);
   };
 
+  // Under --dry-run nothing is ever moved, so the sentence the user reads
+  // before acting has to be conditional too -- stating "moves 5 files" under
+  // a banner that says no file will be moved is the wrong voice in the one
+  // place that describes a destructive action.
+  const dry = !!(state.params && state.params.dry_run);
+  const files = `${nMoved} file${nMoved === 1 ? "" : "s"}`;
+
   if (d.status === "confirmed") {
-    const stale = !!d.needs_reapply;
-    add("Kept ");
+    add(dry ? "Marked kept (dry run) " : "Kept ");
     strong(`[${d.current_pick + 1}] ${keptName}`);
-    add(`. ${nMoved} file${nMoved === 1 ? "" : "s"} moved to ${dest}.`);
-    if (stale) add("  Pick changed since confirming — confirm again to apply it.", "warn");
+    add(dry ? `. ${files} would have moved to ${dest}.` : `. ${files} moved to ${dest} — undo with Skip group.`);
+    if (d.needs_reapply) add("  Pick changed since confirming — confirm again to apply it.", "warn");
   } else if (d.status === "skipped") {
     add("Skipped — every file left where it is. Confirming would keep ");
     strong(`[${d.current_pick + 1}] ${keptName}`);
     add(` and move ${nMoved} other${nMoved === 1 ? "" : "s"}.`);
   } else {
-    add("Confirm keeps ");
+    add(dry ? "Confirm would keep " : "Confirm keeps ");
     strong(`[${d.current_pick + 1}] ${keptName}`);
-    add(nMoved ? ` and moves ${nMoved} file${nMoved === 1 ? "" : "s"} to ${dest}.` : " and moves nothing else.");
+    if (!nMoved) add(dry ? " and move nothing else." : " and moves nothing else.");
+    else add(dry ? ` and would move ${files} to ${dest} — dry run, so nothing actually moves.` : ` and moves ${files} to ${dest}.`);
     if (d.current_pick !== d.suggested_idx) {
       add(`  Suggested was [${d.suggested_idx + 1}] ${d.paths[d.suggested_idx]}.`);
     }
@@ -728,7 +779,23 @@ function updateActionButtons() {
       ? btn.dataset.enabledTitle
       : (state.status === "scanning" ? "Locked while a scan is running." : NO_GROUP_REASON);
   }
-  $("btn-skip").textContent = state.detail && state.detail.status === "skipped" ? "Un-skip group" : "Skip group";
+  // Skip does three different things depending on where the group stands,
+  // and one of them moves files back out of the destination folder. The
+  // label has to say which -- "Skip group" on a confirmed group described
+  // the opposite of what pressing it does.
+  const skip = $("btn-skip");
+  const status = state.detail ? state.detail.status : "pending";
+  if (hasGroup && status === "confirmed") {
+    skip.textContent = "Undo keep";
+    skip.dataset.enabledTitle = "Move the files this group already moved back where they came from, and mark it skipped. Shortcut: Delete, Backspace or S";
+  } else if (hasGroup && status === "skipped") {
+    skip.textContent = "Un-skip group";
+    skip.dataset.enabledTitle = "Put this group back in the queue as pending. Shortcut: Delete, Backspace or S";
+  } else {
+    skip.textContent = "Skip group";
+    skip.dataset.enabledTitle = "Leave every file in this group where it is and move on. Shortcut: Delete, Backspace or S";
+  }
+  if (hasGroup) skip.title = skip.dataset.enabledTitle;
 }
 
 // ---------------------------------------------------------------------------
@@ -751,9 +818,12 @@ function renderPickChange() {
   const d = state.detail;
   if (d) {
     stageImgs.forEach((img, j) => {
-      img.classList.toggle("is-active", j === d.current_pick);
-      img.alt = j === d.current_pick ? `${d.paths[j]} — the file you're keeping` : d.paths[j];
+      const active = j === d.current_pick;
+      img.classList.toggle("is-active", active);
+      img.alt = active ? `${d.paths[j]} — the file you're keeping` : "";
+      img.setAttribute("aria-hidden", active ? "false" : "true");
     });
+    $("stage").setAttribute("aria-labelledby", `cand-${d.current_pick}`);
   }
   renderSwitcher();
   renderLedger();
@@ -836,9 +906,14 @@ async function confirmGroup() {
     const data = await api(`/api/group/${i}/confirm`, { method: "POST" });
     applyGroupPatch(i, data);
     const moved = data.paths.length - 1;
-    if (state.params && state.params.dry_run) {
-      showToast(`Dry run: group ${i + 1} would keep ${data.paths[pickAtPress]} and move ${moved} file${moved === 1 ? "" : "s"}.`);
-    }
+    const files = `${moved} file${moved === 1 ? "" : "s"}`;
+    const name = data.paths[pickAtPress];
+    // A real move gets said out loud, with the way back: the group advances
+    // immediately, so the decision bar is already describing the next group
+    // by the time the user looks down at it.
+    showToast(state.params && state.params.dry_run
+      ? `Dry run: group ${i + 1} would keep ${name} and move ${files}. Nothing was moved.`
+      : `Group ${i + 1}: kept ${name}, ${files} moved. Reopen group ${i + 1} to undo.`);
     advance();
   } catch (e) {
     showToast(`Confirm failed: ${e.message}`, true);
@@ -848,10 +923,17 @@ async function confirmGroup() {
 async function skipGroup() {
   const i = state.activeIndex;
   if (i < 0 || !state.detail) return;
+  const wasConfirmed = state.detail.status === "confirmed";
   try {
     await pickChain;
     const data = await api(`/api/group/${i}/skip`, { method: "POST" });
     applyGroupPatch(i, data);
+    // Undoing a confirmed group is a second real move -- files come back out
+    // of the destination folder -- so it gets said as plainly as the first.
+    if (wasConfirmed && !(state.params && state.params.dry_run)) {
+      const moved = data.paths.length - 1;
+      showToast(`Group ${i + 1}: ${moved} file${moved === 1 ? "" : "s"} moved back, group marked skipped.`);
+    }
     if (data.status === "skipped") advance();
   } catch (e) {
     showToast(`Skip failed: ${e.message}`, true);
@@ -863,7 +945,14 @@ function advance() {
   if (!n) return;
   for (let off = 1; off <= n; off++) {
     const j = (state.activeIndex + off) % n;
-    if (state.groups[j].status === "pending") { loadGroup(j); return; }
+    if (state.groups[j].status === "pending") {
+      loadGroup(j);
+      // Focus follows the review, not the button that was clicked: leaving it
+      // on Confirm means the next Enter or Space fires that button again --
+      // against the group that just slid in underneath it.
+      $("stage").focus({ preventScroll: true });
+      return;
+    }
   }
   showToast("That was the last one — every group is reviewed.");
 }
@@ -998,7 +1087,7 @@ function helpContent(info) {
 
   frag.appendChild(h("h3", "Reading the stage"));
   frag.appendChild(h("p", "One file fills the stage at a time and every file in the group is laid out in exactly the same frame, so moving between them changes the pixels and nothing else — the sharper file is the one that stops looking soft. The file on the stage is the file you're keeping."));
-  frag.appendChild(h("p", "Click the stage (or press Z) to inspect at 1:1. At that zoom the largest file in the group is shown at its true pixels and the others are scaled to match the same part of the scene, so an export upscaled from a smaller original gives itself away. Drag to pan; the spot you're inspecting stays put as you move between files."));
+  frag.appendChild(h("p", "Click the stage (or press Z) to inspect at 1:1. At that zoom the largest file in the group is shown at its true pixels and the others are scaled to match the same part of the scene, so an export upscaled from a smaller original gives itself away. Drag or hold shift with the arrow keys to pan; the spot you're inspecting stays put as you move between files."));
   frag.appendChild(h("p", "n/a in the table means that measurement has no value for that file — either its optional package isn't installed, or it failed on that one image. A measurement missing for any file is dropped from the whole group's score and the remaining weights are rescaled, so the group is still scored, just on fewer inputs."));
 
   frag.appendChild(h("h3", "Keyboard"));
@@ -1009,8 +1098,9 @@ function helpContent(info) {
     ["1 – 9", "Keep a specific file"],
     ["↑ ↓", "Move between groups"],
     ["Enter / C", "Confirm keep"],
-    ["Delete / S", "Skip group"],
+    ["Delete / S", "Skip group — on a confirmed group, move its files back"],
     ["Z", "Inspect at 1:1"],
+    ["Shift + arrows", "Pan while inspecting"],
     ["O", "Open the kept file full-res in a new tab"],
     ["M", "Show or hide the measurements"],
     ["? / F1", "This panel"],
@@ -1060,11 +1150,32 @@ function attachKeyboardHandler() {
       return;
     }
 
-    if (e.code === "ArrowLeft") { pickRelative(-1); e.preventDefault(); }
+    // Held keys must never chain destructive actions: confirm advances to the
+    // next group, so one leaned-on Enter would walk the queue moving files
+    // group after group. Arrows repeat on purpose (flipping candidates and
+    // stepping the queue are both safe).
+    const destructive = e.code === "Enter" || e.code === "KeyC"
+      || e.code === "Delete" || e.code === "Backspace" || e.code === "KeyS";
+    if (destructive && e.repeat) { e.preventDefault(); return; }
+
+    // Enter belongs to whatever control has focus. Without this, Enter on
+    // Help, Skip, a queue row or a candidate tab would confirm the group and
+    // preventDefault would swallow the button's own activation -- the browser
+    // form of the stray-click hazard the TUI blocks in its footer.
+    const focused = document.activeElement;
+    const onControl = !!(focused && focused.matches && focused.matches("button, a[href], summary"));
+
+    if (view.zoom && e.shiftKey && e.code.startsWith("Arrow")) {
+      const step = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.code];
+      panBy(step[0], step[1]);
+      e.preventDefault();
+    }
+    else if (e.code === "ArrowLeft") { pickRelative(-1); e.preventDefault(); }
     else if (e.code === "ArrowRight") { pickRelative(1); e.preventDefault(); }
     else if (e.code === "ArrowUp") { stepGroup(-1); e.preventDefault(); }
+    else if (e.code === "Enter") { if (!onControl) { confirmGroup(); e.preventDefault(); } }
     else if (e.code === "ArrowDown") { stepGroup(1); e.preventDefault(); }
-    else if (e.code === "Enter" || e.code === "KeyC") { confirmGroup(); e.preventDefault(); }
+    else if (e.code === "KeyC") { confirmGroup(); e.preventDefault(); }
     else if (e.code === "Delete" || e.code === "Backspace" || e.code === "KeyS") { skipGroup(); e.preventDefault(); }
     else if (e.code === "KeyZ") { setZoom(!view.zoom); e.preventDefault(); }
     else if (e.code === "KeyO") { openFullRes(); e.preventDefault(); }

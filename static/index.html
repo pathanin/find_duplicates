@@ -21,8 +21,10 @@
   STORY: the queue says how much is left; the stage says which file is
   sharper; the decision bar says what confirming will move, then advances.
   FIRST VIEWPORT: command bar over a full-height split - 288px queue rail
-  left, ink stage filling the rest, candidate strip and measurement ledger
-  stacked beneath it, Confirm keep anchored bottom-right.
+  left, ink stage filling the rest, candidate strip beneath it, Confirm keep
+  anchored bottom-right. The measurement ledger stacks under the strip and
+  opens by default only where the viewport can seat it without cutting into
+  the stage; below that it stays one hairline header, on M.
   FORM: registered stage, candidate 4 of the ordered structural list; seed
   key e65334a9, assigned index 4. No staging challenger committed - the one
   dealt (held-failure tableau) has no failure state to hold in a review loop.
@@ -86,7 +88,7 @@
     <!-- One stage, every candidate stacked in it at identical framing: the
          flip between them is instant and unanimated on purpose, because a
          cross-fade is exactly what hides the difference being judged. -->
-    <div class="stage" id="stage" tabindex="-1">
+    <div class="stage" id="stage" tabindex="-1" role="tabpanel">
       <div class="stage-frame" id="stage-frame"></div>
 
       <div class="stage-hud">

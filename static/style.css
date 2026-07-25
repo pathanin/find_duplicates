@@ -466,7 +466,6 @@ button { font-family: inherit; }
   /* A tab narrower than this can't show enough of a filename to tell two
      exports apart, so the strip scrolls instead of shrinking past it. */
   min-width: 152px;
-  max-width: 340px;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -602,7 +601,7 @@ button { font-family: inherit; }
 .ledger-scroll {
   flex: 1 1 auto;
   min-height: 0;
-  max-height: min(40vh, 430px);
+  max-height: min(34vh, 340px);
   overflow: auto;
   overscroll-behavior: contain;
 }
@@ -658,7 +657,9 @@ button { font-family: inherit; }
 .row-reference td, .row-reference th { color: var(--graphite); }
 .row-first-scored th, .row-first-scored td { border-top: 1px solid var(--hairline-strong); }
 .is-best { color: var(--primary); font-weight: 700; }
-.is-na { color: var(--steel); }
+/* Graphite, not steel: an unmeasured metric still has to be readable --
+   steel on paper is ~1.8:1, and inside a tinted pick column it disappears. */
+.is-na { color: var(--graphite); }
 
 /* The score is the verdict the whole table builds to, so it stays on the
    ledger's bottom edge instead of scrolling out of sight under the taller
@@ -845,13 +846,23 @@ button { font-family: inherit; }
   .queue-list { display: flex; overflow-x: auto; overflow-y: hidden; }
   .q-item {
     flex: 0 0 auto;
-    grid-template-columns: auto auto auto;
+    grid-template-columns: auto auto auto auto;
     gap: 8px;
     border-bottom: 0;
     border-right: 1px solid var(--hairline);
     padding: 0 14px;
   }
-  .q-label { display: none; }
+  /* The file count stays; the close-call flag becomes its own square rather
+     than a word, so a narrow row can't read as "01 ☐ CLOSE" with the thing
+     it counts missing. The text stays in the accessibility tree. */
+  .q-close {
+    width: 9px;
+    height: 9px;
+    background: var(--bloom-coral);
+    overflow: hidden;
+    text-indent: 120%;
+    white-space: nowrap;
+  }
 
   .commandbar { height: auto; flex-wrap: wrap; }
   .mark { flex: 1 0 100%; height: 44px; border-right: 0; border-bottom: 1px solid var(--hairline); }
