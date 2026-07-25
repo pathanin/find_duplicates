@@ -1,5 +1,5 @@
 """Tests for the progress reporting added to group_duplicates()/analyze_paths()
-in find_duplicates.py: prints "\rHashing: n/N" / "\rAnalyzing: n/N" as each
+in duplicates_core.py: prints "\rHashing: n/N" / "\rAnalyzing: n/N" as each
 uncached item completes, falling back to occasional plain lines when stdout
 isn't a TTY (see _print_progress).
 
@@ -24,7 +24,7 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import find_duplicates as fd
+import duplicates_core as dc
 
 
 def make_texture(h: int, w: int, seed: int) -> np.ndarray:
@@ -74,12 +74,12 @@ def test_group_duplicates_progress_preserves_order_and_correctness():
 
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            fd.group_duplicates(paths, fd.DEFAULT_HASH_THRESHOLD, cache)
+            dc.group_duplicates(paths, dc.DEFAULT_HASH_THRESHOLD, cache)
 
         for p in paths:
-            cached = fd.cached_hash(cache, p, p.stat())
+            cached = dc.cached_hash(cache, p, p.stat())
             assert cached is not None, f"{p} missing from cache after group_duplicates"
-            assert cached == fd._hash_one(p), f"{p} got the wrong hash -- order-pairing broke"
+            assert cached == dc._hash_one(p), f"{p} got the wrong hash -- order-pairing broke"
         print("  ok  pool-path hashes are correctly paired to their own file, not shuffled")
 
 
@@ -98,7 +98,7 @@ def test_analyze_paths_progress_preserves_order_and_correctness():
         cache: dict = {}
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            analyzed = fd.analyze_paths(paths, cache)
+            analyzed = dc.analyze_paths(paths, cache)
 
         for p in paths:
             assert p in analyzed, f"{p} missing from analyze_paths result"
@@ -119,7 +119,7 @@ def test_progress_emitted_and_final_count_matches_non_tty():
 
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            fd.group_duplicates(paths, fd.DEFAULT_HASH_THRESHOLD, cache)
+            dc.group_duplicates(paths, dc.DEFAULT_HASH_THRESHOLD, cache)
         output = buf.getvalue()
 
         assert "\r" not in output, "non-TTY stdout must not get carriage-return-overwrite output"
@@ -136,7 +136,7 @@ def test_progress_emitted_with_carriage_return_when_tty():
 
         buf = _FakeTTYBuffer()
         with contextlib.redirect_stdout(buf):
-            fd.group_duplicates(paths, fd.DEFAULT_HASH_THRESHOLD, cache)
+            dc.group_duplicates(paths, dc.DEFAULT_HASH_THRESHOLD, cache)
         output = buf.getvalue()
 
         assert "\r" in output, "TTY stdout should get carriage-return-overwrite progress output"
@@ -151,11 +151,11 @@ def test_no_progress_output_when_nothing_to_compute():
     with tempfile.TemporaryDirectory() as tmp:
         paths = make_distinguishable_images(tmp, 2)
         cache: dict = {}
-        fd.group_duplicates(paths, fd.DEFAULT_HASH_THRESHOLD, cache)  # warm the cache
+        dc.group_duplicates(paths, dc.DEFAULT_HASH_THRESHOLD, cache)  # warm the cache
 
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            fd.group_duplicates(paths, fd.DEFAULT_HASH_THRESHOLD, cache)
+            dc.group_duplicates(paths, dc.DEFAULT_HASH_THRESHOLD, cache)
         assert buf.getvalue() == "", f"expected no progress output on an all-cache-hit run, got: {buf.getvalue()!r}"
         print("  ok  all-cache-hit run prints no progress output")
 
@@ -170,10 +170,10 @@ def test_analyze_paths_results_identical_with_and_without_capturing_progress():
         cache_a: dict = {}
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            analyzed_a = fd.analyze_paths(paths, cache_a)
+            analyzed_a = dc.analyze_paths(paths, cache_a)
 
         cache_b: dict = {}
-        analyzed_b = fd.analyze_paths(paths, cache_b)  # stdout left alone
+        analyzed_b = dc.analyze_paths(paths, cache_b)  # stdout left alone
 
         for p in paths:
             assert analyzed_a[p]["dimensions"] == analyzed_b[p]["dimensions"]

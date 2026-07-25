@@ -1,7 +1,7 @@
 """Tests for the progress_callback parameter added to group_duplicates()/
-analyze_paths()/build_groups() in duplicates_core.py, ahead of the browser
-front end (find_duplicates-web.py) that needs scan progress delivered as
-data (for an SSE stream) rather than printed to stdout.
+analyze_paths()/build_groups() in duplicates_core.py, for the browser front
+end (duplicates_web.py) that needs scan progress delivered as data (for an
+SSE stream) rather than printed to stdout.
 
 Purely additive: progress_callback defaults to None, which must reproduce
 the exact stdout behavior test_scan_progress.py already locks in. When a

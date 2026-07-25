@@ -1,9 +1,9 @@
-// Vanilla JS, no build step. Mirrors find_duplicates.py's DuplicateReviewApp:
-// same status vocabulary, same confirm/skip semantics via the same
-// server-side primitives, and keyboard bindings on KeyboardEvent.code
-// (physical position) rather than .key -- an alternate layout remaps .key to
-// a different character before the browser sees it, the exact concern the
-// TUI's control-key aliases exist to solve.
+// Vanilla JS, no build step. Same status vocabulary and confirm/skip
+// semantics as the server-side duplicates_core primitives, and keyboard
+// bindings on KeyboardEvent.code (physical position) rather than .key -- an
+// alternate layout remaps .key to a different character before the browser
+// sees it, which would otherwise leave a user on such a layout unable to
+// use these shortcuts at all.
 //
 // The organising idea of this UI is the stage: one candidate visible at a
 // time, every candidate laid out at the identical scene rectangle, flipped
@@ -848,8 +848,9 @@ function renderPickChange() {
 }
 
 // ---------------------------------------------------------------------------
-// Actions -- mirror DuplicateReviewApp.action_pick / action_confirm /
-// action_skip via the same server-side primitives.
+// Actions -- pick/confirm/skip, via the server-side pick/confirm/skip
+// endpoints (duplicates_web.py), themselves built on the same
+// duplicates_core apply_pick/unapply/pick_needs_reapply primitives.
 // ---------------------------------------------------------------------------
 
 function applyGroupPatch(i, data, keepLocalPick = false) {
@@ -1139,9 +1140,9 @@ function closeHelp() {
 function helpOpen() { return !$("help-sheet").hidden; }
 
 // ---------------------------------------------------------------------------
-// Keyboard, mirroring DuplicateReviewApp.BINDINGS. Bindings read
-// KeyboardEvent.code (physical key position) rather than .key: an alternate
-// layout remaps .key to a different character before the browser sees it.
+// Keyboard shortcuts. Bindings read KeyboardEvent.code (physical key
+// position) rather than .key: an alternate layout remaps .key to a
+// different character before the browser sees it.
 // ---------------------------------------------------------------------------
 
 function attachKeyboardHandler() {
@@ -1176,8 +1177,8 @@ function attachKeyboardHandler() {
 
     // Enter belongs to whatever control has focus. Without this, Enter on
     // Help, Skip, a queue row or a candidate tab would confirm the group and
-    // preventDefault would swallow the button's own activation -- the browser
-    // form of the stray-click hazard the TUI blocks in its footer.
+    // preventDefault would swallow the button's own activation -- a stray
+    // Enter or click must never silently confirm/skip a group.
     const focused = document.activeElement;
     const onControl = !!(focused && focused.matches && focused.matches("button, a[href], summary"));
 

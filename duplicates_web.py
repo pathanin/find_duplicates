@@ -1,13 +1,13 @@
 """
 duplicates_web.py
 
-FastAPI application for the browser-based front end: same scan/group/score/
-apply pipeline as the Textual TUI (find_duplicates.py), all imported from
-duplicates_core.py, with a token-gated HTTP API instead of a terminal UI.
+FastAPI application for the browser-based front end: the scan/group/score/
+apply pipeline lives in duplicates_core.py, exposed here as a token-gated
+HTTP API instead of a CLI-driven loop.
 
-Importable module (unlike find_duplicates-web.py, whose hyphenated filename
-can't be `import`ed) so tests can drive it directly via FastAPI's
-TestClient. find_duplicates-web.py is the thin CLI entry point that calls
+Importable module (unlike find_duplicates.py, whose CLI-focused top level
+isn't meant to be imported) so tests can drive it directly via FastAPI's
+TestClient. find_duplicates.py is the thin CLI entry point that calls
 create_app() and hands the result to uvicorn.
 
 Session model: one in-memory Session per process, seeded by the CLI args
@@ -61,8 +61,8 @@ HEIC_EXTS = {".heic", ".heif"}
 # direction contract in static/index.html), so it needs a render well above
 # PREVIEW_MAX_SIDE's 800px -- upscaling a 800px preview to fill a 1400px
 # stage blurs away the exact sharpness difference the stage exists to show.
-# PREVIEW_MAX_SIDE is shared with the TUI and deliberately tuned, so this is
-# a separate size rather than a bump of it.
+# PREVIEW_MAX_SIDE is used elsewhere (thumbnail size) and deliberately
+# tuned, so this is a separate size rather than a bump of it.
 STAGE_MAX_SIDE = 1600
 
 
@@ -155,7 +155,8 @@ def _launch_scan(session: Session, params: ScanParams, loop: asyncio.AbstractEve
 
 def _display_path(session: Session, path: Path) -> str:
     """Filename alone is ambiguous under --recursive (two subdirectories
-    can each hold an IMG_1234.jpg) -- mirrors DuplicateReviewApp._display_path."""
+    can each hold an IMG_1234.jpg), so show the path relative to the scan
+    root instead."""
     if session.params.recursive:
         try:
             return str(path.relative_to(session.params.directory))
@@ -367,11 +368,11 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
 
     @app.post("/api/group/{i}/confirm")
     async def confirm_group(i: int, _: str = Depends(require_token)) -> JSONResponse:
-        """Mirrors DuplicateReviewApp.action_confirm's retry-safe sequence,
-        via the same duplicates_core primitives: only re-move files if the
-        pick actually diverged from what's on disk when already confirmed;
-        unapply-then-reapply (a no-op unless a prior attempt partially
-        failed) for pending/skipped groups."""
+        """Retry-safe confirm sequence built on the duplicates_core
+        primitives: only re-move files if the pick actually diverged from
+        what's on disk when already confirmed; unapply-then-reapply (a
+        no-op unless a prior attempt partially failed) for pending/skipped
+        groups."""
         with session.lock:
             _require_not_scanning(session)
             if not (0 <= i < len(session.groups)):
@@ -394,16 +395,15 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
                     )
             except Exception as exc:
                 # apply_pick's own apply_group leaves group.status alone on
-                # a raise (stays whatever it was), matching the TUI's
-                # "stays pending on failure" invariant -- surface the error
+                # a raise (stays whatever it was) -- surface the error
                 # rather than swallowing it so the client can show it.
                 raise HTTPException(500, f"failed to apply group {i}: {exc}") from exc
             return JSONResponse(_group_detail(session, i, g))
 
     @app.post("/api/group/{i}/skip")
     async def skip_group(i: int, _: str = Depends(require_token)) -> JSONResponse:
-        """Mirrors DuplicateReviewApp.action_skip: pending/confirmed -> skipped
-        (unapplying first if confirmed), skipped -> pending (toggle back)."""
+        """pending/confirmed -> skipped (unapplying first if confirmed),
+        skipped -> pending (toggle back)."""
         with session.lock:
             _require_not_scanning(session)
             if not (0 <= i < len(session.groups)):

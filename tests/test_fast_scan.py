@@ -1,4 +1,4 @@
-"""Regression tests for the fast-scanning path in find_duplicates.py:
+"""Regression tests for the fast-scanning path in duplicates_core.py:
 reduced-resolution perceptual hashing and the (mtime, size)-keyed analyze()
 cache backing the parallel process pool.
 
@@ -14,7 +14,6 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import find_duplicates as fd
 import duplicates_core as dc
 
 
@@ -53,10 +52,10 @@ def test_load_hash_gray_uses_reduced_decode_for_normal_size() -> None:
         p = Path(tmp) / "large.jpg"
         save_jpeg(make_texture(1200, 1600, seed=1), p)
 
-        result = fd.load_hash_gray(p)
+        result = dc.load_hash_gray(p)
         reduced = cv2.imread(str(p), cv2.IMREAD_REDUCED_GRAYSCALE_8)
         assert result.shape == reduced.shape, "expected the fast reduced-decode path for a large image"
-        assert min(result.shape) >= fd.MIN_REDUCED_DECODE_SIDE
+        assert min(result.shape) >= dc.MIN_REDUCED_DECODE_SIDE
         print(f"  ok  large image {reduced.shape}: took the reduced-decode fast path")
 
 
@@ -75,11 +74,11 @@ def test_load_hash_gray_falls_back_to_full_for_small_export() -> None:
         save_jpeg(make_texture(160, 200, seed=2), p)
 
         reduced = cv2.imread(str(p), cv2.IMREAD_REDUCED_GRAYSCALE_8)
-        assert min(reduced.shape) < fd.MIN_REDUCED_DECODE_SIDE, (
+        assert min(reduced.shape) < dc.MIN_REDUCED_DECODE_SIDE, (
             "test file must be small enough to trigger the fallback; adjust dimensions if this fails"
         )
 
-        result = fd.load_hash_gray(p)
+        result = dc.load_hash_gray(p)
         full = cv2.imread(str(p), cv2.IMREAD_GRAYSCALE)
         assert result.shape == full.shape, "expected fallback to full decode for a small export"
         print(f"  ok  small export {full.shape} (reduced would be {reduced.shape}): fell back to full decode")
@@ -95,12 +94,12 @@ def test_cache_round_trip() -> None:
         save_jpeg(make_texture(400, 400, seed=3), p)
         cache: dict = {}
 
-        assert fd.cached_result(cache, p, _stat(p)) is None, "empty cache must miss"
+        assert dc.cached_result(cache, p, _stat(p)) is None, "empty cache must miss"
 
         result = {"path": str(p), "dimensions": (400, 400), "sharpness_normalized": 12.3}
-        fd.store_result(cache, p, _stat(p), result)
+        dc.store_result(cache, p, _stat(p), result)
 
-        hit = fd.cached_result(cache, p, _stat(p))
+        hit = dc.cached_result(cache, p, _stat(p))
         assert hit is not None, "expected a cache hit right after storing"
         assert hit["dimensions"] == (400, 400), "dimensions must round-trip as a tuple, not a list"
         assert hit["sharpness_normalized"] == 12.3
@@ -114,11 +113,11 @@ def test_cache_miss_after_modification() -> None:
         p = Path(tmp) / "photo.jpg"
         save_jpeg(make_texture(400, 400, seed=4), p)
         cache: dict = {}
-        fd.store_result(cache, p, _stat(p), {"path": str(p), "dimensions": (400, 400)})
-        assert fd.cached_result(cache, p, _stat(p)) is not None
+        dc.store_result(cache, p, _stat(p), {"path": str(p), "dimensions": (400, 400)})
+        assert dc.cached_result(cache, p, _stat(p)) is not None
 
         save_jpeg(make_texture(400, 400, seed=5), p)  # different content, same path
-        assert fd.cached_result(cache, p, _stat(p)) is None, "modified file must miss the cache"
+        assert dc.cached_result(cache, p, _stat(p)) is None, "modified file must miss the cache"
         print("  ok  modifying the file invalidates its cache entry")
 
 
@@ -127,8 +126,8 @@ def test_load_cache_handles_corrupt_file() -> None:
     just be treated as empty."""
     with tempfile.TemporaryDirectory() as tmp:
         directory = Path(tmp)
-        (directory / fd.CACHE_FILENAME).write_text("{not valid json")
-        cache = fd.load_cache(directory)
+        (directory / dc.CACHE_FILENAME).write_text("{not valid json")
+        cache = dc.load_cache(directory)
         assert cache == {}, "corrupt cache file should load as empty, not raise"
         print("  ok  corrupt cache file loads as {} instead of raising")
 
@@ -139,11 +138,11 @@ def test_hash_cache_round_trip() -> None:
         save_jpeg(make_texture(400, 400, seed=50), p)
         cache: dict = {}
 
-        assert fd.cached_hash(cache, p, _stat(p)) is None, "empty cache must miss"
+        assert dc.cached_hash(cache, p, _stat(p)) is None, "empty cache must miss"
 
-        fd.store_hash(cache, p, _stat(p), 12345)
+        dc.store_hash(cache, p, _stat(p), 12345)
 
-        hit = fd.cached_hash(cache, p, _stat(p))
+        hit = dc.cached_hash(cache, p, _stat(p))
         assert hit == 12345, "expected a hash cache hit right after storing"
         print("  ok  hash cache hit returns the stored hash")
 
@@ -155,11 +154,11 @@ def test_hash_cache_miss_after_modification() -> None:
         p = Path(tmp) / "photo.jpg"
         save_jpeg(make_texture(400, 400, seed=51), p)
         cache: dict = {}
-        fd.store_hash(cache, p, _stat(p), 999)
-        assert fd.cached_hash(cache, p, _stat(p)) == 999
+        dc.store_hash(cache, p, _stat(p), 999)
+        assert dc.cached_hash(cache, p, _stat(p)) == 999
 
         save_jpeg(make_texture(400, 400, seed=52), p)  # different content, same path
-        assert fd.cached_hash(cache, p, _stat(p)) is None, "modified file must miss the hash cache"
+        assert dc.cached_hash(cache, p, _stat(p)) is None, "modified file must miss the hash cache"
         print("  ok  modifying the file invalidates its hash cache entry")
 
 
@@ -168,8 +167,8 @@ def test_load_hash_cache_handles_corrupt_file() -> None:
     scan, just be treated as empty."""
     with tempfile.TemporaryDirectory() as tmp:
         directory = Path(tmp)
-        (directory / fd.HASH_CACHE_FILENAME).write_text("{not valid json")
-        cache = fd.load_hash_cache(directory)
+        (directory / dc.HASH_CACHE_FILENAME).write_text("{not valid json")
+        cache = dc.load_hash_cache(directory)
         assert cache == {}, "corrupt hash cache file should load as empty, not raise"
         print("  ok  corrupt hash cache file loads as {} instead of raising")
 
@@ -181,19 +180,15 @@ def test_group_duplicates_skips_decode_on_all_cache_hits() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         paths = make_duplicate_pair(tmp, seed=40)
         cache: dict = {}
-        fd.group_duplicates(paths, fd.DEFAULT_HASH_THRESHOLD, cache)  # warm the cache
+        dc.group_duplicates(paths, dc.DEFAULT_HASH_THRESHOLD, cache)  # warm the cache
 
         def exploding_load(_p):
             raise AssertionError("load_hash_gray must not be called on an all-cache-hit run")
 
-        # Patched on duplicates_core, not fd: group_duplicates/_hash_one live
-        # there now and resolve the bare name `load_hash_gray` in that
-        # module's own globals -- reassigning fd.load_hash_gray only rebinds
-        # find_duplicates's re-exported alias, which _hash_one never looks at.
         real_load = dc.load_hash_gray
         dc.load_hash_gray = exploding_load
         try:
-            groups = fd.group_duplicates(paths, fd.DEFAULT_HASH_THRESHOLD, cache)
+            groups = dc.group_duplicates(paths, dc.DEFAULT_HASH_THRESHOLD, cache)
         finally:
             dc.load_hash_gray = real_load
 
@@ -207,11 +202,11 @@ def test_group_duplicates_computes_and_caches_on_miss() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         paths = make_duplicate_pair(tmp, seed=41)
         cache: dict = {}
-        groups = fd.group_duplicates(paths, fd.DEFAULT_HASH_THRESHOLD, cache)
+        groups = dc.group_duplicates(paths, dc.DEFAULT_HASH_THRESHOLD, cache)
         assert len(groups) == 1 and len(groups[0]) == 2, "expected the near-duplicate pair to be grouped"
         for p in paths:
             assert str(p.resolve()) in cache, "a computed hash must be written back into the cache"
-            assert fd.cached_hash(cache, p, p.stat()) is not None
+            assert dc.cached_hash(cache, p, p.stat()) is not None
         print("  ok  cache miss computes hashes via the real pipeline and writes them back to cache")
 
 
@@ -240,15 +235,11 @@ def test_group_duplicates_hashes_small_batch_via_thread_pool() -> None:
                 constructed.append(True)
                 super().__init__(*a, **k)
 
-        # Patched on duplicates_core: group_duplicates is defined there now
-        # and resolves ThreadPoolExecutor/ProcessPoolExecutor in that
-        # module's own globals -- see the load_hash_gray patch above for why
-        # patching fd's re-exported alias wouldn't be seen by the function.
         real_process_pool = dc.ProcessPoolExecutor
         dc.ProcessPoolExecutor = ExplodingProcessPool
         dc.ThreadPoolExecutor = RecordingThreadPool
         try:
-            groups = fd.group_duplicates(paths, fd.DEFAULT_HASH_THRESHOLD, {})
+            groups = dc.group_duplicates(paths, dc.DEFAULT_HASH_THRESHOLD, {})
         finally:
             dc.ProcessPoolExecutor = real_process_pool
             dc.ThreadPoolExecutor = real_thread_cls
@@ -267,7 +258,7 @@ def test_group_duplicates_uses_thread_pool_and_groups_correctly() -> None:
         save_jpeg(make_texture(200, 200, seed=72), filler)
         paths.append(filler)
 
-        groups = fd.group_duplicates(paths, fd.DEFAULT_HASH_THRESHOLD, {})
+        groups = dc.group_duplicates(paths, dc.DEFAULT_HASH_THRESHOLD, {})
 
         assert len(groups) == 1 and set(groups[0]) == set(paths[:2]), (
             f"expected the thread-pool path to group exactly the near-duplicate pair, got {groups}"
@@ -282,7 +273,7 @@ def test_analyze_paths_skips_pool_on_all_cache_hits() -> None:
         p = Path(tmp) / "photo.jpg"
         save_jpeg(make_texture(300, 300, seed=6), p)
         cache: dict = {}
-        fd.store_result(
+        dc.store_result(
             cache, p, _stat(p),
             {"path": str(p), "dimensions": (300, 300), "sharpness_normalized": 1.0,
              "effective_resolution_fraction": 0.9, "effective_resolution_px_equiv": 270.0,
@@ -299,7 +290,7 @@ def test_analyze_paths_skips_pool_on_all_cache_hits() -> None:
         dc.ProcessPoolExecutor = ExplodingPool
         dc.ThreadPoolExecutor = ExplodingPool
         try:
-            analyzed = fd.analyze_paths([p], cache)
+            analyzed = dc.analyze_paths([p], cache)
         finally:
             dc.ProcessPoolExecutor = real_process_pool
             dc.ThreadPoolExecutor = real_thread_pool
@@ -317,14 +308,14 @@ def test_analyze_paths_computes_and_caches_on_miss() -> None:
         save_jpeg(make_texture(300, 300, seed=7), p)
         cache: dict = {}
 
-        analyzed = fd.analyze_paths([p], cache)
+        analyzed = dc.analyze_paths([p], cache)
         r = analyzed[p]
         assert r["dimensions"] == (300, 300)
         assert r["file_size"] == p.stat().st_size
         assert isinstance(r["sharpness_normalized"], float)
 
         assert str(p.resolve()) in cache, "a computed result must be written back into the cache"
-        cached = fd.cached_result(cache, p, p.stat())
+        cached = dc.cached_result(cache, p, p.stat())
         assert cached is not None and cached["dimensions"] == (300, 300)
         print("  ok  cache miss computes via the thread pool and is written back to cache")
 
@@ -332,7 +323,7 @@ def test_analyze_paths_computes_and_caches_on_miss() -> None:
 def test_analyze_paths_analyzes_small_batch_via_thread_pool() -> None:
     """Even a tiny uncached batch must analyze through a real
     ThreadPoolExecutor, never a ProcessPoolExecutor -- see the comments at
-    THREAD_POOL_WORKERS's definition in find_duplicates.py: analyze()'s
+    THREAD_POOL_WORKERS's definition in duplicates_core.py: analyze()'s
     cv2/numpy calls release the GIL, so threads always win, with no
     threshold to gate on."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -359,7 +350,7 @@ def test_analyze_paths_analyzes_small_batch_via_thread_pool() -> None:
         dc.ProcessPoolExecutor = ExplodingProcessPool
         dc.ThreadPoolExecutor = RecordingThreadPool
         try:
-            analyzed = fd.analyze_paths(paths, {})
+            analyzed = dc.analyze_paths(paths, {})
         finally:
             dc.ProcessPoolExecutor = real_process_pool
             dc.ThreadPoolExecutor = real_thread_cls
@@ -380,7 +371,7 @@ def test_analyze_paths_uses_thread_pool_for_larger_batch() -> None:
             save_jpeg(make_texture(200, 200, seed=90 + i), p)
             paths.append(p)
 
-        analyzed = fd.analyze_paths(paths, {})
+        analyzed = dc.analyze_paths(paths, {})
 
         for p in paths:
             assert analyzed[p]["dimensions"] == (200, 200)
@@ -413,7 +404,7 @@ def test_analyze_paths_honors_precomputed_stats() -> None:
         fake_size = real_st.st_size + 999_999
         precomputed = {p: _FakeStat(st_size=fake_size, st_mtime_ns=real_st.st_mtime_ns)}
 
-        analyzed = fd.analyze_paths([p], {}, precomputed_stats=precomputed)
+        analyzed = dc.analyze_paths([p], {}, precomputed_stats=precomputed)
 
         assert analyzed[p]["dimensions"] == (300, 300)
         assert analyzed[p]["file_size"] == fake_size, (
@@ -436,12 +427,12 @@ def test_real_analyze_result_round_trips_through_json_cache_file() -> None:
         p = directory / "photo.jpg"
         save_jpeg(make_texture(300, 300, seed=8), p)
 
-        cache = fd.load_cache(directory)
-        analyzed = fd.analyze_paths([p], cache)
-        fd.save_cache(directory, cache)
+        cache = dc.load_cache(directory)
+        analyzed = dc.analyze_paths([p], cache)
+        dc.save_cache(directory, cache)
 
-        reloaded_cache = fd.load_cache(directory)
-        hit = fd.cached_result(reloaded_cache, p, p.stat())
+        reloaded_cache = dc.load_cache(directory)
+        hit = dc.cached_result(reloaded_cache, p, p.stat())
         assert hit is not None, "real analyze() output failed to round-trip through the JSON cache file"
         assert hit["dimensions"] == (300, 300)
         assert hit["sharpness_normalized"] == analyzed[p]["sharpness_normalized"]

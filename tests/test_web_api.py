@@ -1,14 +1,13 @@
 """Tests for the FastAPI web front end (duplicates_web.py): token auth on
 every endpoint (including image bytes), and the confirm/skip/re-pick
-destructive path exercised through real HTTP requests -- the web
-equivalents of test_manifest_crash_safety.py, test_unapply_crash_safety.py,
-and test_repick_confirmed_group.py, which cover the same invariants for the
-TUI. Both front ends share the same duplicates_core primitives
-(apply_pick/unapply/pick_needs_reapply), but only a real end-to-end test
-through the HTTP layer -- not a unit test of those primitives in isolation
--- would have caught the is_close_call/numpy.bool_ JSON-serialization bug
-this file also guards against (found via live browser testing, see the
-"Fix is_close_call not being JSON-serializable" commit).
+destructive path exercised through real HTTP requests -- an end-to-end
+complement to test_unapply_crash_safety.py's unit-level coverage of the
+same duplicates_core primitives (apply_pick/unapply/pick_needs_reapply).
+Only a real end-to-end test through the HTTP layer -- not a unit test of
+those primitives in isolation -- would have caught the
+is_close_call/numpy.bool_ JSON-serialization bug this file also guards
+against (found via live browser testing, see the "Fix is_close_call not
+being JSON-serializable" commit).
 
 Requires httpx < 0.28: FastAPI's TestClient (starlette 0.35.x, current at
 the time this was written) constructs its underlying httpx.Client with the
@@ -288,9 +287,8 @@ def test_close_call_group_serializes_without_500() -> None:
 
 def test_confirm_moves_files_and_skip_unapplies() -> None:
     """dry_run=False: confirm must really move the non-kept file to
-    dest_dir, and a subsequent skip must restore it -- mirrors
-    DuplicateReviewApp.action_confirm/action_skip's real-filesystem
-    behavior, via the same duplicates_core primitives."""
+    dest_dir, and a subsequent skip must restore it, via the shared
+    duplicates_core apply_pick/unapply primitives."""
     with tempfile.TemporaryDirectory() as tmp:
         directory = Path(tmp)
         dest_dir = directory / "_duplicates"
@@ -321,7 +319,7 @@ def test_confirm_moves_files_and_skip_unapplies() -> None:
 def test_repick_after_confirm_moves_the_new_non_kept_file() -> None:
     """Confirm keep=A, then re-pick to keep=B, then confirm again: A must
     come back to its original location and B's former sibling (now A) must
-    be the one that moves -- mirrors test_repick_confirmed_group.py."""
+    be the one that moves."""
     with tempfile.TemporaryDirectory() as tmp:
         directory = Path(tmp)
         dest_dir = directory / "_duplicates"
@@ -347,10 +345,10 @@ def test_repick_after_confirm_moves_the_new_non_kept_file() -> None:
 
 
 def test_confirm_partial_failure_leaves_group_pending() -> None:
-    """The web equivalent of test_manifest_crash_safety.py: a move that
-    raises partway through a multi-file group must leave the group
-    "pending" (not silently marked confirmed) and the manifest must still
-    record exactly what was actually moved before the failure."""
+    """End to end via the HTTP layer: a move that raises partway through a
+    multi-file group must leave the group "pending" (not silently marked
+    confirmed) and the manifest must still record exactly what was
+    actually moved before the failure."""
     with tempfile.TemporaryDirectory() as tmp:
         directory = Path(tmp)
         dest_dir = directory / "_duplicates"

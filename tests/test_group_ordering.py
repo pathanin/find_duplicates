@@ -20,7 +20,7 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import find_duplicates as fd
+import duplicates_core as dc
 
 
 def save_jpeg(img: np.ndarray, path: Path) -> None:
@@ -42,8 +42,8 @@ def make_quality_split_group(directory: Path) -> tuple[Path, Path]:
     return small, big
 
 
-def build_one_group(directory: Path) -> fd.Group:
-    groups = fd.build_groups(directory, fd.DEFAULT_HASH_THRESHOLD, dest_dir=directory / "_duplicates")
+def build_one_group(directory: Path) -> dc.Group:
+    groups = dc.build_groups(directory, dc.DEFAULT_HASH_THRESHOLD, dest_dir=directory / "_duplicates")
     assert len(groups) == 1, f"expected exactly one duplicate group, got {len(groups)}"
     return groups[0]
 
@@ -72,7 +72,7 @@ def test_detector_filename_order_would_have_failed() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
         small, big = make_quality_split_group(tmp)
-        by_name = fd.find_images(tmp)
+        by_name = dc.find_images(tmp)
         assert by_name[0] == small, "fixture broken: the worse file should sort first by name"
         assert by_name[0] != big, "fixture is vacuous: name order already matches quality order"
         print("  ok  filename order disagrees with quality order, so the sort is doing real work")

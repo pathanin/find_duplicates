@@ -197,9 +197,7 @@ components:
 # Design System: Find-duplicates (browser review)
 
 This records the browser front end shipped in `static/` (HTML, CSS, vanilla JS,
-no build step) and the `/api/*` fields it renders from. The Textual TUI is a
-peer front end: it shares the status vocabulary (`Pending` / `Kept` / `Skipped`),
-the close-call term, and the keyboard model, but none of this presentation.
+no build step) and the `/api/*` fields it renders from.
 
 ## Overview
 
@@ -577,7 +575,7 @@ the checkbox tick, both drawn from borders.
 ### Keyboard model
 - **All bindings read `KeyboardEvent.code`, never `.key`.** Alternate layouts
   remap letter keys before the app sees them; this is a hard product constraint,
-  established from a real failure, and it is shared with the TUI.
+  established from a real failure.
 - Enter or C confirms; Delete, Backspace or S skips; 1–9 pick a candidate;
   arrows flip candidates and step groups; Shift+arrows pan the stage while
   inspecting at 1:1 (one tenth of the frame per press, so zoomed inspection is

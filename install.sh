@@ -1,19 +1,12 @@
 #!/bin/sh
 # Creates an isolated venv with plain pip (fast, wheel-based install) and
-# puts a `find-duplicates` (TUI) and/or `find-duplicates-web` (browser UI)
-# wrapper on PATH.
+# puts a `find-duplicates` wrapper on PATH.
 #
 # Usage (already have a clone):
-#   ./install.sh [--tui|--web|--all]
+#   ./install.sh
 #
 # Usage (no clone needed):
 #   curl -LsSf https://raw.githubusercontent.com/pathanin/find_duplicates/main/install.sh | sh
-#   curl -LsSf https://raw.githubusercontent.com/pathanin/find_duplicates/main/install.sh | sh -s -- --tui
-#
-#   --tui   Textual terminal UI only (adds textual/textual-image)
-#   --web   Browser UI only (adds fastapi/uvicorn) -- e.g. for a headless
-#           NAS box that will never run a TUI in a terminal.
-#   --all   Both (default).
 #
 # Written in POSIX sh, not bash: `curl ... | sh` runs this under the
 # invoker's /bin/sh regardless of the shebang above, so bash-only syntax
@@ -22,48 +15,27 @@
 
 set -eu
 
+if [ "$#" -gt 0 ]; then
+  echo "error: install.sh takes no arguments (got: $*)" >&2
+  exit 1
+fi
+
 REPO_TARBALL="https://github.com/pathanin/find_duplicates/archive/refs/heads/main.tar.gz"
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/find-duplicates"
 VENV_DIR="$DATA_DIR/venv"
 BIN_DIR="$HOME/.local/bin"
 
-COMPONENT="all"
-for arg in "$@"; do
-  case "$arg" in
-    --tui) COMPONENT="tui" ;;
-    --web) COMPONENT="web" ;;
-    --all) COMPONENT="all" ;;
-    *)
-      echo "error: unknown argument '$arg' (expected --tui, --web, or --all)" >&2
-      exit 1
-      ;;
-  esac
-done
-WANT_TUI=0
-WANT_WEB=0
-case "$COMPONENT" in
-  tui) WANT_TUI=1 ;;
-  web) WANT_WEB=1 ;;
-  all) WANT_TUI=1; WANT_WEB=1 ;;
-esac
-
 # duplicates_core.py + compare_image_quality.py are the shared scan/score/
-# move pipeline both front ends import -- required no matter which
-# component(s) are selected. find_duplicates.py (TUI) and
-# duplicates_web.py + find_duplicates-web.py + static/ (web) are only
-# required for their respective component.
-REQUIRED_FILES="duplicates_core.py compare_image_quality.py"
-[ "$WANT_TUI" = "1" ] && REQUIRED_FILES="$REQUIRED_FILES find_duplicates.py"
-[ "$WANT_WEB" = "1" ] && REQUIRED_FILES="$REQUIRED_FILES duplicates_web.py find_duplicates-web.py"
+# move pipeline; duplicates_web.py + find_duplicates.py + static/ are the
+# (only) front end.
+REQUIRED_FILES="duplicates_core.py compare_image_quality.py duplicates_web.py find_duplicates.py"
 
 have_required_files() {
   # $1 is the candidate root directory.
   for f in $REQUIRED_FILES; do
     [ -f "$1/$f" ] || return 1
   done
-  if [ "$WANT_WEB" = "1" ] && [ ! -d "$1/static" ]; then
-    return 1
-  fi
+  [ -d "$1/static" ] || return 1
   return 0
 }
 
@@ -129,62 +101,44 @@ if [ "$PY_OK" != "1" ]; then
 fi
 
 echo "==> Using python3 $PY_VERSION"
-echo "==> Installing: $COMPONENT"
 
 echo "==> Creating venv at $VENV_DIR"
 mkdir -p "$DATA_DIR"
 python3 -m venv "$VENV_DIR"
 
-echo "==> Installing shared dependencies (prebuilt wheels via pip)"
+echo "==> Installing dependencies (prebuilt wheels via pip)"
 "$VENV_DIR/bin/pip" install --upgrade pip --quiet
 "$VENV_DIR/bin/pip" install --quiet \
   numpy \
   opencv-python-headless \
   pillow \
-  pillow-heif
-
-if [ "$WANT_TUI" = "1" ]; then
-  echo "==> Installing TUI dependencies"
-  "$VENV_DIR/bin/pip" install --quiet textual textual-image
-fi
-if [ "$WANT_WEB" = "1" ]; then
-  echo "==> Installing web dependencies"
-  "$VENV_DIR/bin/pip" install --quiet fastapi uvicorn
-fi
+  pillow-heif \
+  fastapi \
+  uvicorn
 
 echo "==> Installing scripts"
 mkdir -p "$DATA_DIR/libexec"
-cp "$REPO_ROOT/duplicates_core.py" "$REPO_ROOT/compare_image_quality.py" "$DATA_DIR/libexec/"
-mkdir -p "$BIN_DIR"
+cp "$REPO_ROOT/duplicates_core.py" "$REPO_ROOT/compare_image_quality.py" \
+   "$REPO_ROOT/duplicates_web.py" "$REPO_ROOT/find_duplicates.py" "$DATA_DIR/libexec/"
+rm -rf "$DATA_DIR/libexec/static"
+cp -r "$REPO_ROOT/static" "$DATA_DIR/libexec/static"
 
-if [ "$WANT_TUI" = "1" ]; then
-  cp "$REPO_ROOT/find_duplicates.py" "$DATA_DIR/libexec/"
-  WRAPPER="$BIN_DIR/find-duplicates"
-  echo "==> Writing wrapper to $WRAPPER"
-  cat > "$WRAPPER" <<EOS
+mkdir -p "$BIN_DIR"
+WRAPPER="$BIN_DIR/find-duplicates"
+echo "==> Writing wrapper to $WRAPPER"
+cat > "$WRAPPER" <<EOS
 #!/bin/sh
 exec "$VENV_DIR/bin/python3" "$DATA_DIR/libexec/find_duplicates.py" "\$@"
 EOS
-  chmod +x "$WRAPPER"
-fi
+chmod +x "$WRAPPER"
 
-if [ "$WANT_WEB" = "1" ]; then
-  cp "$REPO_ROOT/duplicates_web.py" "$REPO_ROOT/find_duplicates-web.py" "$DATA_DIR/libexec/"
-  rm -rf "$DATA_DIR/libexec/static"
-  cp -r "$REPO_ROOT/static" "$DATA_DIR/libexec/static"
-  WEB_WRAPPER="$BIN_DIR/find-duplicates-web"
-  echo "==> Writing wrapper to $WEB_WRAPPER"
-  cat > "$WEB_WRAPPER" <<EOS
-#!/bin/sh
-exec "$VENV_DIR/bin/python3" "$DATA_DIR/libexec/find_duplicates-web.py" "\$@"
-EOS
-  chmod +x "$WEB_WRAPPER"
-fi
+# Drop a wrapper from a prior TUI/web-split install: it would exec a
+# find_duplicates-web.py that no longer exists in libexec/.
+rm -f "$BIN_DIR/find-duplicates-web"
 
 echo
 echo "Installed."
-[ "$WANT_TUI" = "1" ] && echo "Run: find-duplicates --help"
-[ "$WANT_WEB" = "1" ] && echo "Run: find-duplicates-web --help"
+echo "Run: find-duplicates --help"
 
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;

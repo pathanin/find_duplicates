@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import find_duplicates as fd
+import duplicates_core as dc
 
 
 def _result(**kw):
@@ -36,7 +36,7 @@ def test_scores_sorted_by_descending_quality() -> None:
     """Clear winner: higher on every positive metric, lower on every
     negative metric."""
     results = [_result(sharpness_normalized=100.0), _result(sharpness_normalized=20.0)]
-    fd.score_group(results)
+    dc.score_group(results)
     assert results[0]["quality_score"] > results[1]["quality_score"], (
         f"first should score higher: {results[0]['quality_score']} vs {results[1]['quality_score']}"
     )
@@ -45,7 +45,7 @@ def test_scores_sorted_by_descending_quality() -> None:
 def test_scores_are_within_zero_one() -> None:
     """Normalized score should be between 0 and 1 for any valid inputs."""
     results = [_result(sharpness_normalized=10.0), _result(sharpness_normalized=90.0)]
-    fd.score_group(results)
+    dc.score_group(results)
     for r in results:
         assert 0.0 <= r["quality_score"] <= 1.0, f"quality_score {r['quality_score']} out of [0,1]"
 
@@ -53,7 +53,7 @@ def test_scores_are_within_zero_one() -> None:
 def test_equal_inputs_produce_equal_scores() -> None:
     """Two identical results should get identical quality scores."""
     results = [_result(), _result()]
-    fd.score_group(results)
+    dc.score_group(results)
     assert results[0]["quality_score"] == results[1]["quality_score"]
 
 
@@ -65,7 +65,7 @@ def test_slightly_better_image_scores_higher() -> None:
         _result(sharpness_normalized=100.0, effective_resolution_px_equiv=2000),
         _result(sharpness_normalized=99.0, effective_resolution_px_equiv=1990),
     ]
-    fd.score_group(results)
+    dc.score_group(results)
     assert results[0]["quality_score"] > results[1]["quality_score"], (
         f"best image must have highest score: {results[0]['quality_score']} vs {results[1]['quality_score']}"
     )
@@ -75,7 +75,7 @@ def test_hi_lo_degenerate_range() -> None:
     """When all group members have the same value for a metric, the
     range is hi==lo and score_group uses lo + 1e-9 to avoid div-by-zero."""
     results = [_result(noise_sigma=10.0), _result(noise_sigma=10.0)]
-    fd.score_group(results)
+    dc.score_group(results)
     for r in results:
         assert math.isfinite(r["quality_score"]), f"quality_score should be finite, got {r['quality_score']}"
 
@@ -87,7 +87,7 @@ def test_nan_value_skips_that_metric() -> None:
         _result(sharpness_normalized=50.0, noise_sigma=float("nan")),
         _result(sharpness_normalized=100.0, noise_sigma=5.0),
     ]
-    fd.score_group(results)
+    dc.score_group(results)
     for r in results:
         assert math.isfinite(r["quality_score"]), f"quality_score should be finite, got {r['quality_score']}"
 
@@ -99,7 +99,7 @@ def test_inf_value_skips_that_metric() -> None:
         _result(sharpness_normalized=float("inf")),
         _result(sharpness_normalized=100.0),
     ]
-    fd.score_group(results)
+    dc.score_group(results)
     for r in results:
         assert math.isfinite(r["quality_score"]), f"quality_score should be finite, got {r['quality_score']}"
 
@@ -111,7 +111,7 @@ def test_none_value_skips_that_metric() -> None:
         _result(brisque=None),
         _result(brisque=15.0),
     ]
-    fd.score_group(results)
+    dc.score_group(results)
     for r in results:
         assert math.isfinite(r["quality_score"]), f"quality_score should be finite, got {r['quality_score']}"
 
@@ -127,7 +127,7 @@ def test_all_metrics_skipped_falls_back_to_zero() -> None:
                 effective_resolution_fraction=float("nan"), noise_sigma=float("nan"),
                 blockiness=float("nan"), brisque=float("nan"), niqe=float("nan")),
     ]
-    fd.score_group(results)
+    dc.score_group(results)
     for r in results:
         assert r["quality_score"] == 0.0, f"quality_score should be 0.0 when all metrics skipped, got {r['quality_score']}"
 
@@ -139,7 +139,7 @@ def test_single_result_is_finite() -> None:
     (1 - 0) * abs(weight) = abs(weight).  The score is between 0 and 1
     and finite -- that's the property to lock down, not the exact value."""
     results = [_result()]
-    fd.score_group(results)
+    dc.score_group(results)
     assert math.isfinite(results[0]["quality_score"]), (
         f"single-item group score should be finite, got {results[0]['quality_score']}"
     )
@@ -150,7 +150,7 @@ def test_single_result_is_finite() -> None:
 
 def test_empty_results_scores_zero() -> None:
     """An empty results list should not crash and sets no score on anything."""
-    fd.score_group([])
+    dc.score_group([])
 
 
 def test_negative_weight_metric_orders_correctly() -> None:
@@ -160,7 +160,7 @@ def test_negative_weight_metric_orders_correctly() -> None:
         _result(noise_sigma=5.0, sharpness_normalized=50.0),
         _result(noise_sigma=100.0, sharpness_normalized=50.0),
     ]
-    fd.score_group(results)
+    dc.score_group(results)
     assert results[0]["quality_score"] > results[1]["quality_score"], (
         f"image with lower noise should score higher: {results[0]['quality_score']} vs {results[1]['quality_score']}"
     )

@@ -1,5 +1,5 @@
 """Regression tests for --auto: the non-interactive apply_group()/
-auto_apply_groups() path that skips the TUI and keeps each group's
+auto_apply_groups() path that skips the review UI and keeps each group's
 suggested (top-scored) pick automatically.
 
 Run: python3 test_auto_mode.py
@@ -14,7 +14,7 @@ import numpy as np
 from PIL import Image as PILImage
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import find_duplicates as fd
+import duplicates_core as dc
 
 
 def fake_result(file_size: int, quality: float) -> dict:
@@ -32,7 +32,7 @@ def fake_result(file_size: int, quality: float) -> dict:
     }
 
 
-def make_real_group(directory: Path, n: int, prefix: str, suggested_idx: int = 0) -> fd.Group:
+def make_real_group(directory: Path, n: int, prefix: str, suggested_idx: int = 0) -> dc.Group:
     """Files that actually exist on disk -- dry_run=False callers really call
     shutil.move, so a synthetic non-existent Path would fail for the wrong
     reason. Each non-suggested file gets a lower quality_score so
@@ -46,7 +46,7 @@ def make_real_group(directory: Path, n: int, prefix: str, suggested_idx: int = 0
     results = [
         fake_result(paths[i].stat().st_size, quality=1.0 if i == suggested_idx else 0.5) for i in range(n)
     ]
-    return fd.Group(
+    return dc.Group(
         paths=paths,
         results=results,
         thumbnails=thumbs,
@@ -63,7 +63,7 @@ def test_apply_group_standalone() -> None:
         dest_dir = directory / "_duplicates"
         manifest: list[dict] = []
 
-        entry = fd.apply_group(group, 0, keep_idx=0, dest_dir=dest_dir, dry_run=False, manifest=manifest)
+        entry = dc.apply_group(group, 0, keep_idx=0, dest_dir=dest_dir, dry_run=False, manifest=manifest)
 
         assert group.status == "pending", "apply_group must not set status -- the caller decides"
         assert len(entry["moved"]) == 2
@@ -71,7 +71,7 @@ def test_apply_group_standalone() -> None:
         assert group.paths[0].exists(), "kept file must stay at its original location"
         assert not group.paths[1].exists() and not group.paths[2].exists()
         assert (dest_dir / "g_1.png").exists() and (dest_dir / "g_2.png").exists()
-        print("  ok  apply_group() moves non-kept files the same way the TUI's _apply does")
+        print("  ok  apply_group() moves non-kept files the same way apply_pick does")
 
 
 def test_auto_apply_groups_all_pending() -> None:
@@ -83,7 +83,7 @@ def test_auto_apply_groups_all_pending() -> None:
         ]
         dest_dir = directory / "_duplicates"
 
-        summary = fd.auto_apply_groups(groups, dest_dir, dry_run=False)
+        summary = dc.auto_apply_groups(groups, dest_dir, dry_run=False)
 
         assert summary["confirmed"] == 2 and summary["failed"] == 0
         assert summary["files_moved"] == 1 + 2
@@ -100,7 +100,7 @@ def test_auto_apply_groups_skips_already_confirmed() -> None:
         pending = make_real_group(directory, n=2, prefix="new")
         dest_dir = directory / "_duplicates"
 
-        summary = fd.auto_apply_groups([already, pending], dest_dir, dry_run=False)
+        summary = dc.auto_apply_groups([already, pending], dest_dir, dry_run=False)
 
         assert summary["confirmed"] == 1, "already-confirmed group must not be reprocessed"
         assert already.paths[1].exists(), "an already-confirmed group's files must be left untouched"
@@ -114,7 +114,7 @@ def test_auto_apply_groups_dry_run() -> None:
         group = make_real_group(directory, n=3, prefix="d")
         dest_dir = directory / "_duplicates"
 
-        summary = fd.auto_apply_groups([group], dest_dir, dry_run=True)
+        summary = dc.auto_apply_groups([group], dest_dir, dry_run=True)
 
         assert summary["confirmed"] == 1 and summary["files_moved"] == 2
         assert summary["bytes_reclaimed"] == 0, "dry run must not report bytes as reclaimed -- nothing moved"
@@ -130,7 +130,7 @@ def test_auto_apply_groups_respects_close_call() -> None:
         group.is_close_call = True
         dest_dir = directory / "_duplicates"
 
-        summary = fd.auto_apply_groups([group], dest_dir, dry_run=False)
+        summary = dc.auto_apply_groups([group], dest_dir, dry_run=False)
 
         assert summary["confirmed"] == 1
         assert group.current_pick == 1, "auto mode must not second-guess a close call -- suggested_idx wins"
@@ -145,7 +145,7 @@ def test_auto_summary_bytes() -> None:
         expected_bytes = group.paths[1].stat().st_size + group.paths[2].stat().st_size
         dest_dir = directory / "_duplicates"
 
-        summary = fd.auto_apply_groups([group], dest_dir, dry_run=False)
+        summary = dc.auto_apply_groups([group], dest_dir, dry_run=False)
 
         assert summary["bytes_reclaimed"] == expected_bytes, (
             f"expected {expected_bytes} bytes reclaimed (sum of moved files' real sizes pre-move), "
@@ -182,16 +182,16 @@ def test_auto_apply_groups_continues_after_one_group_fails() -> None:
         group1 = make_real_group(directory, n=3, prefix="bad")
         dest_dir = directory / "_duplicates"
 
-        flaky = FlakyMove(fd.shutil.move, fail_on_call=3)
-        fd.shutil.move = flaky
+        flaky = FlakyMove(dc.shutil.move, fail_on_call=3)
+        dc.shutil.move = flaky
         try:
-            summary = fd.auto_apply_groups([group0, group1], dest_dir, dry_run=False)
+            summary = dc.auto_apply_groups([group0, group1], dest_dir, dry_run=False)
         finally:
-            fd.shutil.move = flaky.real_move
+            dc.shutil.move = flaky.real_move
 
         assert summary["confirmed"] == 1 and summary["failed"] == 1
         assert group0.status == "confirmed"
-        assert group1.status == "pending", "the failed group must stay 'pending', same as the TUI's invariant"
+        assert group1.status == "pending", "the failed group must stay 'pending', same as apply_pick's invariant"
         assert len(summary["failures"]) == 1
         assert summary["failures"][0]["group"] == 1
         assert summary["failures"][0]["files_moved"] == 1, "the one file moved before the raise must be reported"
@@ -224,7 +224,7 @@ def test_auto_apply_groups_isolates_a_failure_before_the_move_loop() -> None:
         group1 = make_real_group(directory, n=2, prefix="ok")
         dest_dir = directory / "_duplicates"
 
-        summary = fd.auto_apply_groups([group0, group1], dest_dir, dry_run=False)
+        summary = dc.auto_apply_groups([group0, group1], dest_dir, dry_run=False)
 
         assert summary["failed"] == 1 and summary["confirmed"] == 1
         assert group0.status == "pending"
@@ -264,10 +264,10 @@ def test_recursive_auto_combined() -> None:
         save_jpeg(small, p_small)
         dest_dir = directory / "_duplicates"
 
-        groups = fd.build_groups(directory, fd.DEFAULT_HASH_THRESHOLD, recursive=True, dest_dir=dest_dir)
+        groups = dc.build_groups(directory, dc.DEFAULT_HASH_THRESHOLD, recursive=True, dest_dir=dest_dir)
         assert len(groups) == 1
 
-        summary = fd.auto_apply_groups(groups, dest_dir, dry_run=False, recursive=True, scan_root=directory)
+        summary = dc.auto_apply_groups(groups, dest_dir, dry_run=False, recursive=True, scan_root=directory)
 
         assert summary["confirmed"] == 1 and summary["files_moved"] == 1
         kept_still_here = p_big.exists() or p_small.exists()

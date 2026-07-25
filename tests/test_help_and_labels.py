@@ -1,64 +1,27 @@
-"""Regression tests for the in-app help screen and metric-row labeling in
-find_duplicates.py.
+"""Regression tests for metric-row labeling in duplicates_core.py.
 
 A raw number is meaningless without knowing which direction is "better", so
 every METRIC_ROWS label must say so (or say it isn't scored at all, for
-dimensions/file size). The '?' help screen expands on that with the actual
-weights, and must never mutate group state just by opening/closing.
+dimensions/file size), and every weighted metric must have both a display
+row and a help description -- both frontends render their help sheet
+straight off METRIC_WEIGHTS/METRIC_DESCRIPTIONS/METRIC_ROWS rather than
+hardcoding it, so any of the three drifting out of sync silently breaks
+that.
 
 Run: python3 test_help_and_labels.py
 """
 
-import asyncio
 import sys
-import tempfile
 from pathlib import Path
 
-from PIL import Image as PILImage
-from textual.widgets import DataTable, Static
-from textual_image.widget import HalfcellImage
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import find_duplicates as fd
-
-
-def fake_result() -> dict:
-    return {
-        "dimensions": (100, 100),
-        "file_size": 12345,
-        "sharpness_normalized": 100.0,
-        "effective_resolution_fraction": 0.9,
-        "effective_resolution_px_equiv": 9000.0,
-        "noise_sigma": 1.0,
-        "blockiness": 0.1,
-        "brisque": None,
-        "niqe": None,
-        "quality_score": 0.5,
-    }
-
-
-def make_group() -> fd.Group:
-    thumbs = [PILImage.new("RGB", (100, 100)) for _ in range(2)]
-    return fd.Group(
-        paths=[Path(f"synthetic_{i}.png") for i in range(2)],
-        results=[fake_result() for _ in range(2)],
-        thumbnails=thumbs,
-        suggested_idx=0,
-        current_pick=0,
-        is_close_call=False,
-    )
-
-
-def new_app() -> fd.DuplicateReviewApp:
-    scratch = Path(tempfile.mkdtemp())
-    return fd.DuplicateReviewApp([make_group()], scratch / "_dup", dry_run=True)
-
+import duplicates_core as dc
 
 REFERENCE_ONLY_ROWS = {"Dimensions", "File size"}  # not part of the score; explained in the help screen instead
 
 
 def test_every_scored_metric_row_states_its_direction() -> None:
-    for row in fd.METRIC_ROWS:
+    for row in dc.METRIC_ROWS:
         if row.label in REFERENCE_ONLY_ROWS:
             continue
         assert "better" in row.label, (
@@ -80,7 +43,7 @@ def test_metric_row_direction_matches_kind_and_weight_sign() -> None:
     "metric" row's declared key must be the same dict key its own `fn`
     lambda actually reads), and checks the second directly against the
     label text."""
-    for row in fd.METRIC_ROWS:
+    for row in dc.METRIC_ROWS:
         if row.kind == "reference":
             assert row.direction == 0 and row.key is None, f"{row.label!r}: reference row should have no key/direction"
             continue
@@ -89,7 +52,7 @@ def test_metric_row_direction_matches_kind_and_weight_sign() -> None:
             continue
         assert row.kind == "metric", f"unrecognized MetricRow.kind {row.kind!r} for {row.label!r}"
         assert row.key is not None, f"{row.label!r} is a metric row but has no METRIC_WEIGHTS key"
-        assert row.key in fd.METRIC_WEIGHTS, f"{row.label!r}'s key {row.key!r} isn't in METRIC_WEIGHTS"
+        assert row.key in dc.METRIC_WEIGHTS, f"{row.label!r}'s key {row.key!r} isn't in METRIC_WEIGHTS"
         referenced = {c for c in row.fn.__code__.co_consts if isinstance(c, str)}
         assert row.key in referenced, (
             f"{row.label!r} declares key {row.key!r} but its own lambda never reads r[{row.key!r}] -- "
@@ -101,17 +64,15 @@ def test_metric_row_direction_matches_kind_and_weight_sign() -> None:
         expected = 1 if label_says_higher else -1
         assert row.direction == expected, (
             f"{row.label!r} says {'higher' if label_says_higher else 'lower'} better, "
-            f"but key {row.key!r}'s weight ({fd.METRIC_WEIGHTS[row.key]!r}) implies direction {row.direction}"
+            f"but key {row.key!r}'s weight ({dc.METRIC_WEIGHTS[row.key]!r}) implies direction {row.direction}"
         )
     print("  ok  every metric row's key matches what it formats, and its label agrees with that key's weight sign")
 
 
-def test_help_body_covers_every_weighted_metric() -> None:
-    body = fd._help_body()
-    for name in fd.METRIC_WEIGHTS:
-        assert name in body, f"help text is missing weighted metric {name!r}"
-        assert fd.METRIC_DESCRIPTIONS[name] in body, f"help text is missing the description for {name!r}"
-    print("  ok  help text covers every weighted metric and its description")
+def test_every_weighted_metric_has_a_description() -> None:
+    for name in dc.METRIC_WEIGHTS:
+        assert name in dc.METRIC_DESCRIPTIONS, f"METRIC_DESCRIPTIONS is missing weighted metric {name!r}"
+    print("  ok  every weighted metric has a help description")
 
 
 def test_every_weighted_metric_has_a_display_row() -> None:
@@ -124,9 +85,9 @@ def test_every_weighted_metric_has_a_display_row() -> None:
     every weighted metric is actually referenced by some row without needing
     to render the table."""
     referenced = set()
-    for row in fd.METRIC_ROWS:
+    for row in dc.METRIC_ROWS:
         referenced.update(c for c in row.fn.__code__.co_consts if isinstance(c, str))
-    for name in fd.METRIC_WEIGHTS:
+    for name in dc.METRIC_WEIGHTS:
         assert name in referenced, (
             f"{name!r} is scored (in METRIC_WEIGHTS) but no METRIC_ROWS row references it -- "
             "it would silently affect quality_score without ever being displayed"
@@ -137,10 +98,10 @@ def test_every_weighted_metric_has_a_display_row() -> None:
 def test_detector_catches_a_dropped_display_row() -> None:
     """Proof the check above can actually fail: with the NIQE row removed,
     the check must flag 'niqe' as no longer referenced."""
-    rows_without_niqe = [row for row in fd.METRIC_ROWS if "NIQE" not in row.label]
-    assert len(rows_without_niqe) == len(fd.METRIC_ROWS) - 1, "expected to drop exactly one row (NIQE)"
+    rows_without_niqe = [row for row in dc.METRIC_ROWS if "NIQE" not in row.label]
+    assert len(rows_without_niqe) == len(dc.METRIC_ROWS) - 1, "expected to drop exactly one row (NIQE)"
     referenced = set()
-    for row in fd.METRIC_ROWS:
+    for row in dc.METRIC_ROWS:
         if "NIQE" in row.label:
             continue
         referenced.update(c for c in row.fn.__code__.co_consts if isinstance(c, str))
@@ -148,55 +109,22 @@ def test_detector_catches_a_dropped_display_row() -> None:
     print("  ok  the coupling check correctly flags a dropped display row (not vacuous)")
 
 
-async def test_help_screen_opens_and_closes_without_side_effects() -> None:
-    # HelpScreen binds escape,q,question_mark -> close_help (see BINDINGS in
-    # find_duplicates.py); each must be exercised on its own, since a test
-    # that only presses one wouldn't notice the others silently breaking.
-    for close_key in ("escape", "q", "question_mark"):
-        app = new_app()
-        async with app.run_test(size=(170, 50)) as pilot:
-            await pilot.pause()
-            await pilot.press("question_mark")
-            await pilot.pause()
-            assert any(type(s).__name__ == "HelpScreen" for s in app.screen_stack), "'?' should push the help screen"
-            shown = str(app.screen.query(Static).first().render())
-            assert "QUALITY SCORE" in shown, "help screen didn't render the expected content"
-
-            await pilot.press(close_key)
-            await pilot.pause()
-            assert not any(type(s).__name__ == "HelpScreen" for s in app.screen_stack), (
-                f"{close_key!r} should close the help screen"
-            )
-            assert app.groups[0].status == "pending", "opening/closing help must not touch group state"
-        print(f"  ok  '?' opens help, {close_key!r} closes it, group state untouched")
-
-
-async def test_metric_labels_reach_the_table() -> None:
-    app = new_app()
-    async with app.run_test(size=(170, 50)) as pilot:
-        await pilot.pause()
-        table = app.query_one(DataTable)
-        rendered_labels = [str(table.get_cell_at((r, 0))) for r in range(table.row_count)]
-        assert rendered_labels == [row.label for row in fd.METRIC_ROWS]
-    print("  ok  annotated labels render in the metrics table")
-
-
-async def main() -> None:
-    fd.PreviewImage = HalfcellImage  # deterministic headless renderer, no real terminal needed
-    test_every_scored_metric_row_states_its_direction()
-    test_metric_row_direction_matches_kind_and_weight_sign()
-    test_help_body_covers_every_weighted_metric()
-    test_every_weighted_metric_has_a_display_row()
-    test_detector_catches_a_dropped_display_row()
-    for test in (test_help_screen_opens_and_closes_without_side_effects, test_metric_labels_reach_the_table):
+def main() -> None:
+    for test in (
+        test_every_scored_metric_row_states_its_direction,
+        test_metric_row_direction_matches_kind_and_weight_sign,
+        test_every_weighted_metric_has_a_description,
+        test_every_weighted_metric_has_a_display_row,
+        test_detector_catches_a_dropped_display_row,
+    ):
         print(f"{test.__name__}:")
-        await test()
+        test()
     print("all help/label tests passed")
 
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        main()
     except AssertionError as e:
         print(f"FAIL: {e}", file=sys.stderr)
         sys.exit(1)

@@ -1,4 +1,4 @@
-"""Regression tests for HEIC/HEIF support in find_duplicates.py and
+"""Regression tests for HEIC/HEIF support in duplicates_core.py and
 compare_image_quality.py: the .heic/.heif extensions must be scanned, and
 files in that format must decode through both the perceptual-hashing path
 (load_hash_gray) and the quality-analysis path (compare_image_quality's
@@ -24,15 +24,15 @@ import numpy as np
 from PIL import Image as PILImage
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import find_duplicates as fd
+import duplicates_core as dc
 import compare_image_quality as ciq
 
 
 def test_image_exts_include_heic_and_heif() -> None:
-    assert ".heic" in fd.IMAGE_EXTS, (
+    assert ".heic" in dc.IMAGE_EXTS, (
         "IMAGE_EXTS must include .heic, or find_images() silently skips iPhone/Apple Photos exports"
     )
-    assert ".heif" in fd.IMAGE_EXTS, "IMAGE_EXTS must include .heif"
+    assert ".heif" in dc.IMAGE_EXTS, "IMAGE_EXTS must include .heif"
     print("  ok  IMAGE_EXTS contains .heic and .heif")
 
 
@@ -71,7 +71,7 @@ def test_heic_round_trips_through_hash_and_analysis() -> None:
     fallback, so a real HEIC file would silently fail to hash and fail to
     analyze -- exactly the "iPhone exports get ignored" bug this feature
     fixes. This proves the whole pipeline (hash, phash, quality metrics,
-    and the TUI thumbnail) actually decodes a real HEIC file end to end."""
+    and the thumbnail) actually decodes a real HEIC file end to end."""
     with tempfile.TemporaryDirectory() as tmp:
         p = Path(tmp) / "photo.heic"
         if not _try_make_real_heic(p):
@@ -83,13 +83,13 @@ def test_heic_round_trips_through_hash_and_analysis() -> None:
 
         # load_hash_gray: must decode via the PIL fallback (cv2 can't read
         # HEIC at all) and return a 2D grayscale array, not None.
-        gray = fd.load_hash_gray(p)
+        gray = dc.load_hash_gray(p)
         assert gray is not None, "load_hash_gray must decode a real HEIC file, not return None"
         assert gray.ndim == 2, f"expected a 2D grayscale array, got shape {gray.shape}"
         assert gray.shape[0] > 0 and gray.shape[1] > 0
 
         # The perceptual hash itself must be computable from that array.
-        hash_value = fd.phash(gray)
+        hash_value = dc.phash(gray)
         assert isinstance(hash_value, int)
 
         # compare_image_quality.load_gray: must decode via its own PIL
@@ -112,10 +112,10 @@ def test_heic_round_trips_through_hash_and_analysis() -> None:
         # make_thumbnail: verify (not assume) that it picks up HEIC decoding
         # for free once the HEIF opener is registered with PIL -- it must
         # return the real decoded thumbnail, not the gray failure placeholder.
-        thumb = fd.make_thumbnail(p)
+        thumb = dc.make_thumbnail(p)
         assert thumb.size != (0, 0)
         thumb_arr = np.array(thumb)
-        placeholder = np.array(fd.THUMBNAIL_FAILURE_COLOR, dtype=thumb_arr.dtype)
+        placeholder = np.array(dc.THUMBNAIL_FAILURE_COLOR, dtype=thumb_arr.dtype)
         assert not np.all(thumb_arr == placeholder), (
             "make_thumbnail returned the gray failure placeholder instead of decoding the real HEIC file"
         )

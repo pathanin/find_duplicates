@@ -3,12 +3,12 @@ duplicates_core.py
 
 Shared, UI-agnostic core of the duplicate-image tool: directory scanning,
 perceptual hashing + grouping, quality scoring, thumbnailing, and the one
-destructive path (moving non-kept files out of the way). No Textual/rich
-dependency here -- this module must stay importable on a headless box that
-only wants the web front end, or none at all.
+destructive path (moving non-kept files out of the way). No web framework
+dependency here -- this module must stay importable standalone (e.g. for
+tests) without pulling in FastAPI/uvicorn.
 
-find_duplicates.py (Textual TUI) and find_duplicates-web.py (browser UI) both
-import from this module rather than duplicating any of it.
+find_duplicates.py and duplicates_web.py both import from this module
+rather than duplicating any of it.
 """
 
 import json
@@ -101,8 +101,8 @@ METRIC_DESCRIPTIONS = {
 }
 
 class MetricRow(NamedTuple):
-    """One row of the metrics table, shared by the TUI's DataTable and the
-    web UI's /api/group/{i} response so neither has to re-derive a row's
+    """One row of the metrics table rendered by the web UI's /api/group/{i}
+    response, structured so the frontend never has to re-derive a row's
     meaning by parsing `label` -- label text is for human display only (and
     free to be reworded), never a machine-readable contract. That used to be
     exactly what the web frontend did (matching a "(higher better)"/"(lower
@@ -141,8 +141,9 @@ class MetricRow(NamedTuple):
 # a raw number is meaningless without knowing which direction is "better".
 # Dimensions/file size carry no such label since they aren't part of the
 # score at all -- that's explained once, in the '?' help screen, rather than
-# on every row. UI-agnostic, so both the TUI's DataTable and the web UI's
-# metrics JSON reuse it rather than keeping two label lists in sync by hand.
+# on every row. Defined here (not in the web module) so it stays reusable
+# by anything else that wants the same metrics-JSON shape without keeping a
+# second label list in sync by hand.
 METRIC_ROWS = [
     MetricRow("Dimensions", lambda r: f"{r['dimensions'][0]}x{r['dimensions'][1]}", None, "reference"),
     MetricRow("File size", lambda r: humansize(r["file_size"]), None, "reference"),
@@ -335,8 +336,8 @@ def group_duplicates(
     *progress_callback*, if given, is called as progress_callback(label,
     done, total) as each uncached item completes, instead of the default
     TTY-aware print via _print_progress -- lets a caller (e.g. the web
-    front end) route progress to something other than stdout without
-    touching the CLI/TUI's default behavior."""
+    front end's SSE progress stream) route progress to something other than
+    stdout without touching the CLI's default behavior."""
     stats = {p: p.stat() for p in paths}
     hashes: dict[Path, int | None] = {}
     to_compute = []
@@ -491,15 +492,16 @@ def apply_group(
     recursive: bool = False,
     scan_root: Path | None = None,
 ) -> dict:
-    """Move every non-kept file in *group* to *dest_dir*. Shared by the TUI's
-    _apply and --auto mode. Files that are symlinks to the kept file's real
-    target are left alone (moving the target would leave the kept path
-    dangling). Records whatever was actually moved into a manifest entry
-    from a `finally` -- even a failure partway through the loop (disk full,
-    permission error) leaves an accurate, reversible record instead of
-    silently losing track of files already relocated to disk. Does not set
-    group.status; callers decide (kept "pending" on a raised exception is
-    load-bearing for the TUI's retry path, see test_manifest_crash_safety.py).
+    """Move every non-kept file in *group* to *dest_dir*. Shared by the
+    interactive confirm path (apply_pick) and --auto mode. Files that are
+    symlinks to the kept file's real target are left alone (moving the
+    target would leave the kept path dangling). Records whatever was
+    actually moved into a manifest entry from a `finally` -- even a failure
+    partway through the loop (disk full, permission error) leaves an
+    accurate, reversible record instead of silently losing track of files
+    already relocated to disk. Does not set group.status; callers decide
+    (kept "pending" on a raised exception is load-bearing for the retry
+    path, see test_web_api.py's test_confirm_partial_failure_leaves_group_pending).
     Appends the entry to *manifest* if given, and always returns it."""
     group.current_pick = keep_idx
     kept_path = group.paths[keep_idx]
@@ -533,16 +535,16 @@ def auto_apply_groups(
     recursive: bool = False,
     scan_root: Path | None = None,
 ) -> dict:
-    """Apply every pending group's suggested (top-scored) pick, no TUI --
-    used by --auto. Doesn't second-guess close calls: the suggested pick is
-    applied exactly as it would default to in the TUI.
+    """Apply every pending group's suggested (top-scored) pick, no review UI
+    -- used by --auto. Doesn't second-guess close calls: the suggested pick
+    is applied exactly as it would default to in interactive review.
 
     A group whose apply_group() raises partway through is recorded as a
-    failure (its status stays "pending", the same state the TUI leaves it in
-    after a partial move failure) and the run continues with the remaining
-    groups -- one bad group (disk full, permission error) must not kill an
-    unattended run and leave earlier groups' successfully-moved files
-    unreported.
+    failure (its status stays "pending", the same state a partial move
+    failure leaves it in during interactive review) and the run continues
+    with the remaining groups -- one bad group (disk full, permission
+    error) must not kill an unattended run and leave earlier groups'
+    successfully-moved files unreported.
 
     bytes_reclaimed sums each moved file's size from group.results[idx]
     ["file_size"] (already populated by analyze_paths) *before* the move --
@@ -605,12 +607,11 @@ def auto_apply_groups(
 # ---------------------------------------------------------------------------
 # Interactive confirm/skip/re-pick primitives
 # ---------------------------------------------------------------------------
-# Shared by the TUI (DuplicateReviewApp._apply/_unapply/_pick_needs_reapply,
-# thin delegations to these) and the web front end, so both keep the same
-# manifest invariants (stays-pending-on-partial-failure, unapply-on-skip,
-# clear-stale-entries-before-reapply, re-pick-after-confirm) rather than
-# each reimplementing this -- the one genuinely destructive, stateful path
-# in the app -- separately.
+# Take the manifest/group explicitly rather than reading state off a caller
+# object, so the same manifest invariants (stays-pending-on-partial-failure,
+# unapply-on-skip, clear-stale-entries-before-reapply, re-pick-after-confirm)
+# live in exactly one place -- the one genuinely destructive, stateful path
+# in the app.
 
 def unapply(manifest: list[dict], group_index: int) -> None:
     """Reverse file moves for group *group_index* using *manifest* (the
@@ -793,8 +794,8 @@ def build_groups(
 ) -> list[Group]:
     """*progress_callback*, if given, is passed straight through to
     group_duplicates/analyze_paths -- see their matching parameter. None
-    (the default) preserves the CLI/TUI's existing TTY-aware stdout
-    printing unchanged."""
+    (the default) preserves the CLI's existing TTY-aware stdout printing
+    unchanged."""
     paths = find_images(directory, recursive=recursive, exclude_dir=dest_dir)
 
     hash_cache = load_hash_cache(directory)
@@ -837,7 +838,7 @@ def build_groups(
 
         # Reorder the group best-first rather than just recording which index
         # won, so the suggested file is always [1] -- leftmost column in the
-        # web table, first preview in both front ends. Reviewing is a
+        # web table, first preview on the stage. Reviewing is a
         # high-volume loop and the eye shouldn't have to hunt for the ★ in a
         # different position every group. Both lists are permuted by the same
         # order, so every index downstream (current_pick, the manifest,
@@ -855,7 +856,7 @@ def build_groups(
         # analyze()'s metrics), and `<` against one produces numpy.bool_,
         # not Python bool -- `and` returns its second operand as-is rather
         # than coercing it, so close_call would silently end up numpy.bool_
-        # too. That's fine for the TUI's truthy "if g.is_close_call" check,
+        # too. That's fine for a plain truthy "if g.is_close_call" check,
         # but numpy.bool_ (unlike numpy.float64) isn't a subclass of its
         # Python equivalent and isn't JSON-serializable -- the web front
         # end's /api/state was the first consumer to actually hit this.
@@ -868,9 +869,10 @@ def build_groups(
                 paths=members,
                 results=results,
                 # Not generated here: decoding+downscaling every group's images
-                # up front stalls TUI startup on large scans, and groups the
+                # up front stalls scan completion on large scans, and groups the
                 # user never navigates to (e.g. quits early) would pay that
-                # cost for nothing. refresh_detail() generates on first view.
+                # cost for nothing. Generated lazily on first request instead
+                # (see duplicates_web._cached_render).
                 thumbnails=None,
                 suggested_idx=suggested_idx,
                 current_pick=suggested_idx,
