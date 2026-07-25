@@ -290,13 +290,24 @@ input[type="text"], input[type="number"] {
      its grid-template-columns) -- otherwise the two grids' column tracks
      land at different x-offsets despite "looking" aligned at rest, and
      their scrollWidths diverge so syncScroll's 1:1 scrollLeft mirror drifts
-     apart at the far-right edge of a wide group. margin doesn't produce the
+     apart at the far-right edge of a wide group. Only the column gap is
+     load-bearing for that alignment; the row gap is set separately below.
+     margin doesn't produce the
      same box model as #images-row's padding (margin shrinks this element's
      own border-box width instead of insetting content within a full-width
      box), so padding is used here too, not margin. border-collapse is not
      included here -- it's a <table>-display-only property and does nothing
      once display is overridden to grid below. */
-  gap: 0.6rem;
+  /* Only the COLUMN gap is structural (it's the half that has to match
+     #images-row). A row gap has to be 0: every cell paints its own
+     background -- zebra stripe, pick tint, best-value tint -- so a vertical
+     gutter cut each row into detached floating capsules, and with 9.6px of
+     gap against 5.6px of cell padding there was more space *between* rows
+     than inside them. Rows are separated by the 1px border-bottom and the
+     stripe alone; vertical breathing room belongs in the cell padding
+     below, where it keeps a row reading as one continuous band. */
+  column-gap: 0.6rem;
+  row-gap: 0;
   padding: 0 0.8rem 0.8rem;
   font-size: 0.88em;
   overflow-x: auto;
@@ -315,7 +326,9 @@ input[type="text"], input[type="number"] {
 #metrics-table th, #metrics-table td {
   border: none;
   border-bottom: 1px solid var(--border);
-  padding: 0.4em 0.7em;
+  /* Vertical padding carries the row's breathing room now that row-gap is
+     0 (see above) -- inside the band rather than between the bands. */
+  padding: 0.55em 0.7em;
   text-align: right;
   white-space: nowrap;
 }
@@ -423,7 +436,12 @@ input[type="text"], input[type="number"] {
 }
 
 #status-line {
-  margin: 0.8em;
+  /* Asymmetric on purpose: this line states exactly what Confirm/Skip will
+     do, so it belongs to the buttons under it, not to the table above it.
+     Generous above, tight below binds it to the controls it describes --
+     the same 0.8em on all four sides left it floating between the two
+     with equal claim on each. */
+  margin: 1.4em 0.8em 0.5em;
   padding: 0.6em 0.8em;
   background: var(--bg-alt);
   border-radius: 6px;

@@ -232,9 +232,16 @@ function renderBanners() {
 // Fixed width of the leading label column, shared by #images-row's spacer
 // and #metrics-table's first column (see GRID_COLS below) -- must be wide
 // enough for the longest metric label ("Eff. res. px equiv (higher
-// better)") without wrapping in the common case; the CSS wrap fallback
-// (see #metrics-table thead th:first-child) covers anything longer.
-const LABEL_COL_WIDTH = "220px";
+// better)") without wrapping; the CSS wrap fallback (see #metrics-table
+// thead th:first-child) covers anything longer.
+//
+// Measured: that label needs 233px including the cell's horizontal padding
+// at this font size. The old 220px was just under, so the two "Eff. res."
+// rows wrapped to a second line and rendered 46px tall against every other
+// row's 29px -- one wrapped label wrecking the whole table's vertical
+// rhythm. 248px clears the measurement with room for font metrics that
+// differ per platform.
+const LABEL_COL_WIDTH = "248px";
 
 function gridColumns(n) {
   return `${LABEL_COL_WIDTH} repeat(${n}, minmax(180px, 1fr))`;
