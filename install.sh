@@ -117,10 +117,15 @@ echo "==> Installing dependencies (prebuilt wheels via pip)"
   uvicorn
 
 echo "==> Installing scripts"
+# Clear libexec rather than copying over it: cp only ever adds, so a module
+# dropped from the repo between versions (find_duplicates-web.py, removed
+# with the Textual TUI) would sit here forever, along with a __pycache__
+# holding its stale .pyc. DATA_DIR is rooted at XDG_DATA_HOME or $HOME, so
+# this can't degrade into an rm -rf of a bare /libexec.
+rm -rf "$DATA_DIR/libexec"
 mkdir -p "$DATA_DIR/libexec"
 cp "$REPO_ROOT/duplicates_core.py" "$REPO_ROOT/compare_image_quality.py" \
    "$REPO_ROOT/duplicates_web.py" "$REPO_ROOT/find_duplicates.py" "$DATA_DIR/libexec/"
-rm -rf "$DATA_DIR/libexec/static"
 cp -r "$REPO_ROOT/static" "$DATA_DIR/libexec/static"
 
 mkdir -p "$BIN_DIR"
