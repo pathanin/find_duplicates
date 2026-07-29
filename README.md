@@ -18,7 +18,7 @@ python3 find_duplicates.py [directory] [--threshold N] [--dest DIR] [--recursive
 Requires Python 3.10+. The install script creates an isolated venv via pip
 (prebuilt wheels, seconds) and puts `find-duplicates` on your PATH.
 
-One-liner (no clone needed):
+One-liner:
 
 ```bash
 curl -LsSf https://raw.githubusercontent.com/pathanin/find_duplicates/main/install.sh | sh
@@ -74,7 +74,3 @@ python3 tests/test_unapply_crash_safety.py
 ```
 
 See `CLAUDE.md` for the full test list.
-
-## License
-
-MIT
