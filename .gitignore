@@ -3,8 +3,6 @@ __pycache__/
 
 # tool output, not source
 _duplicates/
-.find_duplicates_cache.json
-.find_duplicates_hash_cache.json
 
 # personal media living in this working directory, not part of the program
 *.jpg
@@ -27,6 +25,5 @@ improvement-status.md
 AGENTS.md
 
 # local agent config, not source (sole-dev project, not shared on GitHub)
-CLAUDE.md
 PRODUCT.md
 .impeccable/

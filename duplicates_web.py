@@ -94,6 +94,19 @@ class Session:
     # (group, file) key alone would serve whichever was rendered first for
     # both sizes.
     image_cache: dict[tuple[int, int, int], bytes] = field(default_factory=dict)
+    # The scan caches, keyed on path + mtime + size (see duplicates_core's
+    # cached_hash/cached_result). Unlike image_cache above, these deliberately
+    # SURVIVE a rescan and are never reset in on_done -- reusing them is the
+    # entire reason the control panel's rescan button is fast on a large
+    # library, since a rescan after confirming a few groups re-encounters
+    # thousands of unchanged files. Don't "fix" the missing reset. They hold
+    # no file handles and nothing on disk: process exit is the only eviction,
+    # which is also what keeps them from ever going stale across a code
+    # change. Growth is bounded by distinct paths seen this process (a few
+    # tens of bytes each for hashes; the analyze cache only ever sees files
+    # that landed in a group, not the whole library).
+    hash_cache: dict[str, dict] = field(default_factory=dict)
+    analyze_cache: dict[str, dict] = field(default_factory=dict)
     # Bumped on every successful scan swap. (i, j) indices get reused across
     # rescans for different images, and the browser's own HTTP cache doesn't
     # know that -- the frontend appends ?g=<generation> to thumb/full URLs
@@ -125,9 +138,13 @@ def _launch_scan(session: Session, params: ScanParams, loop: asyncio.AbstractEve
             session.progress_seq += 1
 
     def run_scan() -> list[Group]:
+        # Safe to hand these to the executor thread unlocked: /api/scan
+        # rejects a second scan while one is running, so this is the only
+        # writer, and no route handler reads them.
         return build_groups(
             params.directory, params.threshold, recursive=params.recursive,
             dest_dir=params.dest_dir, progress_callback=progress_cb,
+            hash_cache=session.hash_cache, analyze_cache=session.analyze_cache,
         )
 
     def on_done(fut: Future) -> None:

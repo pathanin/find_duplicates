@@ -11,11 +11,9 @@ find_duplicates.py and duplicates_web.py both import from this module
 rather than duplicating any of it.
 """
 
-import json
 import math
 import os
 import shutil
-import tempfile
 import sys
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass
@@ -43,8 +41,6 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff", ".tif", ".heic"
 DEFAULT_HASH_THRESHOLD = 10  # max Hamming distance out of 64 bits to call two images duplicates
 PREVIEW_MAX_SIDE = 800
 CLOSE_CALL_MARGIN = 0.08  # quality_score gap below which we flag "close call"
-CACHE_FILENAME = ".find_duplicates_cache.json"
-HASH_CACHE_FILENAME = ".find_duplicates_hash_cache.json"
 # phash resizes to 32x32; a reduced-scale decode smaller than this on either side
 # would upsample instead of downsample there, drifting the hash. 64 gives margin,
 # and images this small are cheap to fully decode anyway.
@@ -217,11 +213,11 @@ def phash(gray: np.ndarray) -> int:
     threshold against their mean. Robust to resizing/recompression, which is
     exactly the kind of "same photo, different export" duplicate we're after.
 
-    The on-disk hash cache (.find_duplicates_hash_cache.json) keys on path +
-    mtime + size, not on this function's code -- if you change phash or
-    load_hash_gray while testing against real images, delete that cache file
-    first, or you'll be silently served old hashes and wrongly conclude your
-    change had no effect on grouping."""
+    The hash cache keys on path + mtime + size, not on this function's code,
+    so a rescan within one process would serve old hashes after an edit here.
+    That cache lives in memory only and dies with the process -- restart the
+    tool after changing phash or load_hash_gray and you're testing the new
+    code, no cache file to hunt down and delete."""
     resized = cv2.resize(gray, (32, 32), interpolation=cv2.INTER_AREA).astype(np.float32)
     dct = cv2.dct(resized)
     low = dct[:8, :8]
@@ -257,39 +253,6 @@ class UnionFind:
         self.parent[rb] = ra
         if self.rank[ra] == self.rank[rb]:
             self.rank[ra] += 1
-
-
-def load_hash_cache(directory: Path) -> dict:
-    path = directory / HASH_CACHE_FILENAME
-    if not path.exists():
-        return {}
-    try:
-        with open(path) as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return {}
-
-
-def _write_json_atomic(path: str, data: dict) -> None:
-    """Write a JSON file atomically: write to a temp file in the same
-    directory, then rename over the target.  Prevents concurrent or
-    interrupted writes from leaving a truncated JSON file."""
-
-    fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(path), suffix=".tmp", prefix=".find_duplicates_")
-    try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(data, f)
-        os.replace(tmp_path, path)
-    except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
-
-
-def save_hash_cache(directory: Path, cache: dict) -> None:
-    _write_json_atomic(str(directory / HASH_CACHE_FILENAME), cache)
 
 
 def cached_hash(cache: dict, p: Path, st: os.stat_result) -> int | None:
@@ -695,21 +658,6 @@ def apply_pick(
     group.status = "confirmed"
 
 
-def load_cache(directory: Path) -> dict:
-    path = directory / CACHE_FILENAME
-    if not path.exists():
-        return {}
-    try:
-        with open(path) as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return {}
-
-
-def save_cache(directory: Path, cache: dict) -> None:
-    _write_json_atomic(str(directory / CACHE_FILENAME), cache)
-
-
 def cached_result(cache: dict, p: Path, st: os.stat_result) -> dict | None:
     entry = cache.get(str(p.resolve()))
     if entry is None or entry.get("mtime") != st.st_mtime_ns or entry.get("size") != st.st_size:
@@ -790,40 +738,39 @@ def analyze_paths(paths: list[Path], cache: dict,
 
 def build_groups(
     directory: Path, threshold: int, recursive: bool = False, dest_dir: Path | None = None,
-    progress_callback=None,
+    progress_callback=None, hash_cache: dict | None = None, analyze_cache: dict | None = None,
 ) -> list[Group]:
     """*progress_callback*, if given, is passed straight through to
     group_duplicates/analyze_paths -- see their matching parameter. None
     (the default) preserves the CLI's existing TTY-aware stdout printing
-    unchanged."""
+    unchanged.
+
+    *hash_cache*/*analyze_cache* are caller-owned and in-memory only: a scan
+    writes nothing to *directory*. Passing dicts that outlive this call is
+    what makes a rescan of an already-scanned library cheap (the web UI's
+    Session does exactly that); omitting them means every path is recomputed
+    from scratch, which is the right default for one-shot --auto runs. Both
+    key on path + mtime + size, so entries stay valid across rescans with a
+    different threshold or recursive setting -- neither affects a file's hash
+    or its quality metrics."""
     paths = find_images(directory, recursive=recursive, exclude_dir=dest_dir)
 
-    hash_cache = load_hash_cache(directory)
-    # A shallow copy suffices to detect changes: store_hash always assigns a
-    # brand-new dict literal to cache[key] rather than mutating an existing
-    # entry in place, so a stale key's value in this snapshot keeps pointing
-    # at the old dict even after group_duplicates rewrites cache[key]. A
-    # plain len() comparison misses that case -- rehashing a modified file
-    # replaces its entry without changing the key count, so the refreshed
-    # value would never get persisted and the file would be recomputed on
-    # every subsequent scan.
-    hash_cache_snapshot = dict(hash_cache)
-    raw_groups = group_duplicates(paths, threshold, hash_cache, progress_callback=progress_callback)
-    if hash_cache != hash_cache_snapshot:
-        save_hash_cache(directory, hash_cache)
+    if hash_cache is None:
+        hash_cache = {}
+    if analyze_cache is None:
+        analyze_cache = {}
 
-    cache = load_cache(directory)
-    cache_snapshot = dict(cache)
+    raw_groups = group_duplicates(paths, threshold, hash_cache, progress_callback=progress_callback)
+
     # Compute stats for the grouped files once and pass to analyze_paths,
     # rather than letting it call stat() again on files already stat()'d
     # during the hash phase (the same Path objects are reused).
     grouped_paths = [p for members in raw_groups for p in members]
     grouped_stats = {p: p.stat() for p in grouped_paths}
     analyzed = analyze_paths(
-        grouped_paths, cache, precomputed_stats=grouped_stats, progress_callback=progress_callback
+        grouped_paths, analyze_cache, precomputed_stats=grouped_stats,
+        progress_callback=progress_callback,
     )
-    if cache != cache_snapshot:
-        save_cache(directory, cache)
 
     groups = []
     for members in raw_groups:

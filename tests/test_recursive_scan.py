@@ -171,12 +171,13 @@ def test_build_groups_recursive_groups_across_subdirs() -> None:
         p2 = tmp / "backup" / "small.jpg"
         make_duplicate_pair(seed=10, p1=p1, p2=p2)
 
-        groups = dc.build_groups(tmp, dc.DEFAULT_HASH_THRESHOLD, recursive=True, dest_dir=tmp / "_duplicates")
+        cache: dict = {}
+        groups = dc.build_groups(tmp, dc.DEFAULT_HASH_THRESHOLD, recursive=True,
+                                 dest_dir=tmp / "_duplicates", hash_cache=cache)
 
         assert len(groups) == 1, f"expected the cross-subdir pair to be grouped, got {len(groups)} group(s)"
         assert set(groups[0].paths) == {p1, p2}
 
-        cache = dc.load_hash_cache(tmp)
         assert str(p1.resolve()) in cache and str(p2.resolve()) in cache, (
             "hash cache keys must remain unique absolute paths across different subdirectories"
         )

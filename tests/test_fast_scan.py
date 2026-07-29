@@ -1,10 +1,13 @@
 """Regression tests for the fast-scanning path in duplicates_core.py:
-reduced-resolution perceptual hashing and the (mtime, size)-keyed analyze()
-cache backing the parallel process pool.
+reduced-resolution perceptual hashing and the (mtime, size)-keyed hash and
+analyze() caches backing the parallel thread pool. Those caches are in-memory
+and caller-owned -- a scan writes nothing to the scanned directory -- so the
+tests here cover both the speedup and that absence of on-disk residue.
 
 Run: python3 test_fast_scan.py
 """
 
+import json
 import os
 import sys
 import tempfile
@@ -121,17 +124,6 @@ def test_cache_miss_after_modification() -> None:
         print("  ok  modifying the file invalidates its cache entry")
 
 
-def test_load_cache_handles_corrupt_file() -> None:
-    """Failure case: a truncated/corrupt cache file must not crash a scan,
-    just be treated as empty."""
-    with tempfile.TemporaryDirectory() as tmp:
-        directory = Path(tmp)
-        (directory / dc.CACHE_FILENAME).write_text("{not valid json")
-        cache = dc.load_cache(directory)
-        assert cache == {}, "corrupt cache file should load as empty, not raise"
-        print("  ok  corrupt cache file loads as {} instead of raising")
-
-
 def test_hash_cache_round_trip() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         p = Path(tmp) / "photo.jpg"
@@ -160,17 +152,6 @@ def test_hash_cache_miss_after_modification() -> None:
         save_jpeg(make_texture(400, 400, seed=52), p)  # different content, same path
         assert dc.cached_hash(cache, p, _stat(p)) is None, "modified file must miss the hash cache"
         print("  ok  modifying the file invalidates its hash cache entry")
-
-
-def test_load_hash_cache_handles_corrupt_file() -> None:
-    """Failure case: a truncated/corrupt hash cache file must not crash a
-    scan, just be treated as empty."""
-    with tempfile.TemporaryDirectory() as tmp:
-        directory = Path(tmp)
-        (directory / dc.HASH_CACHE_FILENAME).write_text("{not valid json")
-        cache = dc.load_hash_cache(directory)
-        assert cache == {}, "corrupt hash cache file should load as empty, not raise"
-        print("  ok  corrupt hash cache file loads as {} instead of raising")
 
 
 def test_group_duplicates_skips_decode_on_all_cache_hits() -> None:
@@ -415,28 +396,115 @@ def test_analyze_paths_honors_precomputed_stats() -> None:
         print("  ok  precomputed_stats values (not a fresh stat()) determine the result")
 
 
-def test_real_analyze_result_round_trips_through_json_cache_file() -> None:
+def test_real_analyze_result_is_json_serializable() -> None:
     """analyze() emits np.float64 for several metrics, which only serializes
-    today because np.float64 subclasses Python float. Prove the *actual*
-    analyze() -> cache dict -> JSON file -> reload -> hit path works end to
-    end, not just an in-memory dict of hand-picked plain floats -- so a
-    future metric that isn't JSON-safe (e.g. a bare np.int64) fails loudly
-    here instead of silently crashing a real scan's save_cache() call."""
+    today because np.float64 subclasses Python float. These values reach the
+    browser through _group_detail's JSON payload, so a future metric that
+    isn't JSON-safe (e.g. a bare np.int64, or np.bool_ -- which doesn't
+    subclass bool and already broke is_close_call once) would 500 the
+    /api/group route. Serialize the *actual* analyze() output rather than an
+    in-memory dict of hand-picked plain floats, so that fails loudly here.
+
+    This used to assert the same property via a save_cache/load_cache round
+    trip through a JSON file on disk; the caches are in-memory now, but the
+    JSON constraint they incidentally enforced is still real."""
     with tempfile.TemporaryDirectory() as tmp:
-        directory = Path(tmp)
-        p = directory / "photo.jpg"
+        p = Path(tmp) / "photo.jpg"
         save_jpeg(make_texture(300, 300, seed=8), p)
 
-        cache = dc.load_cache(directory)
-        analyzed = dc.analyze_paths([p], cache)
-        dc.save_cache(directory, cache)
+        analyzed = dc.analyze_paths([p], {})
 
-        reloaded_cache = dc.load_cache(directory)
-        hit = dc.cached_result(reloaded_cache, p, p.stat())
-        assert hit is not None, "real analyze() output failed to round-trip through the JSON cache file"
-        assert hit["dimensions"] == (300, 300)
-        assert hit["sharpness_normalized"] == analyzed[p]["sharpness_normalized"]
-        print("  ok  real analyze() output round-trips through save_cache/load_cache on disk")
+        encoded = json.dumps(analyzed[p])  # raises TypeError on a non-JSON-safe metric
+        decoded = json.loads(encoded)
+        assert tuple(decoded["dimensions"]) == (300, 300)
+        assert decoded["sharpness_normalized"] == analyzed[p]["sharpness_normalized"]
+        print("  ok  real analyze() output is JSON-serializable for the API payload")
+
+
+def test_scan_writes_nothing_into_the_scanned_directory() -> None:
+    """The scan caches are in-memory only: build_groups must leave the user's
+    photo directory byte-for-byte as it found it. Compares the full directory
+    listing rather than probing for specific filenames, so a stray atomic-write
+    temp file would fail here too. Uses a real duplicate pair on purpose -- a
+    directory with no duplicates never reaches the analyze phase, so it would
+    only exercise half the scan."""
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp)
+        make_duplicate_pair(tmp, seed=70)
+        before = set(os.listdir(directory))
+
+        groups = dc.build_groups(directory, dc.DEFAULT_HASH_THRESHOLD, dest_dir=directory / "_duplicates")
+
+        assert len(groups) == 1, f"expected the pair to group, got {len(groups)} group(s)"
+        after = set(os.listdir(directory))
+        assert after == before, f"scan left files behind in the scanned directory: {sorted(after - before)}"
+        print("  ok  a full scan writes nothing into the scanned directory")
+
+
+def test_build_groups_reuses_caller_supplied_caches_across_scans() -> None:
+    """The rescan speedup the on-disk caches used to provide, now carried by
+    caller-owned dicts (duplicates_web.Session holds them for the control
+    panel's rescan button). A second build_groups over unchanged files must
+    hit both caches: no re-decode for hashing, and no re-analyze."""
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp)
+        paths = make_duplicate_pair(tmp, seed=71)
+        hash_cache: dict = {}
+        analyze_cache: dict = {}
+        dest = directory / "_duplicates"
+
+        dc.build_groups(directory, dc.DEFAULT_HASH_THRESHOLD, dest_dir=dest,
+                        hash_cache=hash_cache, analyze_cache=analyze_cache)
+
+        for p in paths:
+            assert dc.cached_hash(hash_cache, p, p.stat()) is not None, "first scan must fill the hash cache"
+            assert dc.cached_result(analyze_cache, p, p.stat()) is not None, "first scan must fill the analyze cache"
+
+        def exploding_load(_p):
+            raise AssertionError("load_hash_gray must not be called on a warm-cache rescan")
+
+        def exploding_analyze(_p):
+            raise AssertionError("analyze must not be called on a warm-cache rescan")
+
+        real_load, real_analyze = dc.load_hash_gray, dc.analyze
+        dc.load_hash_gray, dc.analyze = exploding_load, exploding_analyze
+        try:
+            groups = dc.build_groups(directory, dc.DEFAULT_HASH_THRESHOLD, dest_dir=dest,
+                                     hash_cache=hash_cache, analyze_cache=analyze_cache)
+        finally:
+            dc.load_hash_gray, dc.analyze = real_load, real_analyze
+
+        assert len(groups) == 1, f"rescan must rebuild the group from cache alone, got {len(groups)} group(s)"
+        assert set(groups[0].paths) == set(paths), "rescan's group must hold the same files as the cold scan's"
+        print("  ok  a rescan with warm caller-owned caches re-decodes and re-analyzes nothing")
+
+
+def test_omitted_caches_default_to_a_cold_scan() -> None:
+    """Boundary: the no-cache-argument call (find_duplicates.py's --auto path)
+    must still work and must not leak state between calls through a shared
+    module-level default -- two independent scans, both fully cold."""
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp)
+        make_duplicate_pair(tmp, seed=72)
+        dest = directory / "_duplicates"
+
+        first = dc.build_groups(directory, dc.DEFAULT_HASH_THRESHOLD, dest_dir=dest)
+        assert len(first) == 1
+
+        def exploding_load(_p):
+            raise AssertionError("a cache-less scan must recompute, not reuse hidden global state")
+
+        real_load = dc.load_hash_gray
+        dc.load_hash_gray = exploding_load
+        try:
+            dc.build_groups(directory, dc.DEFAULT_HASH_THRESHOLD, dest_dir=dest)
+        except AssertionError as exc:
+            assert "must recompute" in str(exc)
+        else:
+            raise AssertionError("second cache-less scan reused state it should not have had")
+        finally:
+            dc.load_hash_gray = real_load
+        print("  ok  omitting the cache arguments gives each scan a fresh, unshared cache")
 
 
 def main() -> None:
@@ -445,10 +513,8 @@ def main() -> None:
         test_load_hash_gray_falls_back_to_full_for_small_export,
         test_cache_round_trip,
         test_cache_miss_after_modification,
-        test_load_cache_handles_corrupt_file,
         test_hash_cache_round_trip,
         test_hash_cache_miss_after_modification,
-        test_load_hash_cache_handles_corrupt_file,
         test_group_duplicates_skips_decode_on_all_cache_hits,
         test_group_duplicates_computes_and_caches_on_miss,
         test_group_duplicates_hashes_small_batch_via_thread_pool,
@@ -458,7 +524,10 @@ def main() -> None:
         test_analyze_paths_analyzes_small_batch_via_thread_pool,
         test_analyze_paths_uses_thread_pool_for_larger_batch,
         test_analyze_paths_honors_precomputed_stats,
-        test_real_analyze_result_round_trips_through_json_cache_file,
+        test_real_analyze_result_is_json_serializable,
+        test_scan_writes_nothing_into_the_scanned_directory,
+        test_build_groups_reuses_caller_supplied_caches_across_scans,
+        test_omitted_caches_default_to_a_cold_scan,
     ]
     for test in tests:
         print(f"{test.__name__}:")
