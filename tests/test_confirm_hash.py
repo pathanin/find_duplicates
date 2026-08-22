@@ -16,8 +16,7 @@ because a false positive costs one keypress to skip in the review UI while a
 false negative is never surfaced at all. The two distributions overlap, so
 lowering the cut to catch the near-identical frames that still slip through
 drops genuine duplicates first -- a cut of 56 was tried, looked clean against
-re-exports, and silently lost six real duplicates from a 2658-image library.
-See the constant's comment for the measured distributions.
+re-exports, and silently lost six real duplicates from a real library.
 
 Run: python3 test_confirm_hash.py
 """
@@ -169,6 +168,30 @@ def test_aspect_recrop_still_groups() -> None:
     print("  ok  one artwork exported for two screen shapes survives confirmation")
 
 
+def test_flat_screenshot_reexport_still_groups() -> None:
+    """The recall direction for the image class that motivated all this. The
+    negative cases above are screenshots, and every other positive case here
+    is full-spectrum blurred noise -- so without this, the suite would prove
+    only that screenshots which differ get rejected, and never that
+    screenshots which are genuinely the same still group.
+
+    Flat frames are the plausible place for confirmation to misfire: almost
+    all their energy sits in the DC and the lowest coefficients, so the
+    mid-frequency bits the 16x16 block adds could in principle be thresholding
+    noise. They are not -- the panel edges carry real structure -- and this
+    pins that down."""
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        make_ui_frame(UI_FRAME_SEEDS[0], d / "orig.jpg")
+        im = Image.open(d / "orig.jpg")
+        im.resize((int(im.width * 0.35), int(im.height * 0.35)), Image.LANCZOS).save(
+            d / "small.jpg", quality=40)
+        groups = dc.group_duplicates(sorted(d.glob("*.jpg")), dc.DEFAULT_HASH_THRESHOLD, {})
+        assert len(groups) == 1 and len(groups[0]) == 2, (
+            f"a re-exported screenshot is still the same image, got {groups}")
+    print("  ok  a downscaled re-export of a flat screenshot still groups")
+
+
 def test_raising_the_threshold_switches_confirmation_off() -> None:
     """--threshold is the documented remedy when a scan finds too little, and
     a fixed confirmation gate would quietly defeat it: the two hashes are
@@ -202,7 +225,14 @@ def test_phash_is_the_grouping_half_of_phash_pair() -> None:
         make_photo(3, d / "a.jpg")
         gray = dc.load_hash_gray(d / "a.jpg")
         assert dc.phash(gray) == dc.phash_pair(gray)[0], "phash must be phash_pair's first half"
-        assert dc.phash_pair(gray)[1].bit_length() <= 256, "confirmation hash must fit in 256 bits"
+        # The two halves must be genuinely different hashes, not the same block
+        # twice: a 16x16 low-frequency block strictly contains the 8x8 one, so
+        # wiring both to dct[:8,:8] would still pass the assertion above while
+        # making confirmation a no-op.
+        h64, h256 = dc.phash_pair(gray)
+        assert h256 != h64, "the confirmation hash must not just repeat the 64-bit one"
+        assert h256.bit_count() > h64.bit_count(), (
+            "the 256-bit half must carry more set bits than the 8x8 block alone")
     print("  ok  phash() is phash_pair()'s 64-bit half")
 
 
@@ -229,6 +259,7 @@ def main() -> None:
         test_reexport_still_groups,
         test_extreme_reexport_still_groups,
         test_aspect_recrop_still_groups,
+        test_flat_screenshot_reexport_still_groups,
         test_raising_the_threshold_switches_confirmation_off,
         test_phash_is_the_grouping_half_of_phash_pair,
         test_hash_cache_round_trips_the_pair,

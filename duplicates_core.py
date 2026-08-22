@@ -39,43 +39,19 @@ except ImportError:
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff", ".tif", ".heic", ".heif"}
 DEFAULT_HASH_THRESHOLD = 10  # max Hamming distance out of 64 bits to call two images duplicates
-# Max Hamming distance out of 256 bits for the confirmation hash (see
-# phash_pair): a pair the 64-bit hash proposes is only grouped if the wider
-# hash also agrees. The 64-bit hash sees only an 8x8 low-frequency block --
-# little more than a thumbnail's gross layout -- which two *different* frames
-# of one scene share almost entirely (same backdrop, same framing, seconds
-# apart), so on a photo dump it reports distance 1-5 for photos that aren't
-# the same image at all. That was the bug this constant exists to fix.
+# Max Hamming distance out of 256 bits for phash_pair's confirmation hash: a
+# pair the 64-bit hash proposes is grouped only if the wider hash agrees too.
+# Applied only at or below DEFAULT_HASH_THRESHOLD (see group_duplicates).
 #
-# Tuned for recall, deliberately: a false positive costs one keypress to skip
-# in the review UI, a false negative is never surfaced at all. The two
-# distributions OVERLAP -- there is no clean cut -- so this sits above the
-# worst true duplicate measured rather than between the two populations.
-# Measured 256-bit distances:
-#   byte-identical                              0
-#   HEIC original vs its JPEG export          <=31
-#   re-export, 20-100% scale, quality 30-95   <=53
-#   same artwork recropped to another aspect  <=80   <- the tail this clears
-#   different frame of the same scene         >=28, mostly >=90
-# The recrop tail is what sets the number: a wallpaper exported at both
-# 1440x3200 and 1170x2532 is the same image, and those reached 80. Verified
-# against a real 2658-image library -- at 88 the confirmation removes 23
-# candidate pairs, every one of them visibly two different photos, and loses
-# none of the 43 known-duplicate pairs the 64-bit hash proposes. Tightening
-# to 72 already loses one, and 56 loses six.
-#
-# So near-identical frames (same pose, one hand moved) land around 28 and
-# still group. That is the accepted cost of the recall bias, not a bug to fix
-# by lowering this -- doing so drops real duplicates first.
-#
-# Only applied at or below DEFAULT_HASH_THRESHOLD -- see group_duplicates for
-# why a widened --threshold switches confirmation off rather than fighting it.
-#
-# Verifiers that weight *where* two images differ (block-wise correlation,
-# SSIM-like) were tried and are worse here, not better: a recrop misaligns
-# every block, and a mostly-flat screenshot differs only in text too small to
-# survive downscaling, so both score true duplicates below the negatives.
-# Re-verify any change against real photos, not synthetic textures.
+# Deliberately loose. The true-duplicate and same-scene distance ranges
+# overlap, so no cut separates them: this sits *above* the worst duplicate
+# observed rather than between the two, because a false positive costs one
+# keypress in the review UI and a false negative is never surfaced at all.
+# The binding case is an aspect recrop (one artwork exported for two phone
+# screens), which moves far more bits than a rescale. Lowering this drops
+# real duplicates well before it stops the near-identical frames that still
+# get through -- 56 looked clean against re-exports alone and lost six real
+# duplicates. tests/test_confirm_hash.py locks both directions.
 CONFIRM_HASH_THRESHOLD = 88
 PREVIEW_MAX_SIDE = 800
 CLOSE_CALL_MARGIN = 0.08  # quality_score gap below which we flag "close call"
@@ -359,7 +335,7 @@ def group_duplicates(
     front end's SSE progress stream) route progress to something other than
     stdout without touching the CLI's default behavior."""
     stats = {p: p.stat() for p in paths}
-    hashes: dict[Path, int | None] = {}
+    hashes: dict[Path, tuple[int, int] | None] = {}
     to_compute = []
     for p in paths:
         cached = cached_hash(cache, p, stats[p])
@@ -390,15 +366,12 @@ def group_duplicates(
 
     hash_list = [hashes[p] for p in paths]
 
-    # Raising *threshold* above the default is the documented way to ask for
-    # looser matching ("Raise the threshold" is what the UI tells you when a
-    # scan finds nothing), so a fixed confirmation gate must not override it.
-    # The two hashes are correlated -- on the aspect-recrop class the pairs a
-    # higher threshold is meant to recover are exactly the ones confirmation
-    # rejects -- so gating them anyway turns the knob into a no-op: measured
-    # on a real library, --threshold 30 recovers 51 of 51 known duplicates
-    # unconfirmed but only 45 confirmed. Someone who widened the threshold on
-    # purpose has accepted the false positives that come with it.
+    # Raising *threshold* is the documented way to ask for looser matching
+    # ("Raise the threshold" is what the UI suggests when a scan finds too
+    # little), and the two hashes are correlated enough that a fixed gate
+    # would reject much of what the wider threshold just admitted -- turning
+    # the knob into a partial no-op. Someone who widened it has already
+    # accepted the false positives that come with it.
     confirm = threshold <= DEFAULT_HASH_THRESHOLD
 
     uf = UnionFind(len(paths))

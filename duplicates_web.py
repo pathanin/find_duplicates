@@ -276,9 +276,13 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         # /api/scan sets this before calling _launch_scan; the initial scan
-        # needs the same so a client loading the page mid-scan sees status
-        # "scanning" (not the "idle" default) and opens the SSE connection
-        # that tells it when the scan finishes.
+        # needs the same, for two reasons. A client loading the page mid-scan
+        # must see "scanning" (not the "idle" default) or it never opens the
+        # SSE connection that tells it when the scan finishes. And the guards
+        # keyed off this status are what stop /api/scan from launching a
+        # second concurrent build_groups over the same caches while the
+        # startup scan is still running, with both on_done callbacks racing
+        # to swap groups in.
         session.status = "scanning"
         _launch_scan(session, session.params, asyncio.get_running_loop())
         yield
