@@ -48,26 +48,32 @@ DEFAULT_HASH_THRESHOLD = 10  # max Hamming distance out of 64 bits to call two i
 # the same image at all. That was the bug this constant exists to fix.
 #
 # Tuned for recall, deliberately: a false positive costs one keypress to skip
-# in the review UI, a false negative is never surfaced at all. So this covers
-# the *whole* measured true-duplicate tail rather than splitting the gap.
-# Measured over ground-truth pairs from tests/Test-image plus a photo dump,
-# as 256-bit distance:
-#   byte-identical                          0
-#   realistic re-export (30-100%, q30-85)  <=24
-#   2% edge crop                           <=43
-#   20% NEAREST downscale at q35           <=53   <- the tail this must clear
-#   different frame of the same scene      >=28, almost all >=54
-# The ranges overlap, so no cut is clean; 56 clears every duplicate observed
-# and accepts the residue. Near-identical frames (one hand moved, same pose)
-# land around 28 and still group -- that is the accepted cost, not a bug to
-# fix by lowering this, which would start dropping real duplicates.
+# in the review UI, a false negative is never surfaced at all. The two
+# distributions OVERLAP -- there is no clean cut -- so this sits above the
+# worst true duplicate measured rather than between the two populations.
+# Measured 256-bit distances:
+#   byte-identical                              0
+#   HEIC original vs its JPEG export          <=31
+#   re-export, 20-100% scale, quality 30-95   <=53
+#   same artwork recropped to another aspect  <=80   <- the tail this clears
+#   different frame of the same scene         >=28, mostly >=90
+# The recrop tail is what sets the number: a wallpaper exported at both
+# 1440x3200 and 1170x2532 is the same image, and those reached 80. Verified
+# against a real 2658-image library -- at 88 the confirmation removes 23
+# candidate pairs, every one of them visibly two different photos, and loses
+# none of the 43 known-duplicate pairs the 64-bit hash proposes. Tightening
+# to 72 already loses one, and 56 loses six.
+#
+# So near-identical frames (same pose, one hand moved) land around 28 and
+# still group. That is the accepted cost of the recall bias, not a bug to fix
+# by lowering this -- doing so drops real duplicates first.
 #
 # Verifiers that weight *where* two images differ (block-wise correlation,
-# SSIM-like) were tried and are worse here, not better: a 2% crop misaligns
+# SSIM-like) were tried and are worse here, not better: a recrop misaligns
 # every block, and a mostly-flat screenshot differs only in text too small to
-# survive downscaling, so both produce true duplicates that score below the
-# negatives. Re-verify any change against real photos, not synthetic textures.
-CONFIRM_HASH_THRESHOLD = 56
+# survive downscaling, so both score true duplicates below the negatives.
+# Re-verify any change against real photos, not synthetic textures.
+CONFIRM_HASH_THRESHOLD = 88
 PREVIEW_MAX_SIDE = 800
 CLOSE_CALL_MARGIN = 0.08  # quality_score gap below which we flag "close call"
 # phash resizes to 32x32; a reduced-scale decode smaller than this on either side

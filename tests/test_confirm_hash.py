@@ -10,12 +10,14 @@ than a thumbnail's gross layout, and those images share that layout entirely;
 measured distances were 1-5, well inside the default threshold of 10.
 
 The direction of the tuning matters as much as the fix, and
-test_extreme_reexport_still_groups is the real point of this file:
-CONFIRM_HASH_THRESHOLD is set to cover the whole measured true-duplicate
-tail, because a false positive costs one keypress to skip in the review UI
-while a false negative is never surfaced at all. Lowering it to catch the
-near-identical frames that still slip through would start dropping genuine
-duplicates -- see the constant's comment for the measured distributions.
+test_aspect_recrop_still_groups is the real point of this file:
+CONFIRM_HASH_THRESHOLD is set above the whole measured true-duplicate tail,
+because a false positive costs one keypress to skip in the review UI while a
+false negative is never surfaced at all. The two distributions overlap, so
+lowering the cut to catch the near-identical frames that still slip through
+drops genuine duplicates first -- a cut of 56 was tried, looked clean against
+re-exports, and silently lost six real duplicates from a 2658-image library.
+See the constant's comment for the measured distributions.
 
 Run: python3 test_confirm_hash.py
 """
@@ -31,19 +33,30 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import duplicates_core as dc
 
 
+# Seeds picked so the pair lands in the narrow regime this fix is about: the
+# 64-bit hash sees a distance of 4 (well inside the default threshold of 10)
+# while the 256-bit hash sees 110 (well past CONFIRM_HASH_THRESHOLD). That
+# band is narrow on purpose -- it is exactly where an 8x8 low-frequency block
+# is fooled and a 16x16 one is not, so an arbitrary seed pair usually misses
+# it. test_detector_without_the_fix_would_have_grouped_them asserts both
+# halves, so this stays honest if the hashes ever change.
+UI_FRAME_SEEDS = (0, 13)
+
+
 def make_ui_frame(seed: int, path: Path) -> None:
     """One frame of a chat-style screenshot: a mostly-flat dark field with a
-    light panel in a fixed place, and different text inside it each time.
-    Reproduces the real failure -- everything the 8x8 block can see is
-    identical between frames, and the only difference is small and central."""
-    im = Image.new("RGB", (720, 1280), (12, 12, 14))
+    light panel in a fixed place, and different content inside it each time.
+    Reproduces the real failure -- everything the 8x8 block can resolve is
+    identical between frames, since the panel and the dark surround dominate
+    it, and the differences live at a finer scale."""
+    im = Image.new("RGB", (720, 1280), (14, 14, 16))
     draw = ImageDraw.Draw(im)
-    draw.rectangle([120, 180, 600, 300], fill=(238, 238, 240))
+    draw.rectangle([90, 150, 630, 1130], fill=(236, 236, 238))
     rng = np.random.default_rng(seed)
-    for _ in range(14):
-        x = 140 + int(rng.integers(0, 420))
-        y = 205 + int(rng.integers(0, 70))
-        draw.rectangle([x, y, x + int(rng.integers(8, 34)), y + 9], fill=(20, 20, 24))
+    for _ in range(30):
+        x = 100 + int(rng.integers(0, 530 - 52))
+        y = 160 + int(rng.integers(0, 960 - 52))
+        draw.rectangle([x, y, x + 52, y + 28], fill=(26, 26, 30))
     im.save(path, quality=92)
 
 
@@ -67,7 +80,7 @@ def distances(a: Path, b: Path) -> tuple[int, int]:
 def test_same_scene_frames_do_not_group() -> None:
     with tempfile.TemporaryDirectory() as td:
         d = Path(td)
-        for i in (1, 2):
+        for i in UI_FRAME_SEEDS:
             make_ui_frame(i, d / f"frame{i}.jpg")
         groups = dc.group_duplicates(sorted(d.glob("*.jpg")), dc.DEFAULT_HASH_THRESHOLD, {})
         assert groups == [], f"different frames of one scene must not group, got {groups}"
@@ -80,9 +93,9 @@ def test_detector_without_the_fix_would_have_grouped_them() -> None:
     so this test fails if the confirmation step is ever removed."""
     with tempfile.TemporaryDirectory() as td:
         d = Path(td)
-        for i in (1, 2):
+        for i in UI_FRAME_SEEDS:
             make_ui_frame(i, d / f"frame{i}.jpg")
-        d64, d256 = distances(d / "frame1.jpg", d / "frame2.jpg")
+        d64, d256 = distances(*(d / f"frame{i}.jpg" for i in UI_FRAME_SEEDS))
         assert d64 <= dc.DEFAULT_HASH_THRESHOLD, (
             f"the 64-bit hash must still propose this pair or the test proves nothing (got {d64})")
         assert d256 > dc.CONFIRM_HASH_THRESHOLD, (
@@ -120,6 +133,42 @@ def test_extreme_reexport_still_groups() -> None:
     print("  ok  even a 20% NEAREST/q35 re-export survives confirmation")
 
 
+def test_aspect_recrop_still_groups() -> None:
+    """The case that actually set CONFIRM_HASH_THRESHOLD: one artwork exported
+    for two phone screens (1440x3200 and 1170x2532) is the same image, but the
+    aspect-ratio crop moves far more bits than a plain rescale -- real pairs of
+    this kind reached 80. An earlier cut of 56 looked clean on re-exports alone
+    and silently dropped six of them from a real library."""
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        rng = np.random.default_rng(9)
+        art = Image.fromarray(
+            rng.integers(0, 255, size=(2400, 1200, 3), dtype=np.uint8)
+        ).filter(ImageFilter.GaussianBlur(4))
+
+        def export(w: int, h: int, path: Path) -> None:
+            """Centre-crop to the target aspect, then scale -- what a wallpaper
+            pack does to fit one artwork to several devices."""
+            aw, ah = art.size
+            if aw / ah > w / h:
+                nw = int(ah * w / h)
+                box = ((aw - nw) // 2, 0, (aw - nw) // 2 + nw, ah)
+            else:
+                nh = int(aw * h / w)
+                box = (0, (ah - nh) // 2, aw, (ah - nh) // 2 + nh)
+            art.crop(box).resize((w, h), Image.LANCZOS).save(path, quality=88)
+
+        export(1440, 3200, d / "galaxy.jpg")
+        export(1170, 2532, d / "iphone.jpg")
+        d64, d256 = distances(d / "galaxy.jpg", d / "iphone.jpg")
+        assert d64 <= dc.DEFAULT_HASH_THRESHOLD, f"prefilter dropped it first (got {d64})"
+        assert d256 <= dc.CONFIRM_HASH_THRESHOLD, (
+            f"confirmation rejected the same artwork recropped for another screen "
+            f"(got {d256} > {dc.CONFIRM_HASH_THRESHOLD}) -- a false negative, the "
+            f"failure mode this threshold is explicitly tuned to avoid")
+    print("  ok  one artwork exported for two screen shapes survives confirmation")
+
+
 def test_phash_is_the_grouping_half_of_phash_pair() -> None:
     """phash() and phash_pair() must not drift apart: the cache stores the
     pair, while phash() is what other callers (and tests/test_heic_support)
@@ -155,6 +204,7 @@ def main() -> None:
         test_detector_without_the_fix_would_have_grouped_them,
         test_reexport_still_groups,
         test_extreme_reexport_still_groups,
+        test_aspect_recrop_still_groups,
         test_phash_is_the_grouping_half_of_phash_pair,
         test_hash_cache_round_trips_the_pair,
     ):

@@ -132,10 +132,10 @@ def test_hash_cache_round_trip() -> None:
 
         assert dc.cached_hash(cache, p, _stat(p)) is None, "empty cache must miss"
 
-        dc.store_hash(cache, p, _stat(p), 12345)
+        dc.store_hash(cache, p, _stat(p), (12345, 67890))
 
         hit = dc.cached_hash(cache, p, _stat(p))
-        assert hit == 12345, "expected a hash cache hit right after storing"
+        assert hit == (12345, 67890), "expected a hash cache hit right after storing"
         print("  ok  hash cache hit returns the stored hash")
 
 
@@ -146,8 +146,8 @@ def test_hash_cache_miss_after_modification() -> None:
         p = Path(tmp) / "photo.jpg"
         save_jpeg(make_texture(400, 400, seed=51), p)
         cache: dict = {}
-        dc.store_hash(cache, p, _stat(p), 999)
-        assert dc.cached_hash(cache, p, _stat(p)) == 999
+        dc.store_hash(cache, p, _stat(p), (999, 111))
+        assert dc.cached_hash(cache, p, _stat(p)) == (999, 111)
 
         save_jpeg(make_texture(400, 400, seed=52), p)  # different content, same path
         assert dc.cached_hash(cache, p, _stat(p)) is None, "modified file must miss the hash cache"
