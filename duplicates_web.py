@@ -373,6 +373,8 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
             if not (0 <= j < len(g.paths)):
                 raise HTTPException(404, "no such file in group")
             path = g.paths[j]
+        if not path.exists():
+            raise HTTPException(404, "file no longer exists on disk")
         if path.suffix.lower() in HEIC_EXTS:
             img = PILImage.open(path).convert("RGB")
             buf = io.BytesIO()
