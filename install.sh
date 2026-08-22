@@ -103,6 +103,12 @@ fi
 echo "==> Using python3 $PY_VERSION"
 
 echo "==> Creating venv at $VENV_DIR"
+# Remove any existing venv rather than letting `venv` upgrade it in place:
+# its python3 symlink points at a specific Cellar version (e.g.
+# python@3.14.6), and once Homebrew upgrades past that version the target
+# is gone -- `venv`'s upgrade path stats the dangling symlink and dies with
+# the same "No such file or directory" this is fixing.
+rm -rf "$VENV_DIR"
 mkdir -p "$DATA_DIR"
 python3 -m venv "$VENV_DIR"
 
