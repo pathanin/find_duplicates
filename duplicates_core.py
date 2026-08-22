@@ -68,6 +68,9 @@ DEFAULT_HASH_THRESHOLD = 10  # max Hamming distance out of 64 bits to call two i
 # still group. That is the accepted cost of the recall bias, not a bug to fix
 # by lowering this -- doing so drops real duplicates first.
 #
+# Only applied at or below DEFAULT_HASH_THRESHOLD -- see group_duplicates for
+# why a widened --threshold switches confirmation off rather than fighting it.
+#
 # Verifiers that weight *where* two images differ (block-wise correlation,
 # SSIM-like) were tried and are worse here, not better: a recrop misaligns
 # every block, and a mostly-flat screenshot differs only in text too small to
@@ -387,6 +390,17 @@ def group_duplicates(
 
     hash_list = [hashes[p] for p in paths]
 
+    # Raising *threshold* above the default is the documented way to ask for
+    # looser matching ("Raise the threshold" is what the UI tells you when a
+    # scan finds nothing), so a fixed confirmation gate must not override it.
+    # The two hashes are correlated -- on the aspect-recrop class the pairs a
+    # higher threshold is meant to recover are exactly the ones confirmation
+    # rejects -- so gating them anyway turns the knob into a no-op: measured
+    # on a real library, --threshold 30 recovers 51 of 51 known duplicates
+    # unconfirmed but only 45 confirmed. Someone who widened the threshold on
+    # purpose has accepted the false positives that come with it.
+    confirm = threshold <= DEFAULT_HASH_THRESHOLD
+
     uf = UnionFind(len(paths))
     for i in range(len(paths)):
         if hash_list[i] is None:
@@ -398,8 +412,9 @@ def group_duplicates(
             # way so the O(n^2) sweep still only pays for one bit_count on
             # the vast majority of pairs -- the confirmation runs on the
             # handful that already look like duplicates.
-            if (hamming(hash_list[i][0], hash_list[j][0]) <= threshold
-                    and hamming(hash_list[i][1], hash_list[j][1]) <= CONFIRM_HASH_THRESHOLD):
+            if hamming(hash_list[i][0], hash_list[j][0]) <= threshold and (
+                    not confirm
+                    or hamming(hash_list[i][1], hash_list[j][1]) <= CONFIRM_HASH_THRESHOLD):
                 uf.union(i, j)
 
     clusters: dict[int, list[Path]] = {}

@@ -169,6 +169,30 @@ def test_aspect_recrop_still_groups() -> None:
     print("  ok  one artwork exported for two screen shapes survives confirmation")
 
 
+def test_raising_the_threshold_switches_confirmation_off() -> None:
+    """--threshold is the documented remedy when a scan finds too little, and
+    a fixed confirmation gate would quietly defeat it: the two hashes are
+    correlated, so the pairs a wider threshold is meant to recover are the
+    same ones confirmation rejects. Measured on a real library, --threshold 30
+    recovered 51 of 51 known duplicates unconfirmed but only 45 confirmed.
+
+    The frames here are a genuine non-duplicate -- grouping them above the
+    default is the point, not a bug: widening the threshold is a request for
+    looser matching, and the review UI is where the extra pairs get skipped."""
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        for i in UI_FRAME_SEEDS:
+            make_ui_frame(i, d / f"frame{i}.jpg")
+        files = sorted(d.glob("*.jpg"))
+        assert dc.group_duplicates(files, dc.DEFAULT_HASH_THRESHOLD, {}) == [], (
+            "confirmation must still apply at the default threshold")
+        widened = dc.group_duplicates(files, dc.DEFAULT_HASH_THRESHOLD + 1, {})
+        assert len(widened) == 1 and len(widened[0]) == 2, (
+            f"above the default threshold the user has asked for looser matching, so "
+            f"confirmation must step aside, got {widened}")
+    print("  ok  a widened --threshold turns confirmation off instead of overriding it")
+
+
 def test_phash_is_the_grouping_half_of_phash_pair() -> None:
     """phash() and phash_pair() must not drift apart: the cache stores the
     pair, while phash() is what other callers (and tests/test_heic_support)
@@ -205,6 +229,7 @@ def main() -> None:
         test_reexport_still_groups,
         test_extreme_reexport_still_groups,
         test_aspect_recrop_still_groups,
+        test_raising_the_threshold_switches_confirmation_off,
         test_phash_is_the_grouping_half_of_phash_pair,
         test_hash_cache_round_trips_the_pair,
     ):
