@@ -39,6 +39,35 @@ except ImportError:
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff", ".tif", ".heic", ".heif"}
 DEFAULT_HASH_THRESHOLD = 10  # max Hamming distance out of 64 bits to call two images duplicates
+# Max Hamming distance out of 256 bits for the confirmation hash (see
+# phash_pair): a pair the 64-bit hash proposes is only grouped if the wider
+# hash also agrees. The 64-bit hash sees only an 8x8 low-frequency block --
+# little more than a thumbnail's gross layout -- which two *different* frames
+# of one scene share almost entirely (same backdrop, same framing, seconds
+# apart), so on a photo dump it reports distance 1-5 for photos that aren't
+# the same image at all. That was the bug this constant exists to fix.
+#
+# Tuned for recall, deliberately: a false positive costs one keypress to skip
+# in the review UI, a false negative is never surfaced at all. So this covers
+# the *whole* measured true-duplicate tail rather than splitting the gap.
+# Measured over ground-truth pairs from tests/Test-image plus a photo dump,
+# as 256-bit distance:
+#   byte-identical                          0
+#   realistic re-export (30-100%, q30-85)  <=24
+#   2% edge crop                           <=43
+#   20% NEAREST downscale at q35           <=53   <- the tail this must clear
+#   different frame of the same scene      >=28, almost all >=54
+# The ranges overlap, so no cut is clean; 56 clears every duplicate observed
+# and accepts the residue. Near-identical frames (one hand moved, same pose)
+# land around 28 and still group -- that is the accepted cost, not a bug to
+# fix by lowering this, which would start dropping real duplicates.
+#
+# Verifiers that weight *where* two images differ (block-wise correlation,
+# SSIM-like) were tried and are worse here, not better: a 2% crop misaligns
+# every block, and a mostly-flat screenshot differs only in text too small to
+# survive downscaling, so both produce true duplicates that score below the
+# negatives. Re-verify any change against real photos, not synthetic textures.
+CONFIRM_HASH_THRESHOLD = 56
 PREVIEW_MAX_SIDE = 800
 CLOSE_CALL_MARGIN = 0.08  # quality_score gap below which we flag "close call"
 # phash resizes to 32x32; a reduced-scale decode smaller than this on either side
@@ -208,25 +237,43 @@ def load_hash_gray(p: Path) -> np.ndarray | None:
     return img
 
 
-def phash(gray: np.ndarray) -> int:
-    """Classic 64-bit DCT perceptual hash: resize small, keep low frequencies,
-    threshold against their mean. Robust to resizing/recompression, which is
-    exactly the kind of "same photo, different export" duplicate we're after.
+def _low_freq_bits(block: np.ndarray) -> int:
+    """Pack a square low-frequency DCT block into one big int, one bit per
+    coefficient, thresholded against the block mean with DC excluded (DC is
+    overall brightness and would swamp the mean). Row-major, first
+    coefficient in the most significant bit."""
+    avg = (block.sum() - block[0, 0]) / (block.size - 1)
+    return int.from_bytes(np.packbits(block > avg).tobytes(), "big")
+
+
+def phash_pair(gray: np.ndarray) -> tuple[int, int]:
+    """Both perceptual hashes off a single DCT: the classic 64-bit one that
+    proposes candidate pairs, and a 256-bit one that confirms them.
+
+    The 64-bit hash keeps only an 8x8 low-frequency block, so it describes
+    little more than a thumbnail's gross layout -- robust to resizing and
+    recompression (the "same photo, different export" duplicate we're after),
+    but by the same token nearly blind to the difference between two separate
+    frames of one scene. The 16x16 block reaches into the mid frequencies
+    where those frames actually diverge; see CONFIRM_HASH_THRESHOLD.
+
+    Computing both here rather than in two passes is deliberate: the resize
+    and DCT are shared, so the wider hash costs essentially nothing on top of
+    a decode that dominates either way.
 
     The hash cache keys on path + mtime + size, not on this function's code,
     so a rescan within one process would serve old hashes after an edit here.
     That cache lives in memory only and dies with the process -- restart the
-    tool after changing phash or load_hash_gray and you're testing the new
+    tool after changing this or load_hash_gray and you're testing the new
     code, no cache file to hunt down and delete."""
     resized = cv2.resize(gray, (32, 32), interpolation=cv2.INTER_AREA).astype(np.float32)
     dct = cv2.dct(resized)
-    low = dct[:8, :8]
-    avg = (low.sum() - low[0, 0]) / 63.0
-    bits = low > avg
-    value = 0
-    for bit in bits.flatten():
-        value = (value << 1) | int(bit)
-    return value
+    return _low_freq_bits(dct[:8, :8]), _low_freq_bits(dct[:16, :16])
+
+
+def phash(gray: np.ndarray) -> int:
+    """The 64-bit hash alone, for callers that only need the grouping key."""
+    return phash_pair(gray)[0]
 
 
 def hamming(a: int, b: int) -> int:
@@ -255,24 +302,25 @@ class UnionFind:
             self.rank[ra] += 1
 
 
-def cached_hash(cache: dict, p: Path, st: os.stat_result) -> int | None:
-    """Returns None both when there's no entry and when the cached entry
-    itself is None (the file failed to decode/hash last time) -- a
-    permanently-corrupt file is simply re-attempted every run, no worse
-    than today's uncached behavior for that one file."""
+def cached_hash(cache: dict, p: Path, st: os.stat_result) -> tuple[int, int] | None:
+    """Returns the (grouping, confirmation) hash pair. None both when there's
+    no entry and when the cached entry itself is None (the file failed to
+    decode/hash last time) -- a permanently-corrupt file is simply re-attempted
+    every run, no worse than today's uncached behavior for that one file."""
     entry = cache.get(str(p.resolve()))
     if entry is None or entry.get("mtime") != st.st_mtime_ns or entry.get("size") != st.st_size:
         return None
     return entry["hash"]
 
 
-def store_hash(cache: dict, p: Path, st: os.stat_result, hash_value: int | None) -> None:
+def store_hash(cache: dict, p: Path, st: os.stat_result,
+               hash_value: tuple[int, int] | None) -> None:
     cache[str(p.resolve())] = {"mtime": st.st_mtime_ns, "size": st.st_size, "hash": hash_value}
 
 
-def _hash_one(p: Path) -> int | None:
+def _hash_one(p: Path) -> tuple[int, int] | None:
     img = load_hash_gray(p)
-    return phash(img) if img is not None else None
+    return phash_pair(img) if img is not None else None
 
 
 def _print_progress(label: str, done: int, total: int, tty: bool) -> None:
@@ -340,7 +388,12 @@ def group_duplicates(
         for j in range(i + 1, len(paths)):
             if hash_list[j] is None:
                 continue
-            if hamming(hash_list[i], hash_list[j]) <= threshold:
+            # Cheap 64-bit hash proposes; wider hash confirms. Ordered this
+            # way so the O(n^2) sweep still only pays for one bit_count on
+            # the vast majority of pairs -- the confirmation runs on the
+            # handful that already look like duplicates.
+            if (hamming(hash_list[i][0], hash_list[j][0]) <= threshold
+                    and hamming(hash_list[i][1], hash_list[j][1]) <= CONFIRM_HASH_THRESHOLD):
                 uf.union(i, j)
 
     clusters: dict[int, list[Path]] = {}

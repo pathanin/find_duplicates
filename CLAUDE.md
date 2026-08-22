@@ -22,6 +22,7 @@ No pytest/unittest — each file is a standalone script with its own `main()` th
 ```bash
 python3 tests/test_auto_mode.py
 python3 tests/test_claude_md_test_list_sync.py
+python3 tests/test_confirm_hash.py
 python3 tests/test_effective_resolution_downsampling.py
 python3 tests/test_fast_scan.py
 python3 tests/test_group_ordering.py
@@ -42,7 +43,8 @@ Many tests exist to lock in one specific past bug. Read a test's docstring befor
 ## Traps
 
 - `duplicates_core.py` must stay importable without the web stack — never import FastAPI/uvicorn into it.
-- The hash/scoring constants are empirically tuned, not arbitrary (`DEFAULT_HASH_THRESHOLD`, `CLOSE_CALL_MARGIN`, `MIN_REDUCED_DECODE_SIDE`, `METRIC_WEIGHTS`). Re-verify any change against the real photos in `tests/Test-image/`, not just unit tests.
+- The hash/scoring constants are empirically tuned, not arbitrary (`DEFAULT_HASH_THRESHOLD`, `CONFIRM_HASH_THRESHOLD`, `CLOSE_CALL_MARGIN`, `MIN_REDUCED_DECODE_SIDE`, `METRIC_WEIGHTS`). Re-verify any change against the real photos in `tests/Test-image/`, not just unit tests.
+- Grouping is two-stage: the 64-bit `phash` proposes a pair, the 256-bit half of `phash_pair` confirms it. The 64-bit hash alone cannot distinguish a re-export from a different frame of the same scene. `CONFIRM_HASH_THRESHOLD` is tuned for **recall** — a false positive costs one keypress in the review UI, a false negative is never surfaced — so some near-identical frames still group on purpose. Read the constant's comment (it carries the measured distributions) before tightening it.
 - `load_hash_gray`'s reduced-decode and full-decode paths must agree on hash bits — check `MIN_REDUCED_DECODE_SIDE` before touching either one.
 - `METRIC_WEIGHTS`, `METRIC_DESCRIPTIONS`, and `METRIC_ROWS` get entries added and removed together; the UI's help sheet renders straight off the first.
 - Moving files is the only genuinely destructive path (`apply_group`, `_compute_dest`, `apply_pick`, `unapply`, `auto_apply_groups`). Non-kept files are **moved, never deleted** — preserve that invariant. The manifest is in-memory only; recovery after the process exits is a manual move back out of `_duplicates/`.
