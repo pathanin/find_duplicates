@@ -28,6 +28,8 @@ Requires:
 """
 
 import argparse
+import asyncio
+import os
 import secrets
 import socket
 import sys
@@ -168,7 +170,23 @@ def main() -> None:
         except Exception:
             pass
 
-    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    server = uvicorn.Server(
+        uvicorn.Config(app, host=args.host, port=args.port, log_level="warning")
+    )
+    # Driven on a bare loop rather than server.run()/asyncio.run(): the runner
+    # installs its own SIGINT handler, and uvicorn re-raising the signal
+    # through it turns a quick double Ctrl-C into a KeyboardInterrupt that
+    # cancels the lifespan task mid-shutdown and dumps a traceback.
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(server.serve())
+    except KeyboardInterrupt:
+        pass
+    # Exit without waiting on the interpreter's teardown: a scan thread may
+    # still be running, and there is nothing to flush -- the manifest and
+    # caches are in-memory only, and file moves complete inside the request
+    # handler that started them.
+    os._exit(0)
 
 
 if __name__ == "__main__":

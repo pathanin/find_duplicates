@@ -22,7 +22,7 @@ import asyncio
 import io
 import json
 import secrets
-from concurrent.futures import Future
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -124,6 +124,12 @@ class Session:
     progress_seq: int = 0
 
 
+# A scan runs here rather than in the loop's default executor: asyncio's
+# shutdown joins the default executor's threads, so a Ctrl-C mid-scan would
+# hang until the whole scan finished. Sized 1 -- only one scan runs at a time.
+_scan_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="scan")
+
+
 def _launch_scan(session: Session, params: ScanParams, loop: asyncio.AbstractEventLoop) -> None:
     """Runs build_groups() in the default executor (a thread pool) so the
     event loop stays responsive to other requests while a scan is in
@@ -166,7 +172,7 @@ def _launch_scan(session: Session, params: ScanParams, loop: asyncio.AbstractEve
     with session.progress_lock:
         session.progress = {"label": "", "done": 0, "total": 0}
         session.progress_seq += 1
-    future = loop.run_in_executor(None, run_scan)
+    future = loop.run_in_executor(_scan_executor, run_scan)
     future.add_done_callback(on_done)
 
 
