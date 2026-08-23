@@ -22,5 +22,9 @@
         ]
       }
     ]
+  },
+  "enabledPlugins": {
+    "pyright-lsp@claude-plugins-official": true,
+    "web-lsp@find-duplicates-lsp": true
   }
 }

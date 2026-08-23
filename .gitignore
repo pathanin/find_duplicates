@@ -27,3 +27,6 @@ AGENTS.md
 # local agent config, not source (sole-dev project, not shared on GitHub)
 PRODUCT.md
 .impeccable/
+
+# machine-local pyright/LSP config (interpreter path), not source
+pyrightconfig.json

@@ -1,0 +1,12 @@
+{
+  "name": "find-duplicates-lsp",
+  "owner": { "name": "oat" },
+  "plugins": [
+    {
+      "name": "web-lsp",
+      "description": "HTML/CSS/JSON language servers (vscode-langservers-extracted) for static/",
+      "version": "1.0.0",
+      "source": "./web-lsp"
+    }
+  ]
+}
