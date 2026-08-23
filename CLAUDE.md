@@ -64,7 +64,7 @@ Front end is vanilla JS in `static/app.js` (no build step, no framework), organi
 
 `phash_pair` returns a 64-bit DCT hash and a 256-bit confirmation hash. The 64-bit hash (`DEFAULT_HASH_THRESHOLD`, default 10/64) *proposes* a pair; the 256-bit half (`CONFIRM_HASH_THRESHOLD`) *confirms* it. The 64-bit hash alone cannot tell a re-export from a different frame of the same scene.
 
-`CONFIRM_HASH_THRESHOLD` is tuned for **recall**: a false positive costs one keypress in the review UI, a false negative is never surfaced at all. Some near-identical frames group on purpose. Tightening it drops real duplicates before it stops those. `tests/Test-image/` will not tell you if you went too far — every known pair there sits at distance 0, nowhere near the tail the constant is set against. The tail cases are aspect recrops and heavy downscales; `tests/test_confirm_hash.py` is what actually covers them.
+`CONFIRM_HASH_THRESHOLD` is tuned for **recall**: a false positive costs one keypress in the review UI, a false negative is never surfaced at all. Some near-identical frames group on purpose. Tightening it drops real duplicates before it stops those. `tests/Test-image/` will not tell you if you went too far — every known pair there sits at distance 0, nowhere near the tail the constant is set against. The tail cases are aspect recrops (one artwork exported for two screen sizes) and heavy downscales; `tests/test_confirm_hash.py` is what actually covers them.
 
 ### Group ordering
 
@@ -74,7 +74,7 @@ Front end is vanilla JS in `static/app.js` (no build step, no framework), organi
 
 - `duplicates_core.py` must stay importable without the web stack — never import FastAPI/uvicorn into it.
 - The hash/scoring constants are empirically tuned, not arbitrary: `DEFAULT_HASH_THRESHOLD`, `CONFIRM_HASH_THRESHOLD`, `CLOSE_CALL_MARGIN`, `MIN_REDUCED_DECODE_SIDE`, `METRIC_WEIGHTS`. Re-verify changes against the real photos in `tests/Test-image/`, not just unit tests.
-- `load_hash_gray`'s reduced-decode and full-decode paths must agree on the **64-bit** hash bits — check `MIN_REDUCED_DECODE_SIDE` before touching either. They do *not* agree on the 256-bit half, which reaches into mid frequencies where the decode paths genuinely differ. That drift is content-dependent, expected, and absorbed by `CONFIRM_HASH_THRESHOLD`. Don't chase it as a bug.
+- `load_hash_gray`'s reduced-decode and full-decode paths must agree on the **64-bit** hash bits — check `MIN_REDUCED_DECODE_SIDE` before touching either. They do *not* agree on the 256-bit half, which reaches into mid frequencies where the decode paths genuinely differ. That drift is content-dependent (single digits on real photos, tens of bits on synthetic noise), expected, and absorbed by `CONFIRM_HASH_THRESHOLD`. Don't chase it as a bug.
 - `METRIC_WEIGHTS`, `METRIC_DESCRIPTIONS`, and `METRIC_ROWS` get entries added and removed together; the UI's help sheet renders off the first.
 - Moving files is the only genuinely destructive path (`apply_group`, `_compute_dest`, `apply_pick`, `unapply`, `auto_apply_groups`). Non-kept files are **moved to `_duplicates/`, never deleted** — preserve that invariant. The manifest is in-memory only; recovery after process exit is a manual move back out.
 - `apply_group` never sets `group.status` — the caller owns that, including the "stays pending on failure" invariant.
@@ -90,9 +90,11 @@ Front end is vanilla JS in `static/app.js` (no build step, no framework), organi
 - Read the design-direction comment at the top of `static/index.html` before changing layout. The stage swap is deliberately transition-free: a cross-fade hides the very difference being judged.
 - Bind keyboard shortcuts on `KeyboardEvent.code`, not `.key` — an alternate layout remaps `.key` before the browser sees it.
 - `install.sh` is POSIX sh, not bash (the curl-piped invocation ignores the shebang): no arrays, no `[[ ]]`, no `pipefail`.
-- Ctrl-C shutdown has two moving parts, both regression-tested in `tests/test_shutdown.py`. Scans run in `duplicates_web._scan_executor`, not the loop's default executor (asyncio's teardown joins the default one, so Ctrl-C mid-scan would hang until the scan finished). And `main()` drives `server.serve()` on a bare loop then calls `os._exit(0)` (`asyncio.run`'s SIGINT handler turns a quick second Ctrl-C into a lifespan-cancel traceback). `main()` also sets `duplicates_web.shutting_down` from the signal handler so an open `/api/progress` stream ends itself, and flushes stdout/stderr, which `os._exit` skips.
+- Ctrl-C shutdown has two moving parts, both regression-tested in `tests/test_shutdown.py`. Scans run in `duplicates_web._scan_executor`, not the loop's default executor (asyncio's teardown joins the default one, so Ctrl-C mid-scan would hang until the scan finished). And `main()` drives `server.serve()` on a bare loop then calls `os._exit(0)` (`asyncio.run`'s SIGINT handler turns a quick second Ctrl-C into a lifespan-cancel traceback). `main()` also sets `duplicates_web.shutting_down` from the signal handler so an open `/api/progress` stream ends itself, and flushes stdout/stderr, which `os._exit` skips (block-buffered under a redirect, so the tokened URL would otherwise be lost).
 - Don't `pkill -f find_duplicates.py` while manually testing in a browser — it kills the server under test and the connection failure reads as a product bug.
 
-## Notes
+## LSP
 
-`pyrightconfig.json` is gitignored and machine-local: it points pyright at a dev venv holding cv2/numpy/fastapi. Diagnostics in `tests/` are mostly stub noise (`cv2.imread` typed Optional, `PIL.Image.LANCZOS` missing from stubs, duck-typed fakes); `duplicates_core.py` and `duplicates_web.py` sit at zero, so a new error there is real.
+Code intelligence (the `LSP` tool: hover, goToDefinition, findReferences) comes from two user-scope plugins, not from anything in this repo: `pyright-lsp@claude-plugins-official` for `.py`, and `web-lsp` (`~/.claude/skills/web-lsp`) for `.html`/`.css`/`.json`. Both need their servers on PATH — `pyright-langserver`, and the `vscode-*-language-server` binaries from `vscode-langservers-extracted`.
+
+`pyrightconfig.json` is gitignored and machine-local: it points pyright at a dev venv holding cv2/numpy/fastapi. `brisque` and `pyiqa` stay unresolved on purpose — they are optional imports. Diagnostics in `tests/` are mostly stub noise (`cv2.imread` typed Optional, `PIL.Image.LANCZOS` missing from stubs, duck-typed fakes); `duplicates_core.py` and `duplicates_web.py` sit at zero, so a new error there is real.
