@@ -376,18 +376,20 @@ def group_duplicates(
 
     uf = UnionFind(len(paths))
     for i in range(len(paths)):
-        if hash_list[i] is None:
+        hi = hash_list[i]
+        if hi is None:
             continue
         for j in range(i + 1, len(paths)):
-            if hash_list[j] is None:
+            hj = hash_list[j]
+            if hj is None:
                 continue
             # Cheap 64-bit hash proposes; wider hash confirms. Ordered this
             # way so the O(n^2) sweep still only pays for one bit_count on
             # the vast majority of pairs -- the confirmation runs on the
             # handful that already look like duplicates.
-            if hamming(hash_list[i][0], hash_list[j][0]) <= threshold and (
+            if hamming(hi[0], hj[0]) <= threshold and (
                     not confirm
-                    or hamming(hash_list[i][1], hash_list[j][1]) <= CONFIRM_HASH_THRESHOLD):
+                    or hamming(hi[1], hj[1]) <= CONFIRM_HASH_THRESHOLD):
                 uf.union(i, j)
 
     clusters: dict[int, list[Path]] = {}

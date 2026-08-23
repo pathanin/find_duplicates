@@ -22,7 +22,7 @@ import asyncio
 import io
 import json
 import secrets
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -160,7 +160,7 @@ def _launch_scan(session: Session, params: ScanParams, loop: asyncio.AbstractEve
             hash_cache=session.hash_cache, analyze_cache=session.analyze_cache,
         )
 
-    def on_done(fut: Future) -> None:
+    def on_done(fut: "asyncio.Future[list[Group]]") -> None:
         with session.lock:
             try:
                 groups = fut.result()
