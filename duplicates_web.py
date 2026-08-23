@@ -28,9 +28,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Event, Lock
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from PIL import Image as PILImage
 
@@ -89,11 +88,13 @@ class Session:
     manifest: list[dict] = field(default_factory=list)
     status: str = "idle"  # idle | scanning | ready | error
     error: str | None = None
-    # Keyed (group, file, max_side): the switcher strip's 800px previews and
-    # the stage's 1600px renders of the same file are both cached here, and a
-    # (group, file) key alone would serve whichever was rendered first for
-    # both sizes.
-    image_cache: dict[tuple[int, int, int], bytes] = field(default_factory=dict)
+    # Keyed (generation, group, file, max_side): the switcher strip's 800px
+    # previews and the stage's 1600px renders of the same file are both cached
+    # here, and a (group, file) key alone would serve whichever was rendered
+    # first for both sizes. The generation is part of the key because a render
+    # runs outside the lock -- a rescan finishing mid-render must not let stale
+    # bytes land in the fresh cache under a key the new groups also use.
+    image_cache: dict[tuple[int, int, int, int], bytes] = field(default_factory=dict)
     # The scan caches, keyed on path + mtime + size (see duplicates_core's
     # cached_hash/cached_result). Unlike image_cache above, these deliberately
     # SURVIVE a rescan and are never reset in on_done -- reusing them is the
@@ -319,7 +320,9 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
     @app.get("/")
     async def index(token: str = Depends(require_token)) -> Response:
         resp = FileResponse(STATIC_DIR / "index.html")
-        resp.set_cookie(COOKIE_NAME, token, httponly=True, samesite="lax")
+        # strict, not lax: entry is always via the printed ?token= URL, so no
+        # cross-site navigation ever needs to arrive already authenticated.
+        resp.set_cookie(COOKIE_NAME, token, httponly=True, samesite="strict")
         return resp
 
     @app.get("/api/state")
@@ -358,11 +361,16 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
             if not (0 <= j < len(g.paths)):
                 raise HTTPException(404, "no such file in group")
             path = g.paths[j]
-            cached = session.image_cache.get((i, j, max_side))
+            generation = session.generation
+            cached = session.image_cache.get((generation, i, j, max_side))
         if cached is None:
+            # Rendering outside the lock keeps a slow HEIC transcode from
+            # stalling every other request; only store the result if a rescan
+            # hasn't swapped the groups out from under it in the meantime.
             cached = _render_scaled_jpeg(path, max_side, quality)
             with session.lock:
-                session.image_cache[(i, j, max_side)] = cached
+                if session.generation == generation:
+                    session.image_cache[(generation, i, j, max_side)] = cached
         return Response(content=cached, media_type="image/jpeg")
 
     @app.get("/api/thumb/{i}/{j}")
@@ -395,10 +403,26 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
             return Response(content=buf.getvalue(), media_type="image/jpeg")
         return FileResponse(path)
 
+    def _require_generation(session: Session, gen: int | None) -> None:
+        """Reject a mutating request whose client is looking at a pre-rescan
+        group set: its index i would still pass the bounds check but now
+        addresses a different group, and confirm would move real files
+        against it. An absent `g` is accepted (curl, older clients); the
+        frontend sends it and treats 409 as "your view is stale, refresh".
+        Checked before the bounds check -- a stale index is often out of
+        range, and 404 tells the client the wrong thing. Caller must hold
+        session.lock."""
+        if gen is not None and gen != session.generation:
+            raise HTTPException(409, "stale view; a rescan has replaced the groups, refresh state")
+
     @app.post("/api/group/{i}/pick")
-    async def pick_group(i: int, body: PickRequest, _: str = Depends(require_token)) -> JSONResponse:
+    async def pick_group(
+        i: int, body: PickRequest, gen: int | None = Query(default=None, alias="g"),
+        _: str = Depends(require_token),
+    ) -> JSONResponse:
         with session.lock:
             _require_not_scanning(session)
+            _require_generation(session, gen)
             if not (0 <= i < len(session.groups)):
                 raise HTTPException(404, "no such group")
             g = session.groups[i]
@@ -408,14 +432,22 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
             return JSONResponse(_group_detail(session, i, g))
 
     @app.post("/api/group/{i}/confirm")
-    async def confirm_group(i: int, _: str = Depends(require_token)) -> JSONResponse:
+    async def confirm_group(
+        i: int, gen: int | None = Query(default=None, alias="g"),
+        _: str = Depends(require_token),
+    ) -> JSONResponse:
         """Retry-safe confirm sequence built on the duplicates_core
         primitives: only re-move files if the pick actually diverged from
         what's on disk when already confirmed; unapply-then-reapply (a
         no-op unless a prior attempt partially failed) for pending/skipped
-        groups."""
+        groups. The demotion out of "confirmed" before a re-apply is what
+        makes a failed re-apply retryable: apply_group records kept=<the new
+        pick> even when it raises partway through, so pick_needs_reapply
+        would report False on the retry and the route would report success
+        over half-moved files if the group were still "confirmed"."""
         with session.lock:
             _require_not_scanning(session)
+            _require_generation(session, gen)
             if not (0 <= i < len(session.groups)):
                 raise HTTPException(404, "no such group")
             g = session.groups[i]
@@ -423,6 +455,7 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
             try:
                 if g.status == "confirmed":
                     if pick_needs_reapply(session.manifest, i, g):
+                        g.status = "pending"
                         unapply(session.manifest, i)
                         apply_pick(
                             g, i, g.current_pick, p.dest_dir, p.dry_run, session.manifest,
@@ -442,11 +475,15 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
             return JSONResponse(_group_detail(session, i, g))
 
     @app.post("/api/group/{i}/skip")
-    async def skip_group(i: int, _: str = Depends(require_token)) -> JSONResponse:
+    async def skip_group(
+        i: int, gen: int | None = Query(default=None, alias="g"),
+        _: str = Depends(require_token),
+    ) -> JSONResponse:
         """pending/confirmed -> skipped (unapplying first if confirmed),
         skipped -> pending (toggle back)."""
         with session.lock:
             _require_not_scanning(session)
+            _require_generation(session, gen)
             if not (0 <= i < len(session.groups)):
                 raise HTTPException(404, "no such group")
             g = session.groups[i]
@@ -505,5 +542,18 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
 
         return StreamingResponse(event_gen(), media_type="text/event-stream")
 
-    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+    @app.get("/static/{path:path}")
+    async def get_static(path: str, _: str = Depends(require_token)) -> Response:
+        """A token-gated route rather than a StaticFiles mount: a mount can't
+        carry Depends(require_token), and the README promises the token is
+        required for every request. The browser reaches these from
+        index.html's <link>/<script>, so the fd_token cookie GET / sets is
+        what authenticates them. Not a BaseHTTPMiddleware guard -- that wraps
+        StreamingResponse and would disturb /api/progress's disconnect
+        handling."""
+        target = (STATIC_DIR / path).resolve()
+        if not target.is_relative_to(STATIC_DIR) or not target.is_file():
+            raise HTTPException(404, "no such file")
+        return FileResponse(target)
+
     return app

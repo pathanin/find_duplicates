@@ -431,6 +431,123 @@ def test_rescan_bumps_generation_and_resets_group_status() -> None:
         print("  ok  a rescan bumps generation and resets group status")
 
 
+def test_repick_partial_failure_demotes_the_confirmed_group_and_retries() -> None:
+    """The confirmed-group analogue of the test above: confirm, re-pick a
+    different keeper, then have the re-apply fail partway. apply_group
+    records kept=<the NEW pick> even when it raises, so a group left
+    "confirmed" makes pick_needs_reapply report False on the retry -- the
+    route then skips the re-apply entirely and returns 200 over a
+    half-applied group. Demoting to "pending" first is what keeps the retry
+    honest."""
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp)
+        dest_dir = directory / "_duplicates"
+        make_duplicate_set(directory, seed=11, n=3)
+        client, app = _make_client(directory, dest_dir, dry_run=False)
+
+        class FlakyForwardMove:
+            """Fails on the second move *into* dest_dir. A predicate, not a call
+            count: this confirm runs unapply's restores through shutil.move
+            first, and counting those too would make the trigger unreadable."""
+
+            def __init__(self, real_move):
+                self.real_move = real_move
+                self.forward = 0
+
+            def __call__(self, src, dst):
+                if Path(dst).is_relative_to(dest_dir):
+                    self.forward += 1
+                    if self.forward == 2:
+                        raise OSError("simulated failure partway through the re-apply")
+                return self.real_move(src, dst)
+
+        with client:
+            _wait_ready(client)
+            group = app.state.session.groups[0]
+            p0, p1, p2 = group.paths
+
+            client.post("/api/group/0/pick", params={"token": TOKEN}, json={"idx": 0})
+            r = client.post("/api/group/0/confirm", params={"token": TOKEN})
+            assert r.status_code == 200 and p0.exists() and not p1.exists() and not p2.exists()
+
+            client.post("/api/group/0/pick", params={"token": TOKEN}, json={"idx": 1})
+            real_move = shutil.move
+            shutil.move = FlakyForwardMove(real_move)
+            try:
+                r = client.post("/api/group/0/confirm", params={"token": TOKEN})
+            finally:
+                shutil.move = real_move
+            assert r.status_code == 500, f"expected the simulated failure to surface as a 500, got {r.status_code}"
+            assert app.state.session.groups[0].status == "pending", (
+                "a failed re-apply must demote the group out of 'confirmed', or the retry "
+                f"skips the moves entirely; got {app.state.session.groups[0].status!r}"
+            )
+
+            # The load-bearing half: the retry must really re-run the moves.
+            r = client.post("/api/group/0/confirm", params={"token": TOKEN})
+            assert r.status_code == 200 and r.json()["status"] == "confirmed", r.text
+            assert p1.exists(), "the new pick must be back in place after a successful retry"
+            assert not p0.exists() and not p2.exists(), "the retry must move both non-kept files"
+            assert any(dest_dir.rglob(p0.name)) and any(dest_dir.rglob(p2.name))
+        print("  ok  a failed re-apply on a confirmed group demotes it and the retry really re-moves")
+
+
+def test_stale_generation_is_rejected_on_mutating_posts() -> None:
+    """A tab holding a pre-rescan view still passes the bounds check, so a
+    confirm on index i would move files for whatever different group now sits
+    at i. `?g=` must 409 when it disagrees with session.generation --
+    including ahead of the 404 bounds check, since a stale index is often out
+    of range and 404 tells the client the wrong thing. An absent `g` stays
+    accepted (curl, older clients)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp)
+        make_duplicate_set(directory, seed=12, n=2)
+        client, app = _make_client(directory, directory / "_duplicates")
+        with client:
+            data = _wait_ready(client)
+            gen = data["generation"]
+
+            r = client.post("/api/group/0/pick", params={"token": TOKEN, "g": gen}, json={"idx": 0})
+            assert r.status_code == 200, f"a matching generation must be accepted, got {r.status_code}"
+            r = client.post("/api/group/0/pick", params={"token": TOKEN}, json={"idx": 0})
+            assert r.status_code == 200, f"an absent g must stay accepted, got {r.status_code}"
+
+            stale = gen - 1
+            assert client.post(
+                "/api/group/0/pick", params={"token": TOKEN, "g": stale}, json={"idx": 0}
+            ).status_code == 409
+            assert client.post("/api/group/0/confirm", params={"token": TOKEN, "g": stale}).status_code == 409
+            assert client.post("/api/group/0/skip", params={"token": TOKEN, "g": stale}).status_code == 409
+            assert client.post("/api/group/99/skip", params={"token": TOKEN, "g": stale}).status_code == 409, (
+                "a stale generation must be reported ahead of the bounds check"
+            )
+            assert app.state.session.groups[0].status == "pending", "no rejected request may have mutated the group"
+        print("  ok  a stale ?g= 409s on pick/confirm/skip; an absent one is still accepted")
+
+
+def test_static_assets_require_token_and_serve_with_the_cookie() -> None:
+    """/static used to be an unauthenticated StaticFiles mount, contradicting
+    the README's "the URL's token is required for every request". These assets
+    are reached from index.html's <link>/<script>, which can only authenticate
+    via the fd_token cookie -- so the gate must still let a cookie-carrying
+    browser load its CSS and JS."""
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp)
+        client, _ = _make_client(directory, directory / "_duplicates")
+        with client:
+            # Before anything sets the cookie -- TestClient shares one jar.
+            r = client.get("/static/style.css")
+            assert r.status_code == 401, f"expected /static to require the token, got {r.status_code}"
+
+            assert client.get("/", params={"token": TOKEN}).status_code == 200
+            for name in ("style.css", "app.js"):
+                r = client.get(f"/static/{name}")
+                assert r.status_code == 200, f"cookie-authenticated /static/{name} must serve, got {r.status_code}"
+                assert r.content, f"/static/{name} served empty"
+            assert client.get("/static/nope.css").status_code == 404
+        print("  ok  /static requires the token and still serves to a cookie-carrying browser")
+
+
 def main() -> None:
     tests = [
         test_data_endpoint_requires_token,
@@ -445,6 +562,9 @@ def main() -> None:
         test_confirm_moves_files_and_skip_unapplies,
         test_repick_after_confirm_moves_the_new_non_kept_file,
         test_confirm_partial_failure_leaves_group_pending,
+        test_repick_partial_failure_demotes_the_confirmed_group_and_retries,
+        test_stale_generation_is_rejected_on_mutating_posts,
+        test_static_assets_require_token_and_serve_with_the_cookie,
         test_scanning_status_blocks_mutating_endpoints,
         test_rescan_bumps_generation_and_resets_group_status,
     ]
