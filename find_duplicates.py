@@ -39,6 +39,7 @@ from pathlib import Path
 import uvicorn
 
 from duplicates_core import DEFAULT_HASH_THRESHOLD, auto_apply_groups, build_groups, humansize
+import duplicates_web
 from duplicates_web import ScanParams, create_app
 
 DEFAULT_PORT = 8737
@@ -170,7 +171,15 @@ def main() -> None:
         except Exception:
             pass
 
-    server = uvicorn.Server(
+    class _Server(uvicorn.Server):
+        def handle_exit(self, sig, frame):
+            # Before uvicorn starts waiting for in-flight requests: an open
+            # SSE progress stream has to be told to end, or the wait lasts
+            # as long as the scan it is reporting on.
+            duplicates_web.shutting_down.set()
+            super().handle_exit(sig, frame)
+
+    server = _Server(
         uvicorn.Config(app, host=args.host, port=args.port, log_level="warning")
     )
     # Driven on a bare loop rather than server.run()/asyncio.run(): the runner
@@ -183,9 +192,12 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     # Exit without waiting on the interpreter's teardown: a scan thread may
-    # still be running, and there is nothing to flush -- the manifest and
-    # caches are in-memory only, and file moves complete inside the request
-    # handler that started them.
+    # still be running, and nothing is pending on disk -- the manifest and
+    # caches are in-memory only, and a graceful shutdown has already let any
+    # in-flight file move finish. os._exit skips the buffer flush too, which
+    # would eat both startup lines under a redirect (a headless box's log).
+    sys.stdout.flush()
+    sys.stderr.flush()
     os._exit(0)
 
 

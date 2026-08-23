@@ -26,7 +26,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from threading import Lock
+from threading import Event, Lock
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
@@ -128,6 +128,13 @@ class Session:
 # shutdown joins the default executor's threads, so a Ctrl-C mid-scan would
 # hang until the whole scan finished. Sized 1 -- only one scan runs at a time.
 _scan_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="scan")
+
+
+# Set from the signal handler in find_duplicates.main(). An open
+# /api/progress stream would otherwise keep uvicorn's graceful shutdown
+# waiting on it for the rest of an in-flight scan; polling this lets the
+# stream end itself instead of being cancelled on a timeout.
+shutting_down = Event()
 
 
 def _launch_scan(session: Session, params: ScanParams, loop: asyncio.AbstractEventLoop) -> None:
@@ -483,7 +490,7 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
         async def event_gen():
             last_seq = -1
             while True:
-                if await request.is_disconnected():
+                if shutting_down.is_set() or await request.is_disconnected():
                     break
                 with session.progress_lock:
                     seq = session.progress_seq
