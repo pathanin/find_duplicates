@@ -64,6 +64,6 @@ Many tests exist to lock in one specific past bug. Read a test's docstring befor
 
 ## LSP
 
-Code intelligence (the `LSP` tool: hover, goToDefinition, findReferences) is wired through two plugins enabled in `.claude/settings.json`: `pyright-lsp@claude-plugins-official` for `.py`, and the in-repo `.claude/lsp/web-lsp` for `.html`/`.css`/`.json` (needs `vscode-langservers-extracted` on PATH). On a fresh clone, run `claude plugin marketplace add ./.claude/lsp` once — the marketplace path is absolute and lives in user settings.
+Code intelligence (the `LSP` tool: hover, goToDefinition, findReferences) comes from two user-scope plugins, not from anything in this repo: `pyright-lsp@claude-plugins-official` for `.py`, and `web-lsp@skills-dir` (`~/.claude/skills/web-lsp`) for `.html`/`.css`/`.json`. Both need their servers on PATH — `pyright-langserver` and `vscode-langservers-extracted`.
 
-`pyrightconfig.json` is gitignored: it points pyright at the dev venv holding cv2/numpy/fastapi. `brisque` and `pyiqa` stay unresolved on purpose — they are optional imports.
+`pyrightconfig.json` is gitignored and machine-local: it points pyright at the dev venv holding cv2/numpy/fastapi. `brisque` and `pyiqa` stay unresolved on purpose — they are optional imports. Diagnostics in `tests/` are mostly stub noise (`cv2.imread` typed Optional, `PIL.Image.LANCZOS` missing from stubs, duck-typed fakes); `duplicates_core.py` and `duplicates_web.py` sit at zero, so a new error there is real.
