@@ -139,9 +139,11 @@ def effective_resolution(gray):
     orig_min_side = min(h, w)
     if max(h, w) > EFFECTIVE_RES_MAX_PX:
         scale = EFFECTIVE_RES_MAX_PX / max(h, w)
-        new_h, new_w = int(h * scale), int(w * scale)
+        new_h, new_w = max(1, int(h * scale)), max(1, int(w * scale))
         gray = cv2.resize(gray, (new_w, new_h), interpolation=cv2.INTER_AREA)
         h, w = gray.shape
+        if h < 3 or w < 3:
+            return 0.0, 0.0  # extreme aspect ratio: too thin after the cap
 
     power = _power_spectrum(gray)
 

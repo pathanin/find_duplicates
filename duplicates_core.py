@@ -303,6 +303,21 @@ def store_hash(cache: dict, p: Path, st: os.stat_result,
     cache[str(p.resolve())] = {"mtime": st.st_mtime_ns, "size": st.st_size, "hash": hash_value}
 
 
+def _stat_paths(paths: list[Path]) -> tuple[list[Path], dict[Path, os.stat_result]]:
+    """stat() every path, dropping the ones that vanished or turned
+    unreadable between listing and now (routine on a NAS or a syncing
+    folder). A single missing file costs that file, not the whole scan."""
+    kept: list[Path] = []
+    stats: dict[Path, os.stat_result] = {}
+    for p in paths:
+        try:
+            stats[p] = p.stat()
+        except OSError:
+            continue
+        kept.append(p)
+    return kept, stats
+
+
 def _hash_one(p: Path) -> tuple[int, int] | None:
     img = load_hash_gray(p)
     return phash_pair(img) if img is not None else None
@@ -334,7 +349,7 @@ def group_duplicates(
     TTY-aware print via _print_progress -- lets a caller (e.g. the web
     front end's SSE progress stream) route progress to something other than
     stdout without touching the CLI's default behavior."""
-    stats = {p: p.stat() for p in paths}
+    paths, stats = _stat_paths(paths)
     hashes: dict[Path, tuple[int, int] | None] = {}
     to_compute = []
     for p in paths:
@@ -738,8 +753,9 @@ def analyze_paths(paths: list[Path], cache: dict,
     cv2/numpy calls release the GIL -- see the comments at
     THREAD_POOL_WORKERS's definition).
 
-    If *precomputed_stats* is provided, it must cover every path in *paths*
-    and will be used instead of calling stat() again.
+    If *precomputed_stats* is provided it is used instead of calling stat()
+    again, and any path it doesn't cover is dropped (an unreadable file is
+    tolerated here, as everywhere else in the scan).
 
     *progress_callback*, if given, is called as progress_callback(label,
     done, total) as each uncached item completes, instead of the default
@@ -748,8 +764,9 @@ def analyze_paths(paths: list[Path], cache: dict,
     results: dict[Path, dict] = {}
     if precomputed_stats is not None:
         stats = precomputed_stats
+        paths = [p for p in paths if p in stats]
     else:
-        stats = {p: p.stat() for p in paths}
+        paths, stats = _stat_paths(paths)
     to_compute = []
     for p in paths:
         hit = cached_result(cache, p, stats[p])
@@ -815,7 +832,7 @@ def build_groups(
     # rather than letting it call stat() again on files already stat()'d
     # during the hash phase (the same Path objects are reused).
     grouped_paths = [p for members in raw_groups for p in members]
-    grouped_stats = {p: p.stat() for p in grouped_paths}
+    grouped_paths, grouped_stats = _stat_paths(grouped_paths)
     analyzed = analyze_paths(
         grouped_paths, analyze_cache, precomputed_stats=grouped_stats,
         progress_callback=progress_callback,

@@ -45,7 +45,11 @@ async function api(path, opts = {}) {
         ? detail.map((d) => (d && d.msg) || JSON.stringify(d)).join("; ")
         : detail;
     } catch { message = res.statusText; }
-    throw new Error(message || `HTTP ${res.status}`);
+    // Callers need the code, not just the prose: 409 means this tab's
+    // generation is stale and the view has to be reloaded, not toasted.
+    const err = new Error(message || `HTTP ${res.status}`);
+    err.status = res.status;
+    throw err;
   }
   return res.status === 204 ? null : res.json();
 }
@@ -539,6 +543,10 @@ function nameBudget(count) {
 
 function renderSwitcher() {
   const host = $("switcher");
+  // Activating a tab by keyboard rebuilds the strip under the focused
+  // element; remember where focus was so it lands on the same tab again
+  // instead of dropping to <body>.
+  const focusedTab = host.contains(document.activeElement) ? document.activeElement.id : null;
   host.innerHTML = "";
   const d = state.detail;
   if (!d) return;
@@ -608,6 +616,8 @@ function renderSwitcher() {
     btn.addEventListener("click", () => pick(j));
     host.appendChild(btn);
   });
+
+  if (focusedTab && $(focusedTab)) $(focusedTab).focus({ preventScroll: true });
 }
 
 // ---------------------------------------------------------------------------
@@ -878,12 +888,46 @@ function applyGroupPatch(i, data, keepLocalPick = false) {
 // tab's. confirmGroup() awaits this chain before acting for the same reason.
 let pickChain = Promise.resolve();
 let pendingPicks = 0;
+let confirming = false;
+
+// The mutating POSTs carry ?g=<generation>; the server answers 409 once a
+// rescan has replaced the groups this tab is looking at. Reload rather than
+// toasting a raw error -- index i now means a different group entirely.
+let staleReload = null;
+
+async function handleStale() {
+  if (staleReload) return staleReload;   // queued POSTs all 409 together
+  staleReload = staleReloadNow();
+  try { await staleReload; } finally { staleReload = null; }
+}
+
+async function staleReloadNow() {
+  showToast("A rescan replaced these groups — reloading this view.", true);
+  try {
+    await refreshState();
+    await loadFirstPending();
+  } catch (e) {
+    showToast(`Couldn't reload after the rescan: ${e.message}`, true);
+  }
+}
+
+// Reset to the first group still awaiting a decision.
+async function loadFirstPending() {
+  state.detail = null;
+  state.activeIndex = -1;
+  if (!state.groups.length) { renderGroup(); return; }
+  const first = state.groups.findIndex((g) => g.status === "pending");
+  await loadGroup(first >= 0 ? first : 0);
+}
 
 function pick(j) {
   const i = state.activeIndex;
   const d = state.detail;
   if (i < 0 || !d || j < 0 || j >= d.paths.length) return pickChain;
   if (state.status === "scanning") { showToast("A scan is running — decisions are locked until it finishes."); return pickChain; }
+  // A pick queued behind an in-flight confirm would race it on the wire and
+  // could move files for a candidate the user never saw confirmed.
+  if (confirming) { showToast("Confirming — the pick is locked until it lands."); return pickChain; }
 
   // Optimistic: the flip must be instant, that's the point of the stage.
   d.current_pick = j;
@@ -893,16 +937,27 @@ function pick(j) {
 
   pendingPicks += 1;
   pickChain = pickChain
-    .then(() => api(`/api/group/${i}/pick`, { method: "POST", body: JSON.stringify({ idx: j }) }))
+    .then(() => api(`/api/group/${i}/pick?g=${state.generation}`, { method: "POST", body: JSON.stringify({ idx: j }) }))
     .then((data) => {
       pendingPicks -= 1;
       // While more picks are queued, this response is already stale for the
       // pick field -- keep the local one and take the rest.
       applyGroupPatch(i, data, pendingPicks > 0);
     })
-    .catch((e) => {
+    .catch(async (e) => {
       pendingPicks -= 1;
+      if (e.status === 409) return handleStale();
       showToast(`Couldn't change the pick: ${e.message}`, true);
+      // The optimistic flip never reached the server, so confirm would keep
+      // a different file than the stage is showing: re-read what it holds.
+      // A later queued pick will land the truth itself, so only the last
+      // failure has to repair.
+      if (pendingPicks > 0) return;
+      try {
+        applyGroupPatch(i, await api(`/api/group/${i}`));
+      } catch (err) {
+        showToast(`Lost track of which file the server is keeping (${err.message}) — reload before confirming.`, true);
+      }
     });
   return pickChain;
 }
@@ -916,15 +971,17 @@ function pickRelative(delta) {
 
 async function confirmGroup() {
   const i = state.activeIndex;
-  if (i < 0 || !state.detail) return;
-  const pickAtPress = state.detail.current_pick;
+  if (i < 0 || !state.detail || confirming) return;
+  confirming = true;
   try {
     await pickChain;  // the server must be holding the pick that's on screen
-    const data = await api(`/api/group/${i}/confirm`, { method: "POST" });
+    const data = await api(`/api/group/${i}/confirm?g=${state.generation}`, { method: "POST" });
     applyGroupPatch(i, data);
     const moved = data.paths.length - 1;
     const files = `${moved} file${moved === 1 ? "" : "s"}`;
-    const name = data.paths[pickAtPress];
+    // Named off the confirm response, never off the pick at key-press: the
+    // toast has to say the file the server actually kept.
+    const name = data.paths[data.current_pick];
     // A real move gets said out loud, with the way back: the group advances
     // immediately, so the decision bar is already describing the next group
     // by the time the user looks down at it.
@@ -933,7 +990,10 @@ async function confirmGroup() {
       : `Group ${i + 1}: kept ${name}, ${files} moved. Reopen group ${i + 1} to undo.`);
     advance();
   } catch (e) {
-    showToast(`Confirm failed: ${e.message}`, true);
+    if (e.status === 409) await handleStale();
+    else showToast(`Confirm failed: ${e.message}`, true);
+  } finally {
+    confirming = false;
   }
 }
 
@@ -943,7 +1003,7 @@ async function skipGroup() {
   const wasConfirmed = state.detail.status === "confirmed";
   try {
     await pickChain;
-    const data = await api(`/api/group/${i}/skip`, { method: "POST" });
+    const data = await api(`/api/group/${i}/skip?g=${state.generation}`, { method: "POST" });
     applyGroupPatch(i, data);
     // Undoing a confirmed group is a second real move -- files come back out
     // of the destination folder -- so it gets said as plainly as the first.
@@ -953,7 +1013,8 @@ async function skipGroup() {
     }
     if (data.status === "skipped") advance();
   } catch (e) {
-    showToast(`Skip failed: ${e.message}`, true);
+    if (e.status === 409) await handleStale();
+    else showToast(`Skip failed: ${e.message}`, true);
   }
 }
 
@@ -1020,16 +1081,58 @@ function renderProgress(data) {
     : "…";
 }
 
+// How long the stream may stay down before the user is told. EventSource
+// reconnects on its own, so a blip must not raise an alarm -- only a
+// connection that never comes back.
+const PROGRESS_GRACE_MS = 15000;
+let progressGraceTimer = null;
+
+// The stream is gone for good: unlock the UI rather than leaving every
+// control disabled behind a "scanning" state that will never end.
+async function progressLost(es) {
+  clearTimeout(progressGraceTimer);
+  progressGraceTimer = null;
+  es.close();
+  if (state.eventSource === es) state.eventSource = null;
+  showToast("Lost contact with the scan — the server may have stopped. Reload once it's back.", true);
+  try { await refreshState(); } catch { /* the server is unreachable too */ }
+  if (state.status === "scanning") {
+    state.status = "error";
+    state.error = "Lost contact with the running scan.";
+    renderNotices();
+    renderAppState();
+    renderQueue();
+  }
+}
+
 function connectProgress() {
   if (state.eventSource) state.eventSource.close();
+  clearTimeout(progressGraceTimer);
+  progressGraceTimer = null;
   const es = new EventSource("/api/progress");
   state.eventSource = es;
   state.status = "scanning";
   renderAppState();
   renderQueue();
 
+  es.onerror = () => {
+    if (es !== state.eventSource) return;
+    // CLOSED means the browser gave up; otherwise it is retrying, and only a
+    // retry that never succeeds is worth surfacing.
+    if (es.readyState === EventSource.CLOSED) { progressLost(es); return; }
+    if (progressGraceTimer) return;
+    progressGraceTimer = setTimeout(() => {
+      progressGraceTimer = null;
+      if (es === state.eventSource && es.readyState !== EventSource.OPEN) progressLost(es);
+    }, PROGRESS_GRACE_MS);
+  };
+
   es.onmessage = (ev) => {
-    const data = JSON.parse(ev.data);
+    clearTimeout(progressGraceTimer);
+    progressGraceTimer = null;
+    let data;
+    // A malformed frame is not a dead server -- drop it and keep listening.
+    try { data = JSON.parse(ev.data); } catch { return; }
     renderProgress(data);
     if (data.status === "scanning") return;
 
@@ -1038,16 +1141,9 @@ function connectProgress() {
     // endpoint forever once the scan is done.
     es.close();
     state.eventSource = null;
-    refreshState().then(() => {
-      state.detail = null;
-      state.activeIndex = -1;
-      if (state.groups.length) {
-        const firstPending = state.groups.findIndex((g) => g.status === "pending");
-        loadGroup(firstPending >= 0 ? firstPending : 0);
-      } else {
-        renderGroup();
-      }
-    });
+    refreshState()
+      .then(loadFirstPending)
+      .catch((e) => showToast(`Scan finished, but the result didn't load: ${e.message}`, true));
   };
 }
 
@@ -1139,6 +1235,24 @@ function closeHelp() {
 
 function helpOpen() { return !$("help-sheet").hidden; }
 
+// aria-modal is a claim the browser doesn't enforce: without this, Tab walks
+// straight out of the sheet and into the page behind it.
+function trapTab(e) {
+  const panel = document.querySelector(".sheet-panel");
+  const items = Array.from(panel.querySelectorAll(
+    'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+  )).filter((el) => !el.disabled && el.offsetParent !== null);
+  if (!items.length) { e.preventDefault(); return; }
+  const active = document.activeElement;
+  const first = items[0];
+  const last = items[items.length - 1];
+  // The panel itself holds focus when the sheet opens: treat that like being
+  // outside, or Shift+Tab from it walks backwards into the page behind.
+  const outside = !panel.contains(active) || active === panel;
+  if (e.shiftKey && (active === first || outside)) { last.focus(); e.preventDefault(); }
+  else if (!e.shiftKey && (active === last || outside)) { first.focus(); e.preventDefault(); }
+}
+
 // ---------------------------------------------------------------------------
 // Keyboard shortcuts. Bindings read KeyboardEvent.code (physical key
 // position) rather than .key: an alternate layout remaps .key to a
@@ -1151,6 +1265,7 @@ function attachKeyboardHandler() {
 
     if (helpOpen()) {
       if (e.code === "Escape" || e.key === "?" || e.code === "F1") { closeHelp(); e.preventDefault(); }
+      else if (e.code === "Tab") trapTab(e);
       return;
     }
 
@@ -1256,14 +1371,8 @@ async function init() {
   setLedgerOpen(window.innerHeight >= 940);
   await refreshState();
   populateForm();
-  if (state.status === "scanning") {
-    connectProgress();
-  } else if (state.groups.length) {
-    const firstPending = state.groups.findIndex((g) => g.status === "pending");
-    await loadGroup(firstPending >= 0 ? firstPending : 0);
-  } else {
-    renderGroup();
-  }
+  if (state.status === "scanning") connectProgress();
+  else await loadFirstPending();
 }
 
 init();

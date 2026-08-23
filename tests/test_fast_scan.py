@@ -507,6 +507,57 @@ def test_omitted_caches_default_to_a_cold_scan() -> None:
         print("  ok  omitting the cache arguments gives each scan a fresh, unshared cache")
 
 
+def test_group_duplicates_tolerates_a_path_that_vanished_before_stat() -> None:
+    """A file deleted between find_images() and the hash phase's stat sweep
+    used to raise FileNotFoundError out of `{p: p.stat() for p in paths}` and
+    abort the entire scan. Everywhere else in the module an unreadable file is
+    simply dropped; the stat sweep must behave the same way."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p1, p2 = make_duplicate_pair(tmp, seed=7)
+        ghost = Path(tmp) / "vanished.jpg"
+
+        groups = dc.group_duplicates([p1, ghost, p2], dc.DEFAULT_HASH_THRESHOLD, {})
+
+        assert len(groups) == 1, f"expected the real pair to still group, got {groups}"
+        assert sorted(groups[0]) == sorted([p1, p2])
+        print("  ok  a missing path is dropped instead of aborting the hash phase")
+
+
+def test_build_groups_tolerates_a_file_vanishing_between_the_two_phases() -> None:
+    """Boundary case for the second unguarded stat sweep: the file survives
+    the hash phase, then disappears before build_groups() stats the grouped
+    paths for analyze_paths(). That sweep used to abort the whole scan; the
+    remaining members must still come back as a group."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rng = np.random.default_rng(31)
+        base = rng.integers(0, 255, size=(150, 200, 3), dtype=np.uint8)
+        paths = []
+        for name, side in (("a.jpg", 1600), ("b.jpg", 800), ("c.jpg", 400)):
+            q = Path(tmp) / name
+            cv2.imwrite(str(q), cv2.resize(base, (side, side * 3 // 4), interpolation=cv2.INTER_CUBIC),
+                        [cv2.IMWRITE_JPEG_QUALITY, 90])
+            paths.append(q)
+
+        real_group_duplicates = dc.group_duplicates
+
+        def vanishing_group_duplicates(*args, **kwargs):
+            raw = real_group_duplicates(*args, **kwargs)
+            paths[2].unlink()  # gone after hashing, before the analyze-phase stat
+            return raw
+
+        dc.group_duplicates = vanishing_group_duplicates
+        try:
+            groups = dc.build_groups(Path(tmp), dc.DEFAULT_HASH_THRESHOLD)
+        finally:
+            dc.group_duplicates = real_group_duplicates
+
+        assert len(groups) == 1, f"expected one surviving group, got {len(groups)}"
+        assert sorted(groups[0].paths) == sorted(paths[:2]), (
+            f"expected the two surviving files, got {groups[0].paths}"
+        )
+        print("  ok  a file vanishing between phases costs that file, not the scan")
+
+
 def main() -> None:
     tests = [
         test_load_hash_gray_uses_reduced_decode_for_normal_size,
@@ -528,6 +579,8 @@ def main() -> None:
         test_scan_writes_nothing_into_the_scanned_directory,
         test_build_groups_reuses_caller_supplied_caches_across_scans,
         test_omitted_caches_default_to_a_cold_scan,
+        test_group_duplicates_tolerates_a_path_that_vanished_before_stat,
+        test_build_groups_tolerates_a_file_vanishing_between_the_two_phases,
     ]
     for test in tests:
         print(f"{test.__name__}:")

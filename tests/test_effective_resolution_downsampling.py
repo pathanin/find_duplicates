@@ -153,6 +153,38 @@ def test_boundary_dimension_is_not_downsampled() -> None:
     print(f"  ok  image exactly at EFFECTIVE_RES_MAX_PX ({side}px) is not downsampled")
 
 
+def test_extreme_aspect_ratio_returns_instead_of_raising() -> None:
+    """An aspect ratio past ~1024:1 drives the post-resize short side to 0 or
+    1 (int() truncation), which made cv2.resize or the radial np.convolve
+    raise. _analyze_one swallowed that as None and build_groups then dropped
+    the file from its group with no diagnostic -- silently dissolving a real
+    duplicate pair. The metric must return instead of raising."""
+    gray = make_gray(20000, 15, seed=11)  # 1333:1 -> post-resize short side 1
+
+    cutoff, equivalent = ciq.effective_resolution(gray)
+
+    assert (cutoff, equivalent) == (0.0, 0.0), (
+        f"expected the too-thin fallback, got {(cutoff, equivalent)}"
+    )
+    print("  ok  an extreme-aspect image returns 0.0 rather than raising")
+
+
+def test_short_side_of_exactly_three_still_measures() -> None:
+    """Boundary the other way: 20480x30 downsamples to exactly 2048x3, the
+    smallest shape the frequency analysis still accepts. The too-thin guard
+    must not fire here -- a real cutoff, scaled by the ORIGINAL min side, has
+    to come back."""
+    gray = make_gray(20480, 30, seed=12)
+
+    cutoff, equivalent = ciq.effective_resolution(gray)
+
+    assert cutoff > 0.0, "the guard over-fired on a shape the analysis can still handle"
+    assert equivalent == cutoff * 30, (
+        f"equivalent_pixels must use the original min side (30), got {equivalent}"
+    )
+    print("  ok  a post-resize short side of 3 still yields a measured cutoff")
+
+
 def main() -> None:
     tests = [
         ("small image never invokes resize", test_small_image_never_invokes_resize),
@@ -160,6 +192,8 @@ def main() -> None:
         ("internal downsample matches manual pre-downsample", test_internal_downsample_matches_manual_predownsample),
         ("equivalent_pixels uses original dimensions", test_equivalent_pixels_uses_original_dimensions),
         ("boundary dimension is not downsampled", test_boundary_dimension_is_not_downsampled),
+        ("extreme aspect ratio returns instead of raising", test_extreme_aspect_ratio_returns_instead_of_raising),
+        ("short side of exactly three still measures", test_short_side_of_exactly_three_still_measures),
     ]
     for name, fn in tests:
         try:
