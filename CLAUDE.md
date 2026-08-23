@@ -61,3 +61,9 @@ Many tests exist to lock in one specific past bug. Read a test's docstring befor
 - `install.sh` is POSIX sh, not bash (the curl-piped invocation ignores the shebang): no arrays, no `[[ ]]`, no `pipefail`.
 - Ctrl-C shutdown has two moving parts, both regression-tested in `tests/test_shutdown.py`: scans run in `duplicates_web._scan_executor`, not the loop's default executor (asyncio's teardown joins the default one, so a Ctrl-C mid-scan would hang until the scan finished), and `main()` drives `server.serve()` on a bare loop then calls `os._exit(0)` (`asyncio.run`'s SIGINT handler turns a quick second Ctrl-C into a lifespan-cancel traceback). `main()` also sets `duplicates_web.shutting_down` from the signal handler so an open `/api/progress` stream ends itself -- uvicorn's graceful shutdown otherwise waits on it for the whole scan -- and flushes stdout/stderr, which `os._exit` skips (block-buffered under a redirect, so the tokened URL would be lost).
 - Don't `pkill -f find_duplicates.py` while manually testing in a browser — it kills the server under test and the connection failure reads as a product bug.
+
+## LSP
+
+Code intelligence (the `LSP` tool: hover, goToDefinition, findReferences) is wired through two plugins enabled in `.claude/settings.json`: `pyright-lsp@claude-plugins-official` for `.py`, and the in-repo `.claude/lsp/web-lsp` for `.html`/`.css`/`.json` (needs `vscode-langservers-extracted` on PATH). On a fresh clone, run `claude plugin marketplace add ./.claude/lsp` once — the marketplace path is absolute and lives in user settings.
+
+`pyrightconfig.json` is gitignored: it points pyright at the dev venv holding cv2/numpy/fastapi. `brisque` and `pyiqa` stay unresolved on purpose — they are optional imports.
