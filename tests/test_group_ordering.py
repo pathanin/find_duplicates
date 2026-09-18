@@ -12,6 +12,7 @@ test_paths_and_results_stay_aligned is the real point of this file.
 Run: python3 test_group_ordering.py
 """
 
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -99,10 +100,10 @@ def test_paths_and_results_stay_aligned() -> None:
 
 
 def test_tied_scores_keep_filename_order() -> None:
-    """Boundary: byte-identical copies score identically, so the sort key
-    can't separate them. sorted() is stable and find_images() returns sorted
-    paths, so they must stay in filename order -- otherwise identical copies
-    would shuffle between scans for no visible reason."""
+    """Boundary: byte-identical copies score identically, so quality can't
+    separate them. Equal-length names tie on the length key too and fall
+    through to the name itself, so they stay in filename order -- identical
+    copies must not shuffle between scans for no visible reason."""
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
         rng = np.random.default_rng(11)
@@ -121,12 +122,52 @@ def test_tied_scores_keep_filename_order() -> None:
         print("  ok  files tied on score keep filename order")
 
 
+def test_tied_copies_suggest_the_original_not_the_copy() -> None:
+    """Regression test: the tool used to suggest keeping the *copy*.
+
+    Byte-identical duplicates score exactly equal, so the tie-break is the
+    entire decision -- and plain filename order loses it, because " 2.jpg"
+    and " copy.jpg" both sort ahead of ".jpg" (space is 0x20, period is
+    0x2e). Every macOS-duplicated photo in a library hit this. The shorter
+    name wins a tie now, since every convention for naming a derived copy
+    appends to the original's name.
+
+    This is the destructive path: --auto moves whatever lands at index 0's
+    expense, so getting it backwards moved the original into _duplicates/
+    and kept the copy."""
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        rng = np.random.default_rng(13)
+        base = rng.integers(0, 255, size=(150, 200, 3), dtype=np.uint8)
+        img = cv2.resize(base, (800, 600), interpolation=cv2.INTER_CUBIC)
+        original = tmp / "holiday.jpg"
+        save_jpeg(img, original)
+        # The three shapes a copy actually arrives in, all of which sort
+        # before the original by name.
+        copies = [tmp / "holiday 2.jpg", tmp / "holiday copy.jpg", tmp / "holiday (1).jpg"]
+        for copy in copies:
+            shutil.copyfile(original, copy)
+
+        assert dc.find_images(tmp)[0] != original, (
+            "fixture is vacuous: the original already sorts first by name"
+        )
+
+        group = build_one_group(tmp)
+        scores = [r["quality_score"] for r in group.results]
+        assert len(set(scores)) == 1, f"identical copies should tie on score, got {scores}"
+        assert group.paths[0] == original, (
+            f"the original should be suggested, not a copy -- got {group.paths[0].name}"
+        )
+        print("  ok  a tie between an original and its copies suggests the original")
+
+
 def main() -> None:
     for fn in (
         test_best_scoring_file_is_first,
         test_detector_filename_order_would_have_failed,
         test_paths_and_results_stay_aligned,
         test_tied_scores_keep_filename_order,
+        test_tied_copies_suggest_the_original_not_the_copy,
     ):
         print(f"{fn.__name__}:")
         fn()

@@ -893,10 +893,26 @@ def _build_group(members: list[Path], analyzed: dict[Path, dict]) -> Group | Non
     # the digit-key shortcuts) stays consistent -- there is no "original
     # index" left to translate back to.
     #
-    # sorted() is stable and find_images() returns sorted paths, so files
-    # that tie on quality_score keep filename order relative to each
-    # other; identical copies don't shuffle unpredictably between scans.
-    order = sorted(range(len(results)), key=lambda i: -results[i]["quality_score"])
+    # Byte-identical copies score *exactly* equal -- min-max normalizing a
+    # group whose metrics are all the same gives every file the same
+    # number -- so on the commonest duplicate of all the tie-break is the
+    # whole decision. Filename order lost it: " 2.jpg" and " copy.jpg"
+    # both sort before ".jpg" (space < period), so the tool suggested
+    # keeping the copy. Shorter name wins a tie instead, because every
+    # convention for naming a derived copy *appends* to the original --
+    # " copy", " 2", " (1)", "-edited", "_v2". Full name last keeps the
+    # order total, so identical copies don't shuffle between scans.
+    #
+    # ponytail: name length is a heuristic, and it only ever runs on an
+    # exact tie -- where the pixel metrics have said the files are
+    # indistinguishable and something has to break it. When they differ at
+    # all, the metrics still decide alone. name_hint.py reads the names
+    # properly and shows its answer in the review UI; promote it here if
+    # the heuristic turns out to be wrong on a real library.
+    order = sorted(
+        range(len(results)),
+        key=lambda i: (-results[i]["quality_score"], len(paths[i].name), paths[i].name),
+    )
     paths = [paths[i] for i in order]
     results = [results[i] for i in order]
 
