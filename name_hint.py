@@ -18,6 +18,9 @@ separate frames that merely look alike"). The Noul catches the false
 positives CONFIRM_HASH_THRESHOLD deliberately lets through -- a burst series
 shares a filename stem but isn't one photo stored twice.
 
+The key comes from $TYPESAFE_API_KEY or ~/.config/find_duplicates/typesafe-key
+(`find_duplicates.py --set-typesafe-key` writes the latter).
+
 Advisory only, by design. Nothing here feeds quality_score, suggested_idx or
 the file moves; the hint is shown next to the close-call note and the
 reviewer still decides. Optional like brisque/niqe: no API key, no network
@@ -28,8 +31,14 @@ import json
 import os
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 API_URL = "https://api.typesafe.ai/v1/systemone"
+# A file, not just $TYPESAFE_API_KEY, because the tool's own use case is a
+# NAS or headless box you reach over SSH -- an env var set in one shell
+# doesn't survive the next login or a systemd unit. `--set-typesafe-key`
+# writes this; the env var still wins when both are present.
+KEY_PATH = Path.home() / ".config" / "find_duplicates" / "typesafe-key"
 MODEL = "jev-latest"
 TIMEOUT = 10.0
 
@@ -48,6 +57,28 @@ _SAME_PHOTO_Q = {
         "false": "Different frames, different crops, or consecutive shots from one burst or series",
     },
 }
+
+def load_key() -> str | None:
+    """The API key from $TYPESAFE_API_KEY, else KEY_PATH, else None."""
+    key = os.environ.get("TYPESAFE_API_KEY")
+    if key:
+        return key.strip()
+    try:
+        return KEY_PATH.read_text().strip() or None
+    except OSError:  # missing, unreadable, a directory -- all mean "no key"
+        return None
+
+
+def save_key(key: str) -> Path:
+    """Write *key* to KEY_PATH readable by this user only, and return the
+    path. Chmod before the write so the secret is never briefly world
+    readable."""
+    KEY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    KEY_PATH.touch(mode=0o600, exist_ok=True)
+    KEY_PATH.chmod(0o600)
+    KEY_PATH.write_text(key.strip() + "\n")
+    return KEY_PATH
+
 
 # Keyed by the paths themselves, so it survives a rescan the way hash_cache
 # does. Only successes are stored -- caching a None would pin a transient
@@ -87,7 +118,7 @@ def name_hint(paths: tuple[str, ...]) -> dict | None:
         return None
     if paths in _cache:
         return _cache[paths]
-    api_key = os.environ.get("TYPESAFE_API_KEY")
+    api_key = load_key()
     if not api_key:
         return None
     result = _ask(paths, api_key)

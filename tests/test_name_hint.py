@@ -1,9 +1,13 @@
-"""name_hint must stay optional.
+"""name_hint must stay optional, and its key must be easy to set.
 
 The hint is advisory: no API key, an unreachable API or a malformed response
 all have to read as "no hint" and leave the review untouched, exactly like
 brisque/niqe being absent. A raised exception here would 500 the group route
 the reviewer is sitting on.
+
+load_key's precedence is locked here too: $TYPESAFE_API_KEY wins over the
+saved file, so a one-off `TYPESAFE_API_KEY=... python3 find_duplicates.py`
+can override a stored key without editing anything.
 
 Also locks two details that are easy to lose in a refactor. The cache stores
 successes only -- caching a None would pin one transient network failure for
@@ -14,6 +18,7 @@ paths tuple at the boundary, so nothing downstream matches on path strings.
 import io
 import json
 import sys
+import tempfile
 import urllib.error
 from pathlib import Path
 
@@ -46,14 +51,57 @@ GOOD = {
 }
 
 
+def test_key_file_round_trip() -> None:
+    """save_key/load_key are what --set-typesafe-key is built on: the tool
+    runs on a NAS or headless box reached over SSH, where an env var set in
+    one shell doesn't survive the next login. The file must be readable by
+    its owner only -- it holds a credential."""
+    import os
+    saved_env = os.environ.pop("TYPESAFE_API_KEY", None)
+    saved_path = nh.KEY_PATH
+    with tempfile.TemporaryDirectory() as tmp:
+        nh.KEY_PATH = Path(tmp) / ".config" / "find_duplicates" / "typesafe-key"
+        try:
+            assert nh.load_key() is None, "no file and no env var means no key"
+
+            written = nh.save_key("  secret-key-123  ")
+            assert written == nh.KEY_PATH
+            assert nh.load_key() == "secret-key-123", "surrounding whitespace must be stripped"
+            mode = nh.KEY_PATH.stat().st_mode & 0o777
+            assert mode == 0o600, f"key file must be owner-only, got {oct(mode)}"
+            print("  ok  save_key writes an owner-only file that load_key reads back")
+
+            os.environ["TYPESAFE_API_KEY"] = "env-key"
+            assert nh.load_key() == "env-key", "the env var must win over the saved file"
+            del os.environ["TYPESAFE_API_KEY"]
+            print("  ok  $TYPESAFE_API_KEY overrides the saved file")
+
+            # An unreadable or malformed file is "no key", never a crash --
+            # it would otherwise take down every scan on that machine.
+            nh.KEY_PATH.write_text("   \n")
+            assert nh.load_key() is None, "a blank file means no key"
+            nh.KEY_PATH.unlink()
+            nh.KEY_PATH.mkdir()
+            assert nh.load_key() is None, "a directory where the file should be means no key"
+            print("  ok  a blank or unreadable key file degrades to None")
+        finally:
+            nh.KEY_PATH = saved_path
+            if saved_env is not None:
+                os.environ["TYPESAFE_API_KEY"] = saved_env
+
+
 def main() -> None:
+    test_key_file_round_trip()
     nh._cache.clear()
 
-    # No key: no call at all, no hint.
+    # No key: no call at all, no hint. KEY_PATH is redirected somewhere
+    # empty as well as the env var cleared -- otherwise this test passes or
+    # fails depending on whether whoever runs it has saved a real key.
     calls = []
     nh.urllib.request.urlopen = lambda *a, **k: calls.append(1)
     import os
     saved = os.environ.pop("TYPESAFE_API_KEY", None)
+    nh.KEY_PATH = Path(tempfile.gettempdir()) / "find-duplicates-no-such-key-file"
     assert nh.name_hint(PATHS) is None
     assert not calls, "must not reach the network without an API key"
     os.environ["TYPESAFE_API_KEY"] = "test-key"

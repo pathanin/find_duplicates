@@ -10,6 +10,7 @@ A single-purpose tool: scan a directory for near-duplicate images (the same phot
 
 ```bash
 python3 find_duplicates.py [directory] [--threshold N] [--dest DIR] [--recursive] [--auto] [--dry-run] [--host H] [--port N] [--no-browser]
+python3 find_duplicates.py --set-typesafe-key             # prompt for the optional filename-hint key, save it, exit
 python3 compare_image_quality.py imageA.jpg imageB.jpg   # standalone 2-image comparison
 ```
 
@@ -75,6 +76,8 @@ Publication order is `raw_groups` order, not completion order, and a group is sc
 It is **advisory and must stay that way**. Nothing it returns feeds `quality_score`, `suggested_idx`, `score_group` or the file moves, and `--auto` never calls it — a wrong hint has to cost one glance in the ledger, never a moved file. It is also optional in the brisque/niqe sense: missing `TYPESAFE_API_KEY`, an unreachable API or a malformed answer all return `None` and the app behaves exactly as before (`tests/test_name_hint.py`).
 
 The ledger shows the pick hint only when it disagrees with the current pick *and* `confidence >= 0.6`. A group merged from two name families (`tests/Test-image` group 1) answers near 0.5 — the names offer no winner, and a flat sentence there would read as certainty the model didn't claim.
+
+The key comes from `$TYPESAFE_API_KEY`, else `~/.config/find_duplicates/typesafe-key` (`load_key`, env var wins). `--set-typesafe-key` prompts via `getpass` and writes that file 0600 — prompted, not a flag value, since an argument is visible in `ps` and lands in shell history, and this runs on boxes reached over SSH where an env var doesn't survive the next login. `tests/test_name_hint.py` redirects `KEY_PATH` before the no-key cases, or the suite's result would depend on whether whoever runs it has saved a real key.
 
 Its own route, not a field on `/api/group/{i}`: the call is blocking third-party HTTP and the detail response is what every keypress waits on. The frontend fetches it after the group is on screen and `asyncio.to_thread` keeps it off the event loop, with `session.lock` released first. The cache is keyed by the paths tuple, so it survives a rescan like `hash_cache`, and only successes are stored — caching a `None` would pin one transient failure for the life of the process.
 
