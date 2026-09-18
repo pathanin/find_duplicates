@@ -25,6 +25,7 @@ const state = {
   detail: null,     // {index, status, current_pick, suggested_idx, is_close_call, paths, dimensions, sizes, size_labels, scores, metrics}
   eventSource: null,
   ledgerOpen: true,
+  nameHint: null,   // {index, keep, confidence, same_photo} from /api/group/{i}/name-hint, or null
 };
 
 // Stage view: which scene point is centred and whether we're inspecting at
@@ -108,6 +109,8 @@ async function loadGroup(i) {
     if (token !== loadGroupToken) return; // superseded by a newer loadGroup
     state.activeIndex = i;
     state.detail = data;
+    state.nameHint = null;
+    loadNameHint(i);
     view.zoom = false;
     view.u = 0.5;
     view.v = 0.5;
@@ -116,6 +119,21 @@ async function loadGroup(i) {
     prefetchNextGroup();
   } catch (e) {
     if (token === loadGroupToken) showToast(`Couldn't load group ${i + 1}: ${e.message}`, true);
+  }
+}
+
+// Fetched after the group is on screen, never awaited with it: the hint comes
+// from a third-party API and the review loop must not wait on it. A failure is
+// silent -- the ledger simply shows no hint line, which is also what happens
+// when no API key is set.
+async function loadNameHint(i) {
+  try {
+    const { hint } = await api(`/api/group/${i}/name-hint`);
+    if (!hint || i !== state.activeIndex) return;
+    state.nameHint = { index: i, ...hint };
+    renderLedger();
+  } catch {
+    /* advisory only */
   }
 }
 
@@ -778,9 +796,17 @@ function renderLedger() {
     tbody.appendChild(tr);
   });
 
-  $("ledger-note").textContent = d.is_close_call
-    ? "Close call — the top two scored nearly the same"
-    : "";
+  // Two independent notes, both advisory. The close call comes from the pixel
+  // metrics; the name hint reads the filenames, which the metrics can't see.
+  const notes = [];
+  if (d.is_close_call) notes.push("Close call — the top two scored nearly the same");
+  const hint = state.nameHint && state.nameHint.index === state.activeIndex ? state.nameHint : null;
+  if (hint && hint.same_photo < 0.5) {
+    notes.push("These names read as different shots, not one photo stored twice");
+  } else if (hint && hint.keep !== d.current_pick) {
+    notes.push(`By filename, ${d.paths[hint.keep]} looks like the original`);
+  }
+  $("ledger-note").textContent = notes.join(" · ");
   $("ledger-note").className = d.is_close_call ? "ledger-note is-close" : "ledger-note";
 }
 

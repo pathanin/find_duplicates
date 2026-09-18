@@ -33,6 +33,8 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from pydantic import BaseModel, Field
 from PIL import Image as PILImage
 
+from name_hint import name_hint
+
 from duplicates_core import (
     DEFAULT_HASH_THRESHOLD,
     Group,
@@ -409,6 +411,20 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
             if not (0 <= i < len(session.groups)):
                 raise HTTPException(404, "no such group")
             return JSONResponse(_group_detail(session, i, session.groups[i]))
+
+    # Its own route rather than a field on /api/group/{i}: name_hint makes a
+    # blocking HTTP call to a third party, and the detail response is what
+    # every keypress waits on. The frontend fetches this after the group is
+    # already on screen, so a slow or unreachable API costs nothing but the
+    # hint itself. to_thread keeps the call off the event loop, and the
+    # session lock is released before it runs.
+    @app.get("/api/group/{i}/name-hint")
+    async def get_name_hint(i: int, _: str = Depends(require_token)) -> JSONResponse:
+        with session.lock:
+            if not (0 <= i < len(session.groups)):
+                raise HTTPException(404, "no such group")
+            paths = tuple(_display_path(session, p) for p in session.groups[i].paths)
+        return JSONResponse({"hint": await asyncio.to_thread(name_hint, paths)})
 
     def _cached_render(i: int, j: int, max_side: int, quality: int) -> Response:
         with session.lock:
