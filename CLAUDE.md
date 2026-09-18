@@ -74,6 +74,8 @@ Publication order is `raw_groups` order, not completion order, and a group is sc
 
 It is **advisory and must stay that way**. Nothing it returns feeds `quality_score`, `suggested_idx`, `score_group` or the file moves, and `--auto` never calls it — a wrong hint has to cost one glance in the ledger, never a moved file. It is also optional in the brisque/niqe sense: missing `TYPESAFE_API_KEY`, an unreachable API or a malformed answer all return `None` and the app behaves exactly as before (`tests/test_name_hint.py`).
 
+The ledger shows the pick hint only when it disagrees with the current pick *and* `confidence >= 0.6`. A group merged from two name families (`tests/Test-image` group 1) answers near 0.5 — the names offer no winner, and a flat sentence there would read as certainty the model didn't claim.
+
 Its own route, not a field on `/api/group/{i}`: the call is blocking third-party HTTP and the detail response is what every keypress waits on. The frontend fetches it after the group is on screen and `asyncio.to_thread` keeps it off the event loop, with `session.lock` released first. The cache is keyed by the paths tuple, so it survives a rescan like `hash_cache`, and only successes are stored — caching a `None` would pin one transient failure for the life of the process.
 
 Deliberately no `METRIC_WEIGHTS` entry. That would drag `METRIC_DESCRIPTIONS`/`METRIC_ROWS` and the help sheet along and route the judgment straight into `suggested_idx`, which is the destructive path.

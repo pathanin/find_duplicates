@@ -800,10 +800,12 @@ function renderLedger() {
   // metrics; the name hint reads the filenames, which the metrics can't see.
   const notes = [];
   if (d.is_close_call) notes.push("Close call — the top two scored nearly the same");
+  // A group merged from two name families answers near 0.5 -- the names give
+  // no winner, so say nothing rather than assert one.
   const hint = state.nameHint && state.nameHint.index === state.activeIndex ? state.nameHint : null;
   if (hint && hint.same_photo < 0.5) {
     notes.push("These names read as different shots, not one photo stored twice");
-  } else if (hint && hint.keep !== d.current_pick) {
+  } else if (hint && hint.keep !== d.current_pick && hint.confidence >= 0.6) {
     notes.push(`By filename, ${d.paths[hint.keep]} looks like the original`);
   }
   $("ledger-note").textContent = notes.join(" · ");

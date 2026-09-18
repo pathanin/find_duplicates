@@ -285,6 +285,46 @@ def test_close_call_group_serializes_without_500() -> None:
         print("  ok  a close-call group serializes cleanly through /api/state and /api/group/{i}")
 
 
+def test_name_hint_route_maps_paths_and_survives_an_unavailable_api() -> None:
+    """The hint route hands name_hint the same display paths the reviewer
+    sees, wraps the answer in {"hint": ...}, and returns hint=None rather
+    than a 500 when the API is unreachable or no key is set -- the whole
+    feature is advisory and must never break the group being reviewed.
+
+    Patches duplicates_web.name_hint, not name_hint.name_hint: the web
+    module imports it by name, so patching the source module would silently
+    do nothing (see CLAUDE.md's traps)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp)
+        make_close_call_pair(directory, seed=9)
+        client, _ = _make_client(directory, directory / "_duplicates")
+        original = web.name_hint
+        seen = []
+        try:
+            with client:
+                data = _wait_ready(client)
+                assert data["status"] == "ready", data
+                paths = client.get("/api/group/0", params={"token": TOKEN}).json()["paths"]
+
+                web.name_hint = lambda p: seen.append(p) or {"keep": 1, "confidence": 0.9, "same_photo": 0.8}
+                r = client.get("/api/group/0/name-hint", params={"token": TOKEN})
+                assert r.status_code == 200, r.text
+                assert r.json() == {"hint": {"keep": 1, "confidence": 0.9, "same_photo": 0.8}}, r.json()
+                assert seen == [tuple(paths)], f"route must pass the displayed paths, got {seen}"
+
+                # Unavailable API: name_hint's own contract is None, and the
+                # route has to pass that through as a 200.
+                web.name_hint = lambda p: None
+                r = client.get("/api/group/0/name-hint", params={"token": TOKEN})
+                assert r.status_code == 200 and r.json() == {"hint": None}, r.text
+
+                assert client.get("/api/group/9/name-hint", params={"token": TOKEN}).status_code == 404
+                assert client.get("/api/group/0/name-hint").status_code == 401
+        finally:
+            web.name_hint = original
+        print("  ok  /api/group/{i}/name-hint maps display paths, degrades to null, keeps the token/404 guards")
+
+
 def test_confirm_moves_files_and_skip_unapplies() -> None:
     """dry_run=False: confirm must really move the non-kept file to
     dest_dir, and a subsequent skip must restore it, via the shared
@@ -559,6 +599,7 @@ def main() -> None:
         test_group_detail_numeric_fields_match_their_display_strings,
         test_scan_rejects_invalid_directory_and_out_of_range_threshold,
         test_close_call_group_serializes_without_500,
+        test_name_hint_route_maps_paths_and_survives_an_unavailable_api,
         test_confirm_moves_files_and_skip_unapplies,
         test_repick_after_confirm_moves_the_new_non_kept_file,
         test_confirm_partial_failure_leaves_group_pending,
