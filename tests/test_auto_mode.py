@@ -5,6 +5,7 @@ suggested (top-scored) pick automatically.
 Run: python3 test_auto_mode.py
 """
 
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -281,6 +282,41 @@ def test_recursive_auto_combined() -> None:
         print("  ok  --recursive and --auto compose: cross-subdir group applied with dest mirroring the source")
 
 
+def test_auto_keeps_the_original_of_a_byte_identical_copy() -> None:
+    """End-to-end over the destructive path: build_groups -> auto_apply_groups
+    on an original and its copy.
+
+    Every other test here hands auto_apply_groups a Group it built by hand
+    with suggested_idx already decided, so none of them can see how
+    build_groups decided it. That left the commonest duplicate in a real
+    library uncovered: byte-identical copies score exactly equal, the
+    tie-break is the whole decision, and filename order got it backwards
+    (" copy.jpg" sorts ahead of ".jpg"). --auto doesn't second-guess close
+    calls, so it moved the original into _duplicates/ and kept the copy."""
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp)
+        rng = np.random.default_rng(31)
+        base = rng.integers(0, 255, size=(150, 200, 3), dtype=np.uint8)
+        original = directory / "holiday.jpg"
+        save_jpeg(cv2.resize(base, (800, 600), interpolation=cv2.INTER_CUBIC), original)
+        copy = directory / "holiday copy.jpg"
+        shutil.copyfile(original, copy)
+        dest_dir = directory / "_duplicates"
+
+        groups = dc.build_groups(directory, dc.DEFAULT_HASH_THRESHOLD, dest_dir=dest_dir)
+        assert len(groups) == 1, f"expected one group, got {len(groups)}"
+        assert groups[0].is_close_call, "identical copies must read as a close call"
+
+        summary = dc.auto_apply_groups(groups, dest_dir, dry_run=False)
+
+        assert summary["confirmed"] == 1 and summary["files_moved"] == 1, summary
+        assert original.exists(), "--auto moved the original away and kept the copy"
+        assert not copy.exists() and (dest_dir / "holiday copy.jpg").exists(), (
+            "the copy is what should have been moved into dest_dir"
+        )
+        print("  ok  --auto keeps the original and moves the copy")
+
+
 def main() -> None:
     tests = [
         test_apply_group_standalone,
@@ -292,6 +328,7 @@ def main() -> None:
         test_auto_apply_groups_continues_after_one_group_fails,
         test_auto_apply_groups_isolates_a_failure_before_the_move_loop,
         test_recursive_auto_combined,
+        test_auto_keeps_the_original_of_a_byte_identical_copy,
     ]
     for test in tests:
         print(f"{test.__name__}:")
