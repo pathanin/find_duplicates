@@ -32,6 +32,7 @@ python3 tests/test_group_ordering.py
 python3 tests/test_heic_support.py
 python3 tests/test_help_and_labels.py
 python3 tests/test_name_hint.py
+python3 tests/test_optional_metrics.py
 python3 tests/test_recursive_scan.py
 python3 tests/test_scan_progress.py
 python3 tests/test_score_group.py
@@ -53,7 +54,7 @@ Many tests exist to lock in one specific past bug. **Read a test's docstring bef
 
 Five modules, layered so the bottom two never know about the web:
 
-- **`compare_image_quality.py`** — per-image quality metrics (`analyze`): laplacian sharpness, FFT-based `effective_resolution` (resists fake upscaling), noise, blockiness. Also runs standalone on two files. `brisque`/`niqe` are optional imports that stay unresolved by design.
+- **`compare_image_quality.py`** — per-image quality metrics (`analyze`): laplacian sharpness, FFT-based `effective_resolution` (resists fake upscaling), noise, blockiness. Also runs standalone on two files. `brisque`/`niqe` are optional imports that stay unresolved by design, and each **latches after its first failure** (`_brisque_unavailable`/`_niqe_unavailable`) — a missing package is cheap to retry, but `brisque` 0.2.0 computes its whole feature set before dying on modern numpy, which measured 418 ms per image (analyze 25 ms → 443 ms) to return `None` every time. Don't remove the latch, and don't add either package to `install.sh`: `brisque` costs ~40 MB across 7 packages for a metric that currently never returns a number, and `pyiqa` pulls 61 packages including `transformers`, `tensorboard` and an `opencv-python` that conflicts with the project's `opencv-python-headless`. `tests/test_optional_metrics.py` covers the latch.
 - **`duplicates_core.py`** — the whole scan/score/move pipeline. `find_images` → `group_duplicates` (perceptual hash + `UnionFind`) → `analyze_paths` → `score_group` → `build_groups`, returning `list[Group]`. Applying decisions: `apply_group`, `apply_pick`, `unapply`, `auto_apply_groups`.
 - **`duplicates_web.py`** — FastAPI app (`create_app`) plus the `Session` dataclass holding all server-side state. Routes: `/api/state`, `/api/group/{i}` and its `pick`/`confirm`/`skip` posts, `/api/thumb|stage|full/{i}/{j}`, `/api/scan`, `/api/progress` (SSE), `/api/metrics-info`, `/api/group/{i}/name-hint`, and a token-gated `/static/{path}`.
 - **`find_duplicates.py`** — CLI entry point, `--auto` path, signal handling, uvicorn startup.

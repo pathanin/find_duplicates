@@ -234,6 +234,20 @@ def blockiness_score(gray, block_size=8):
     return float(max(score, 0))
 
 
+# Latched after the first failure of each optional metric. A missing package
+# is cheap to retry, but a package that imports and then *fails* is not:
+# brisque 0.2.0 computes its full feature set before dying on modern numpy
+# ("only 0-dimensional arrays can be converted to Python scalars"), which
+# cost 418 ms per image -- analyze() went from 25 ms to 443 ms -- to produce
+# None every time. analyze() is the per-image scan bottleneck, so that is the
+# whole scan, silently, for a column that reads "n/a" either way.
+#
+# Plain bools, no lock: analyze() runs on a thread pool, so the worst race
+# loses is a couple of extra attempts before every worker sees the flag.
+_brisque_unavailable = False
+_niqe_unavailable = False
+
+
 def brisque_score(img_bgr):
     """
     BRISQUE via the `brisque` package (pip install brisque[opencv-python-headless]).
@@ -241,18 +255,32 @@ def brisque_score(img_bgr):
     Requires RGB input, not BGR, since the package's reference implementation
     builds its ndarray from PIL (RGB) images.
     Lower score = better perceived quality.
+
+    None if the package is absent or broken -- and after the first failure
+    it isn't tried again this process; see _brisque_unavailable.
     """
+    global _brisque_unavailable
+    if _brisque_unavailable:
+        return None
     try:
         from brisque import BRISQUE
         img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
         obj = BRISQUE(url=False)
         return float(obj.score(img=img_rgb))
     except Exception:
+        _brisque_unavailable = True
         return None
 
 
 def niqe_score(path):
-    """Optional secondary check via pyiqa (pip install pyiqa torch). Lower = better."""
+    """Optional secondary check via pyiqa (pip install pyiqa torch). Lower = better.
+
+    None if the package is absent or broken, and not retried afterwards --
+    same reasoning as brisque_score, more so: create_metric builds a torch
+    model per call."""
+    global _niqe_unavailable
+    if _niqe_unavailable:
+        return None
     try:
         import pyiqa
         import torch
@@ -260,6 +288,7 @@ def niqe_score(path):
         niqe = pyiqa.create_metric("niqe", device=device)
         return float(niqe(path))
     except Exception:
+        _niqe_unavailable = True
         return None
 
 
