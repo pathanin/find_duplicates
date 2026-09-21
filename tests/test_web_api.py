@@ -588,6 +588,30 @@ def test_static_assets_require_token_and_serve_with_the_cookie() -> None:
         print("  ok  /static requires the token and still serves to a cookie-carrying browser")
 
 
+def test_page_and_assets_are_revalidated_not_heuristically_cached() -> None:
+    """A browser given only Last-Modified may apply heuristic freshness and
+    keep serving an old app.js for hours after an upgrade -- the page then
+    shows new markup driven by a stale script, which reads as "the button
+    does nothing". Reproduced in Chrome: after the files changed on disk, a
+    normal navigation fetched both / and /static/app.js from cache with
+    transferSize 0. no-cache forces the revalidation; the ETag keeps it a
+    304 when nothing changed."""
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp)
+        client, _ = _make_client(directory, directory / "_duplicates")
+        with client:
+            page = client.get("/", params={"token": TOKEN})
+            assert page.headers.get("cache-control") == "no-cache", page.headers
+            for asset in ("app.js", "index.html", "style.css"):
+                r = client.get(f"/static/{asset}")
+                assert r.status_code == 200, (asset, r.status_code)
+                assert r.headers.get("cache-control") == "no-cache", (asset, r.headers)
+                # The ETag is what keeps revalidation cheap -- without it
+                # no-cache would mean a full re-download every load.
+                assert r.headers.get("etag"), f"{asset} has no ETag to revalidate against"
+        print("  ok  the page and every static asset are served no-cache with an ETag")
+
+
 def main() -> None:
     tests = [
         test_data_endpoint_requires_token,
@@ -606,6 +630,7 @@ def main() -> None:
         test_repick_partial_failure_demotes_the_confirmed_group_and_retries,
         test_stale_generation_is_rejected_on_mutating_posts,
         test_static_assets_require_token_and_serve_with_the_cookie,
+        test_page_and_assets_are_revalidated_not_heuristically_cached,
         test_scanning_status_blocks_mutating_endpoints,
         test_rescan_bumps_generation_and_resets_group_status,
     ]

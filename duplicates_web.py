@@ -56,6 +56,15 @@ from duplicates_core import (
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 COOKIE_NAME = "fd_token"
 
+# The page and its assets carry no version in their URLs, so an upgraded
+# install serves new files at the same paths. Without this header they have
+# only Last-Modified, and a browser is free to apply heuristic freshness --
+# Chrome serves a week-old app.js from cache for hours without asking, which
+# reads as "the new button does nothing" rather than as a stale cache.
+# "no-cache" means revalidate, not "don't store": the ETag still makes the
+# check a 304 on a page that hasn't changed.
+NO_CACHE = {"Cache-Control": "no-cache"}
+
 # The only formats a browser can't render natively -- everything else in
 # duplicates_core.IMAGE_EXTS (jpg/png/webp/bmp/tiff) is served as-is via
 # /api/full; these need transcoding to JPEG on the fly.
@@ -392,7 +401,7 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
 
     @app.get("/")
     async def index(token: str = Depends(require_token)) -> Response:
-        resp = FileResponse(STATIC_DIR / "index.html")
+        resp = FileResponse(STATIC_DIR / "index.html", headers=NO_CACHE)
         # strict, not lax: entry is always via the printed ?token= URL, so no
         # cross-site navigation ever needs to arrive already authenticated.
         resp.set_cookie(COOKIE_NAME, token, httponly=True, samesite="strict")
@@ -664,6 +673,6 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
         target = (STATIC_DIR / path).resolve()
         if not target.is_relative_to(STATIC_DIR) or not target.is_file():
             raise HTTPException(404, "no such file")
-        return FileResponse(target)
+        return FileResponse(target, headers=NO_CACHE)
 
     return app
