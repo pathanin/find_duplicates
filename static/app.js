@@ -287,7 +287,7 @@ function renderNotices() {
     host.appendChild(notice(
       "done",
       "All reviewed",
-      `${total} group${total === 1 ? "" : "s"} — ${confirmed} kept, ${skipped} skipped. Nothing is half-done: close this tab, or press Quit to stop the server too.`,
+      `${total} group${total === 1 ? "" : "s"} — ${confirmed} kept, ${skipped} skipped. Nothing is half-done: close this tab, or use Quit above to stop the server too.`,
     ));
   }
 }
@@ -1434,7 +1434,9 @@ function showQuitDialog() {
   const bits = [];
   if (state.status === "scanning") bits.push("A scan is running — quitting ends it and its results are lost.");
   if (total) {
-    bits.push(`${confirmed} kept, ${skipped} skipped, ${pending} still to review.`);
+    bits.push(pending
+      ? `${confirmed} kept, ${skipped} skipped, ${pending} still to review.`
+      : `Every group is reviewed — ${confirmed} kept, ${skipped} skipped.`);
     if (confirmed && !dry) bits.push("Every decision already applied to disk; moving a file back out afterwards is a manual job.");
   } else {
     bits.push("Nothing has been reviewed yet.");
@@ -1467,9 +1469,11 @@ async function quitNow() {
 
 function showFarewell() {
   const { confirmed, skipped, pending, total } = reviewCounts();
-  $("farewell-tally").textContent = total
-    ? `${groupWord(total)} — ${confirmed} kept, ${skipped} skipped, ${pending} left unreviewed.`
-    : "No groups were reviewed.";
+  $("farewell-tally").textContent = !total
+    ? "No groups were reviewed."
+    : (pending
+        ? `${groupWord(total)} — ${confirmed} kept, ${skipped} skipped, ${pending} left unreviewed.`
+        : `All ${groupWord(total)} reviewed — ${confirmed} kept, ${skipped} skipped.`);
   const dry = !!(state.params && state.params.dry_run);
   $("farewell-note").textContent = dry
     ? "Dry run: no file was moved. You can close this tab."
