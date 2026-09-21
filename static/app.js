@@ -287,7 +287,7 @@ function renderNotices() {
     host.appendChild(notice(
       "done",
       "All reviewed",
-      `${total} group${total === 1 ? "" : "s"} — ${confirmed} kept, ${skipped} skipped. Nothing is half-done; you can close this tab.`,
+      `${total} group${total === 1 ? "" : "s"} — ${confirmed} kept, ${skipped} skipped. Nothing is half-done: close this tab, or press Quit to stop the server too.`,
     ));
   }
 }
@@ -1184,6 +1184,7 @@ let progressGraceTimer = null;
 // The stream is gone for good: unlock the UI rather than leaving every
 // control disabled behind a "scanning" state that will never end.
 async function progressLost(es) {
+  if (quitting) return;  // we stopped the server ourselves; the curtain explains it
   clearTimeout(progressGraceTimer);
   progressGraceTimer = null;
   es.close();
@@ -1297,6 +1298,29 @@ function connectProgress() {
 
 let lastFocused = null;
 
+// Which sheet is on screen, by id -- help and the quit dialog share the
+// .sheet markup, so a bare querySelector(".sheet-panel") would return
+// whichever comes first in the document rather than the one being shown.
+let openSheetId = null;
+
+function openSheet(id, focusEl) {
+  lastFocused = document.activeElement;
+  $(id).hidden = false;
+  openSheetId = id;
+  (focusEl || sheetPanel()).focus();
+}
+
+function closeSheet() {
+  if (!openSheetId) return;
+  $(openSheetId).hidden = true;
+  openSheetId = null;
+  if (lastFocused && lastFocused.focus) lastFocused.focus();
+}
+
+function sheetPanel() {
+  return openSheetId ? $(openSheetId).querySelector(".sheet-panel") : null;
+}
+
 async function showHelp() {
   const body = $("help-body");
   try {
@@ -1306,9 +1330,7 @@ async function showHelp() {
   } catch (e) {
     body.textContent = `Couldn't load the metric list: ${e.message}`;
   }
-  lastFocused = document.activeElement;
-  $("help-sheet").hidden = false;
-  document.querySelector(".sheet-panel").focus();
+  openSheet("help-sheet");
 }
 
 function helpContent(info) {
@@ -1360,6 +1382,7 @@ function helpContent(info) {
     ["O", "Open the kept file full-res in a new tab"],
     ["M", "Show or hide the measurements"],
     ["? / F1", "This panel"],
+    ["Q", "Quit — stop the server"],
   ].forEach(([k, v]) => {
     keys.appendChild(h("dt", k));
     keys.appendChild(h("dd", v));
@@ -1367,21 +1390,15 @@ function helpContent(info) {
   frag.appendChild(keys);
 
   frag.appendChild(h("h3", "Stopping and finishing"));
-  frag.appendChild(h("p", "Confirm and skip apply immediately — there's no save step and nothing is left half-done, so it's safe to close this tab at any point. Non-kept files are moved, never deleted. The server keeps running until you stop it from the terminal, so reopening this URL picks up where you left off."));
+  frag.appendChild(h("p", "Confirm and skip apply immediately — there's no save step and nothing is left half-done, so it's safe to close this tab at any point. Non-kept files are moved, never deleted. Closing the tab leaves the server running, so reopening this URL picks up where you left off."));
+  frag.appendChild(h("p", "Quit in the top bar (or Q) stops the program itself, for every page on this URL — use it when you're done, especially if the scan is running on a machine you'd otherwise have to go and find a terminal on. It asks first, and it can't be undone from here."));
   return frag;
 }
-
-function closeHelp() {
-  $("help-sheet").hidden = true;
-  if (lastFocused && lastFocused.focus) lastFocused.focus();
-}
-
-function helpOpen() { return !$("help-sheet").hidden; }
 
 // aria-modal is a claim the browser doesn't enforce: without this, Tab walks
 // straight out of the sheet and into the page behind it.
 function trapTab(e) {
-  const panel = document.querySelector(".sheet-panel");
+  const panel = sheetPanel();
   const items = Array.from(panel.querySelectorAll(
     'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
   )).filter((el) => !el.disabled && el.offsetParent !== null);
@@ -1397,6 +1414,74 @@ function trapTab(e) {
 }
 
 // ---------------------------------------------------------------------------
+// Quit: stop the server from the page. The review is meant to be driven from
+// another machine -- a NAS or a headless box has no terminal to Ctrl-C -- so
+// the exit lives here too. It asks first, because from this page there is no
+// way back once the server is gone.
+// ---------------------------------------------------------------------------
+
+let quitting = false;
+
+function groupWord(n) { return `${n} group${n === 1 ? "" : "s"}`; }
+
+function showQuitDialog() {
+  const { confirmed, skipped, pending, total } = reviewCounts();
+  const dry = !!(state.params && state.params.dry_run);
+  $("quit-lead").textContent =
+    "This stops the program, not just this page. Reviewing again means starting "
+    + "find_duplicates.py from a terminal on the machine holding the photos.";
+
+  const bits = [];
+  if (state.status === "scanning") bits.push("A scan is running — quitting ends it and its results are lost.");
+  if (total) {
+    bits.push(`${confirmed} kept, ${skipped} skipped, ${pending} still to review.`);
+    if (confirmed && !dry) bits.push("Every decision already applied to disk; moving a file back out afterwards is a manual job.");
+  } else {
+    bits.push("Nothing has been reviewed yet.");
+  }
+  $("quit-detail").textContent = bits.join(" ");
+  // Cancel, not Quit: a blind Enter on a dialog that appeared unexpectedly
+  // must not be the destructive answer.
+  openSheet("quit-sheet", $("quit-cancel"));
+}
+
+async function quitNow() {
+  quitting = true;
+  $("quit-confirm").disabled = true;
+  $("quit-cancel").disabled = true;
+  $("quit-confirm").textContent = "Stopping…";
+  try {
+    await api("/api/quit", { method: "POST" });
+  } catch {
+    // The socket can die before the reply lands. The server is on its way out
+    // either way, and the curtain below says exactly that.
+  }
+  if (state.eventSource) { state.eventSource.close(); state.eventSource = null; }
+  clearTimeout(progressGraceTimer);
+  progressGraceTimer = null;
+  clearTimeout(showToast._t);
+  $("toast").hidden = true;
+  closeSheet();
+  showFarewell();
+}
+
+function showFarewell() {
+  const { confirmed, skipped, pending, total } = reviewCounts();
+  $("farewell-tally").textContent = total
+    ? `${groupWord(total)} — ${confirmed} kept, ${skipped} skipped, ${pending} left unreviewed.`
+    : "No groups were reviewed.";
+  const dry = !!(state.params && state.params.dry_run);
+  $("farewell-note").textContent = dry
+    ? "Dry run: no file was moved. You can close this tab."
+    : (confirmed
+        ? `The files you kept are where they always were; the rest are in ${state.params.dest}. You can close this tab.`
+        : "No file was moved. You can close this tab.");
+  $("farewell").hidden = false;
+  $("farewell").querySelector(".farewell-panel").focus();
+  document.title = "Stopped — duplicate review";
+}
+
+// ---------------------------------------------------------------------------
 // Keyboard shortcuts. Bindings read KeyboardEvent.code (physical key
 // position) rather than .key: an alternate layout remaps .key to a
 // different character before the browser sees it.
@@ -1405,9 +1490,14 @@ function trapTab(e) {
 function attachKeyboardHandler() {
   document.addEventListener("keydown", (e) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (quitting) return;  // the server is gone; every shortcut would fail
 
-    if (helpOpen()) {
-      if (e.code === "Escape" || e.key === "?" || e.code === "F1") { closeHelp(); e.preventDefault(); }
+    if (openSheetId) {
+      // Enter and Space stay with whatever button holds focus -- in the quit
+      // dialog that is Cancel, and swallowing them here would make the
+      // destructive button the one a blind Enter hits.
+      const helpKey = openSheetId === "help-sheet" && (e.key === "?" || e.code === "F1");
+      if (e.code === "Escape" || helpKey) { closeSheet(); e.preventDefault(); }
       else if (e.code === "Tab") trapTab(e);
       return;
     }
@@ -1455,6 +1545,9 @@ function attachKeyboardHandler() {
     else if (e.code === "KeyZ") { setZoom(!view.zoom); e.preventDefault(); }
     else if (e.code === "KeyO") { openFullRes(); e.preventDefault(); }
     else if (e.code === "KeyM") { setLedgerOpen(!state.ledgerOpen); e.preventDefault(); }
+    // Opens the dialog, never quits outright: one stray keypress must not end
+    // a review that only a terminal on the scanning machine can restart.
+    else if (e.code === "KeyQ") { showQuitDialog(); e.preventDefault(); }
     else if (e.code.startsWith("Digit")) {
       const n = parseInt(e.code.slice(5), 10);
       if (n >= 1 && n <= 9 && state.detail && n <= state.detail.paths.length) { pick(n - 1); e.preventDefault(); }
@@ -1472,8 +1565,12 @@ function attachHandlers() {
   $("btn-skip").addEventListener("click", skipGroup);
   $("btn-open").addEventListener("click", openFullRes);
   $("btn-help").addEventListener("click", showHelp);
-  $("help-close").addEventListener("click", closeHelp);
-  $("help-scrim").addEventListener("click", closeHelp);
+  $("help-close").addEventListener("click", closeSheet);
+  $("help-scrim").addEventListener("click", closeSheet);
+  $("btn-quit").addEventListener("click", showQuitDialog);
+  $("quit-cancel").addEventListener("click", closeSheet);
+  $("quit-scrim").addEventListener("click", closeSheet);
+  $("quit-confirm").addEventListener("click", quitNow);
   $("ledger-toggle").addEventListener("click", () => setLedgerOpen(!state.ledgerOpen));
 
   $("scan-panel").addEventListener("submit", async (e) => {

@@ -58,7 +58,7 @@ cd find_duplicates
 find-duplicates [directory] [options]
 ```
 
-Prints a tokened URL (`http://127.0.0.1:8737/?token=...` by default) and opens it in your browser; the server keeps running until Ctrl-C rather than exiting when a review finishes. The page's control panel lets you change directory/threshold/recursive/dest and trigger a rescan without restarting the process. To review from another device on your network, bind to all interfaces:
+Prints a tokened URL (`http://127.0.0.1:8737/?token=...` by default) and opens it in your browser; the server keeps running until you stop it rather than exiting when a review finishes — Ctrl-C in the terminal, or **Quit** in the page's top bar (`q`), which matters when the scan is running on a machine whose terminal isn't in front of you. The page's control panel lets you change directory/threshold/recursive/dest and trigger a rescan without restarting the process. To review from another device on your network, bind to all interfaces:
 
 ```bash
 find-duplicates /path/to/photos --host 0.0.0.0
@@ -66,7 +66,7 @@ find-duplicates /path/to/photos --host 0.0.0.0
 
 ...and open the printed LAN URL (with its token) from the other machine's browser. The URL's token is required for every request — treat it like a password on a shared network.
 
-Keyboard shortcuts: arrows to change the keeper selection, digit keys to jump to an image by number, `c`/`Enter` to confirm, `s`/`Delete`/`Backspace` to skip, `z`/click the stage to inspect at 1:1, `o` to open the full-res original, `?`/`F1` for help. The sidebar marks each group's status (pending/kept/skipped) with a shape-and-color dot; a "close call" (top two picks scored nearly the same) shows on the row's tooltip and the active group's ledger note, not as a sidebar mark of its own — most groups in a real scan are close calls, so flagging every row would stop meaning anything.
+Keyboard shortcuts: arrows to change the keeper selection, digit keys to jump to an image by number, `c`/`Enter` to confirm, `s`/`Delete`/`Backspace` to skip, `z`/click the stage to inspect at 1:1, `o` to open the full-res original, `q` to quit the server, `?`/`F1` for help. The sidebar marks each group's status (pending/kept/skipped) with a shape-and-color dot; a "close call" (top two picks scored nearly the same) shows on the row's tooltip and the active group's ledger note, not as a sidebar mark of its own — most groups in a real scan are close calls, so flagging every row would stop meaning anything.
 
 ## CLI options
 

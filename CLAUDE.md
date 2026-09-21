@@ -33,6 +33,7 @@ python3 tests/test_heic_support.py
 python3 tests/test_help_and_labels.py
 python3 tests/test_name_hint.py
 python3 tests/test_optional_metrics.py
+python3 tests/test_quit.py
 python3 tests/test_recursive_scan.py
 python3 tests/test_scan_progress.py
 python3 tests/test_score_group.py
@@ -56,7 +57,7 @@ Five modules, layered so the bottom two never know about the web:
 
 - **`compare_image_quality.py`** — per-image quality metrics (`analyze`): laplacian sharpness, FFT-based `effective_resolution` (resists fake upscaling), noise, blockiness. Also runs standalone on two files. `brisque`/`niqe` are optional imports that stay unresolved by design, and each **latches after its first failure** (`_brisque_unavailable`/`_niqe_unavailable`) — a missing package is cheap to retry, but `brisque` 0.2.0 computes its whole feature set before dying on modern numpy, which measured 418 ms per image (analyze 25 ms → 443 ms) to return `None` every time. Don't remove the latch, and don't add either package to `install.sh`: `brisque` costs ~40 MB across 7 packages for a metric that currently never returns a number, and `pyiqa` pulls 61 packages including `transformers`, `tensorboard` and an `opencv-python` that conflicts with the project's `opencv-python-headless`. `tests/test_optional_metrics.py` covers the latch.
 - **`duplicates_core.py`** — the whole scan/score/move pipeline. `find_images` → `group_duplicates` (perceptual hash + `UnionFind`) → `analyze_paths` → `score_group` → `build_groups`, returning `list[Group]`. Applying decisions: `apply_group`, `apply_pick`, `unapply`, `auto_apply_groups`.
-- **`duplicates_web.py`** — FastAPI app (`create_app`) plus the `Session` dataclass holding all server-side state. Routes: `/api/state`, `/api/group/{i}` and its `pick`/`confirm`/`skip` posts, `/api/thumb|stage|full/{i}/{j}`, `/api/scan`, `/api/progress` (SSE), `/api/metrics-info`, `/api/group/{i}/name-hint`, and a token-gated `/static/{path}`.
+- **`duplicates_web.py`** — FastAPI app (`create_app`) plus the `Session` dataclass holding all server-side state. Routes: `/api/state`, `/api/group/{i}` and its `pick`/`confirm`/`skip` posts, `/api/thumb|stage|full/{i}/{j}`, `/api/scan`, `/api/progress` (SSE), `/api/metrics-info`, `/api/group/{i}/name-hint`, `/api/quit`, and a token-gated `/static/{path}`.
 - **`find_duplicates.py`** — CLI entry point, `--auto` path, signal handling, uvicorn startup.
 - **`name_hint.py`** — asks TypeSafe's Jev which duplicate's *filename* reads as the original, and whether the group is one photo at all. Stdlib-only HTTP, advisory, served by `/api/group/{i}/name-hint` and shown in the ledger note. See "Name hint" below.
 
@@ -116,6 +117,7 @@ Deliberately no `METRIC_WEIGHTS` entry. That would drag `METRIC_DESCRIPTIONS`/`M
 - Read the design-direction comment at the top of `static/index.html` before changing layout. The stage swap is deliberately transition-free: a cross-fade hides the very difference being judged.
 - Bind keyboard shortcuts on `KeyboardEvent.code`, not `.key` — an alternate layout remaps `.key` before the browser sees it.
 - `install.sh` is POSIX sh, not bash (the curl-piped invocation ignores the shebang): no arrays, no `[[ ]]`, no `pipefail`.
+- **`POST /api/quit` deliberately reuses the Ctrl-C teardown**: `request_exit` sends this process SIGINT rather than growing a second shutdown path, so everything the next bullet describes covers it too. `os.kill`, not `signal.raise_signal` — the route's exit rides a `BackgroundTask`, which runs on a worker thread, and `raise_signal` would fire the handler there instead of the main thread. The background task is also what gets the 200 to the browser before the process dies; without it the page draws a lost-connection error instead of its goodbye (`tests/test_quit.py` asserts on the received body, which is the only part a patched-`request_exit` test can't prove).
 - Ctrl-C shutdown has two moving parts, both regression-tested in `tests/test_shutdown.py`. Scans run in `duplicates_web._scan_executor`, not the loop's default executor (asyncio's teardown joins the default one, so Ctrl-C mid-scan would hang until the scan finished). And `main()` drives `server.serve()` on a bare loop then calls `os._exit(0)` (`asyncio.run`'s SIGINT handler turns a quick second Ctrl-C into a lifespan-cancel traceback). `main()` also sets `duplicates_web.shutting_down` from the signal handler so an open `/api/progress` stream ends itself, and flushes stdout/stderr, which `os._exit` skips (block-buffered under a redirect, so the tokened URL would otherwise be lost).
 - Don't `pkill -f find_duplicates.py` while manually testing in a browser — it kills the server under test and the connection failure reads as a product bug.
 

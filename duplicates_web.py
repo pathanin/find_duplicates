@@ -21,7 +21,9 @@ rescan leaves the previous state in place rather than half-updating it.
 import asyncio
 import io
 import json
+import os
 import secrets
+import signal
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -30,6 +32,7 @@ from threading import Event, Lock
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
 from PIL import Image as PILImage
 
@@ -145,6 +148,21 @@ _scan_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="scan")
 # waiting on it for the rest of an in-flight scan; polling this lets the
 # stream end itself instead of being cancelled on a timeout.
 shutting_down = Event()
+
+
+def request_exit() -> None:
+    """Stop the whole process, as POST /api/quit asks. Sends this process
+    the same SIGINT Ctrl-C would: uvicorn's handler ends the SSE streams,
+    lets in-flight requests (a file move) finish, and returns from serve()
+    into find_duplicates.main()'s exit -- the path tests/test_shutdown.py
+    already covers. os.kill rather than signal.raise_signal because a sync
+    background task runs on a worker thread, and raise_signal would fire
+    there; a process-directed signal reaches the main thread.
+
+    Patched out in tests -- an unpatched call would stop the test runner."""
+    shutting_down.set()
+    print("Stopped from the review page.", flush=True)
+    os.kill(os.getpid(), signal.SIGINT)
 
 
 def _launch_scan(
@@ -587,6 +605,17 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
         )
         _launch_scan(session, new_params, asyncio.get_running_loop())
         return JSONResponse({"status": "scanning"})
+
+    @app.post("/api/quit")
+    async def quit_app(_: str = Depends(require_token)) -> JSONResponse:
+        """Stop the server from the page itself -- the review runs on a
+        headless box or a NAS as often as on this machine, and there is no
+        terminal to Ctrl-C there. No _require_not_scanning guard: Ctrl-C
+        doesn't have one either, and quitting mid-scan loses nothing but the
+        scan. The exit rides a background task so the response is written
+        before the signal lands; the page needs it to draw its goodbye
+        rather than a lost-connection error."""
+        return JSONResponse({"status": "stopping"}, background=BackgroundTask(request_exit))
 
     @app.get("/api/progress")
     async def progress_stream(request: Request, _: str = Depends(require_token)) -> StreamingResponse:

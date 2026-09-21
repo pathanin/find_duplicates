@@ -789,6 +789,73 @@ button { font-family: inherit; }
 .sheet-body .keys dd { margin: 0; color: var(--charcoal); }
 
 /* --------------------------------------------------------------------- */
+/* Quit: dialog + the curtain that replaces the page once the server is    */
+/* gone.                                                                   */
+/* --------------------------------------------------------------------- */
+
+/* Red, not the blue: blue means the file you keep, and this is the only
+   control on the page that ends something rather than choosing something. */
+.btn-quit { border-left-color: var(--hairline); }
+.btn-quit:hover { color: var(--error); }
+.btn-quit:active { color: var(--bloom-wine); }
+
+.btn-danger { background: var(--error); color: var(--on-ink); }
+.btn-danger:hover { background: var(--bloom-wine); }
+.btn-danger:active { background: var(--ink); }
+.btn-danger:disabled { background: var(--fog); color: var(--graphite); }
+
+/* A question, not a panel of reference material: centred and only as tall as
+   what it asks, so the answer buttons sit under the sentence that needs them
+   rather than a screen-height away. */
+.sheet-dialog {
+  top: 50%;
+  left: 50%;
+  right: auto;
+  bottom: auto;
+  transform: translate(-50%, -50%);
+  width: min(460px, calc(100% - 32px));
+  border: 1px solid var(--ink);
+}
+.sheet-dialog .sheet-body { flex: 0 0 auto; padding: 20px; }
+.sheet-dialog .quit-lead { font: var(--body-md); margin-bottom: 12px; }
+.sheet-dialog .quit-detail { color: var(--graphite); margin-bottom: 0; }
+.sheet-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--hairline-strong);
+}
+
+/* Opaque and over everything: after the exit the thumbnails, the stage
+   renders and the progress stream are all dead URLs, and a review screen
+   that has quietly stopped answering is worse than a plain goodbye. */
+.farewell {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--ink);
+}
+.farewell[hidden] { display: none; }
+.farewell-panel { max-width: 54ch; color: var(--on-ink); }
+.farewell-panel:focus { outline: none; }
+.farewell-panel::before {
+  content: "";
+  display: block;
+  width: 28px;
+  height: 2px;
+  margin-bottom: 20px;
+  background: var(--primary-bright);
+}
+.farewell-panel h2 { font: var(--display-md); margin-bottom: 12px; }
+.farewell-tally { font: var(--body-lg); margin-bottom: 8px; }
+.farewell-note { font: var(--caption-md); color: var(--steel); }
+
+/* --------------------------------------------------------------------- */
 /* Toast                                                                  */
 /* --------------------------------------------------------------------- */
 

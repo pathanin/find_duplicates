@@ -45,6 +45,9 @@
 
   <button type="button" id="btn-help" class="btn btn-quiet" aria-haspopup="dialog"
     title="Metrics, scoring and keyboard shortcuts. Shortcut: ? or F1">Help</button>
+
+  <button type="button" id="btn-quit" class="btn btn-quiet btn-quit" aria-haspopup="dialog"
+    title="Stop the server and end this review. Shortcut: Q">Quit</button>
 </header>
 
 <form class="scanpanel" id="scan-panel" hidden>
@@ -150,6 +153,37 @@
       <button type="button" id="help-close" class="btn btn-quiet">Close</button>
     </div>
     <div class="sheet-body" id="help-body"></div>
+  </div>
+</div>
+
+<!-- Quitting is the one action with no undo from this page: the server is
+     gone, and on a NAS or a headless box the terminal that could restart it
+     is somewhere else. So it asks, and Cancel holds the focus. -->
+<div class="sheet" id="quit-sheet" hidden>
+  <div class="sheet-scrim" id="quit-scrim"></div>
+  <div class="sheet-panel sheet-dialog" role="dialog" aria-modal="true" aria-labelledby="quit-title" tabindex="-1">
+    <div class="sheet-head">
+      <h2 id="quit-title">Stop the server?</h2>
+    </div>
+    <div class="sheet-body">
+      <p class="quit-lead" id="quit-lead"></p>
+      <p class="quit-detail" id="quit-detail"></p>
+    </div>
+    <div class="sheet-foot">
+      <button type="button" id="quit-cancel" class="btn btn-ghost">Cancel</button>
+      <button type="button" id="quit-confirm" class="btn btn-danger">Quit</button>
+    </div>
+  </div>
+</div>
+
+<!-- After the exit every image URL, every fetch and the progress stream are
+     dead ends. Cover the page rather than leave a review screen that quietly
+     stops answering. -->
+<div class="farewell" id="farewell" hidden>
+  <div class="farewell-panel" role="status" tabindex="-1">
+    <h2>Server stopped</h2>
+    <p class="farewell-tally" id="farewell-tally"></p>
+    <p class="farewell-note" id="farewell-note"></p>
   </div>
 </div>
 
