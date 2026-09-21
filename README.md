@@ -58,7 +58,7 @@ cd find_duplicates
 find-duplicates [directory] [options]
 ```
 
-Prints a tokened URL (`http://127.0.0.1:8737/?token=...` by default) and opens it in your browser; the server keeps running until you stop it rather than exiting when a review finishes — Ctrl-C in the terminal, or **Quit** in the page's top bar (`q`), which matters when the scan is running on a machine whose terminal isn't in front of you. The page's control panel lets you change directory/threshold/recursive/dest and trigger a rescan without restarting the process. To review from another device on your network, bind to all interfaces:
+Prints a tokened URL (`http://127.0.0.1:8737/?token=...` by default) and opens it in your browser; the server keeps running until you stop it rather than exiting when a review finishes — Ctrl-C in the terminal, or **Quit** in the page's top bar (`q`), which stops the server on the first press with no confirmation and closes the tab where the browser allows it — that one matters when the scan is running on a machine whose terminal isn't in front of you. The page's control panel lets you change directory/threshold/recursive/dest and trigger a rescan without restarting the process. To review from another device on your network, bind to all interfaces:
 
 ```bash
 find-duplicates /path/to/photos --host 0.0.0.0

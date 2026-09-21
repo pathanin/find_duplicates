@@ -25,10 +25,11 @@
   anchored bottom-right. The measurement ledger stacks under the strip and
   opens by default only where the viewport can seat it without cutting into
   the stage; below that it stays one hairline header, on M.
-  LAST VIEWPORT: Quit sits at the end of the command bar, asks in a centred
-  460px dialog with Cancel holding focus, and on yes the whole page goes
-  behind an ink curtain - after the exit every image URL and every fetch on
-  this page is a dead end, so it says so instead of rotting in place.
+  LAST VIEWPORT: Quit sits at the end of the command bar and acts at once -
+  it stops the server and closes the tab. Where the browser refuses to close
+  a tab it didn't open, an ink curtain takes the page instead: after the exit
+  every image URL and every fetch here is a dead end, so it says so rather
+  than rotting in place.
   FORM: registered stage, candidate 4 of the ordered structural list; seed
   key e65334a9, assigned index 4. No staging challenger committed - the one
   dealt (held-failure tableau) has no failure state to hold in a review loop.
@@ -50,8 +51,8 @@
   <button type="button" id="btn-help" class="btn btn-quiet" aria-haspopup="dialog"
     title="Metrics, scoring and keyboard shortcuts. Shortcut: ? or F1">Help</button>
 
-  <button type="button" id="btn-quit" class="btn btn-quiet btn-quit" aria-haspopup="dialog"
-    title="Stop the server and end this review. Shortcut: Q">Quit</button>
+  <button type="button" id="btn-quit" class="btn btn-quiet btn-quit"
+    title="Stop the server now and end this review. Shortcut: Q">Quit</button>
 </header>
 
 <form class="scanpanel" id="scan-panel" hidden>
@@ -157,26 +158,6 @@
       <button type="button" id="help-close" class="btn btn-quiet">Close</button>
     </div>
     <div class="sheet-body" id="help-body"></div>
-  </div>
-</div>
-
-<!-- Quitting is the one action with no undo from this page: the server is
-     gone, and on a NAS or a headless box the terminal that could restart it
-     is somewhere else. So it asks, and Cancel holds the focus. -->
-<div class="sheet" id="quit-sheet" hidden>
-  <div class="sheet-scrim" id="quit-scrim"></div>
-  <div class="sheet-panel sheet-dialog" role="dialog" aria-modal="true" aria-labelledby="quit-title" tabindex="-1">
-    <div class="sheet-head">
-      <h2 id="quit-title">Stop the server?</h2>
-    </div>
-    <div class="sheet-body">
-      <p class="quit-lead" id="quit-lead"></p>
-      <p class="quit-detail" id="quit-detail"></p>
-    </div>
-    <div class="sheet-foot">
-      <button type="button" id="quit-cancel" class="btn btn-ghost">Cancel</button>
-      <button type="button" id="quit-confirm" class="btn btn-danger">Quit</button>
-    </div>
   </div>
 </div>
 

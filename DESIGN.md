@@ -467,8 +467,6 @@ the checkbox tick, both drawn from borders.
   deep blue. Used for Help, Open full-res, Close and Quit — Quit takes a left
   hairline so the command bar's cells stay separated, and its hover goes error
   red rather than blue, since blue here means the file you keep.
-- **Danger:** error-red ground, white label. Hover goes wine, active goes ink.
-  Used for exactly one control: the Quit button inside the quit dialog.
 - **Focus:** a 2px blue outline offset 1px, globally; inside the stage and the
   candidate strip the outline switches to white, because blue on ink is not
   visible enough to steer by.
@@ -576,15 +574,15 @@ the checkbox tick, both drawn from borders.
   built from `/api/metrics-info` rather than hardcoded, so a change to metric
   weights or descriptions in the core reaches the UI without an edit here.
 
-### Quit dialog and stopped curtain
-- The dialog is a centred paper panel, `min(460px, 100% - 32px)` wide, 1px ink
-  border, over the same 40%-ink scrim as the help sheet — as short as the
-  question it asks, so the two answers sit under the sentence that needs them.
-  Its body is a Body MD lead (what stopping costs) over a graphite Caption MD
-  line (what the review stands at), and its foot is Cancel, then Quit in
-  danger red. **Cancel holds focus on open**: a blind Enter on a dialog that
-  appeared unexpectedly must not be the destructive answer.
-- The curtain that replaces the page after the exit is a full-viewport ink
+### Stopped curtain
+- **Quit acts on the first press** — no confirmation step. It stops the server
+  and closes the tab; the review has no save state to lose, so a second click
+  would only stand between the reviewer and the thing they asked for.
+- A browser only closes a tab its own script opened, and refuses silently —
+  which covers most real cases here, since the tab comes from the printed URL
+  or `webbrowser.open`, not from a script. The curtain is the fallback for
+  that refusal, and the state most reviewers will actually see: a
+  full-viewport ink
   ground: a blue mark rule, a Display MD heading, the final tally in Body LG
   and a steel Caption MD line saying where the moved files went. Everything
   behind it is marked `inert`, because every image URL, fetch and progress
@@ -598,11 +596,8 @@ the checkbox tick, both drawn from borders.
   arrows flip candidates and step groups; Shift+arrows pan the stage while
   inspecting at 1:1 (one tenth of the frame per press, so zoomed inspection is
   reachable without a pointer); Z toggles inspect; O opens full-res; M toggles
-  the ledger; ? or F1 opens help; Q asks to quit; Escape closes.
-- **Q opens the dialog, it never quits outright.** One stray keypress must not
-  end a review that only a terminal on the scanning machine can restart — the
-  same reason the button asks rather than acts.
-- **Destructive keys ignore key repeat** (`e.repeat` returns early) and **yield
+  the ledger; ? or F1 opens help; Q quits; Escape closes.
+- **Destructive keys ignore key repeat** (Q is one of them; `e.repeat` returns early) and **yield
   to a focused control** (`button`, `a[href]`, `summary`), so holding Enter
   cannot walk through group after group and Enter on a focused button does that
   button's job. Arrows repeat on purpose.
