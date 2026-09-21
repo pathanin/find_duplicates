@@ -198,12 +198,17 @@ def main() -> None:
     else:
         display_host = args.host
     url = f"http://{display_host}:{args.port}/?token={token}"
-    print(f"Scanning {directory} ...")
-    print(f"Open: {url}")
+    # flush: under a redirect stdout is block-buffered, and these lines are
+    # written once at startup. Without it the tokened URL only appears when
+    # the process exits -- useless on the headless box it exists for, where
+    # the log is the only way to read the URL of a server still running.
+    print(f"Scanning {directory} ...", flush=True)
+    print(f"Open: {url}", flush=True)
     if not load_key():
         # Named once at startup rather than in the page: with no key the
         # hint route just returns null and the UI has nothing to explain.
-        print(f"Filename hint off (no TypeSafe key). Enable: {sys.argv[0]} --set-typesafe-key")
+        print(f"Filename hint off (no TypeSafe key). Enable: {sys.argv[0]} --set-typesafe-key",
+              flush=True)
     if args.host in ("127.0.0.1", "localhost") and not args.no_browser:
         try:
             webbrowser.open(url)

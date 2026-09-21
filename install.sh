@@ -25,10 +25,14 @@ DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/find-duplicates"
 VENV_DIR="$DATA_DIR/venv"
 BIN_DIR="$HOME/.local/bin"
 
+# Every module the tool imports, in one list: it validates a candidate repo
+# root below AND is what gets copied into libexec, so a module added to the
+# repo can't reach one half and miss the other. name_hint.py did exactly
+# that -- the install ran clean and every run then died on its import.
 # duplicates_core.py + compare_image_quality.py are the shared scan/score/
 # move pipeline; duplicates_web.py + find_duplicates.py + static/ are the
-# (only) front end.
-REQUIRED_FILES="duplicates_core.py compare_image_quality.py duplicates_web.py find_duplicates.py"
+# (only) front end; name_hint.py is the optional filename hint.
+REQUIRED_FILES="duplicates_core.py compare_image_quality.py duplicates_web.py find_duplicates.py name_hint.py"
 
 have_required_files() {
   # $1 is the candidate root directory.
@@ -130,8 +134,9 @@ echo "==> Installing scripts"
 # this can't degrade into an rm -rf of a bare /libexec.
 rm -rf "$DATA_DIR/libexec"
 mkdir -p "$DATA_DIR/libexec"
-cp "$REPO_ROOT/duplicates_core.py" "$REPO_ROOT/compare_image_quality.py" \
-   "$REPO_ROOT/duplicates_web.py" "$REPO_ROOT/find_duplicates.py" "$DATA_DIR/libexec/"
+for f in $REQUIRED_FILES; do
+  cp "$REPO_ROOT/$f" "$DATA_DIR/libexec/"
+done
 cp -r "$REPO_ROOT/static" "$DATA_DIR/libexec/static"
 
 mkdir -p "$BIN_DIR"

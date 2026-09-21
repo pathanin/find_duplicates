@@ -16,7 +16,7 @@ python3 compare_image_quality.py imageA.jpg imageB.jpg   # standalone 2-image co
 
 Without `--auto` this prints a tokened URL and runs until Ctrl-C — it does *not* exit when a review finishes. Rescans happen from the page's own control panel (`POST /api/scan`), not by restarting the process. `--auto` keeps each group's top-scored file and never starts the web server.
 
-Runtime deps: `numpy opencv-python-headless pillow pillow-heif fastapi uvicorn`. Install via `./install.sh`; **add any new dependency to that script's `pip install` block**, since there is no other manifest.
+Runtime deps: `numpy opencv-python-headless pillow pillow-heif fastapi uvicorn`. Install via `./install.sh`; **add any new dependency to that script's `pip install` block**, since there is no other manifest. A new *module* goes in that script's `REQUIRED_FILES` — one list both validates the repo root and drives the copy into `libexec/`, and `tests/test_install_file_list.py` walks the import graph to check it. Running from a clone hides an omission completely; the installed CLI is where it surfaces, as a ModuleNotFoundError on every run.
 
 ## Tests
 
@@ -31,6 +31,7 @@ python3 tests/test_fast_scan.py
 python3 tests/test_group_ordering.py
 python3 tests/test_heic_support.py
 python3 tests/test_help_and_labels.py
+python3 tests/test_install_file_list.py
 python3 tests/test_name_hint.py
 python3 tests/test_optional_metrics.py
 python3 tests/test_quit.py
