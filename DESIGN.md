@@ -464,7 +464,11 @@ the checkbox tick, both drawn from borders.
 - **Ghost:** transparent with a strong hairline stroke. Hover inverts to a solid
   ink block with white text. Used for Skip group.
 - **Quiet:** no stroke, graphite label, 0 12px padding. Hover goes blue, active
-  deep blue. Used for Help, Open full-res and Close.
+  deep blue. Used for Help, Open full-res, Close and Quit — Quit takes a left
+  hairline so the command bar's cells stay separated, and its hover goes error
+  red rather than blue, since blue here means the file you keep.
+- **Danger:** error-red ground, white label. Hover goes wine, active goes ink.
+  Used for exactly one control: the Quit button inside the quit dialog.
 - **Focus:** a 2px blue outline offset 1px, globally; inside the stage and the
   candidate strip the outline switches to white, because blue on ink is not
   visible enough to steer by.
@@ -572,6 +576,20 @@ the checkbox tick, both drawn from borders.
   built from `/api/metrics-info` rather than hardcoded, so a change to metric
   weights or descriptions in the core reaches the UI without an edit here.
 
+### Quit dialog and stopped curtain
+- The dialog is a centred paper panel, `min(460px, 100% - 32px)` wide, 1px ink
+  border, over the same 40%-ink scrim as the help sheet — as short as the
+  question it asks, so the two answers sit under the sentence that needs them.
+  Its body is a Body MD lead (what stopping costs) over a graphite Caption MD
+  line (what the review stands at), and its foot is Cancel, then Quit in
+  danger red. **Cancel holds focus on open**: a blind Enter on a dialog that
+  appeared unexpectedly must not be the destructive answer.
+- The curtain that replaces the page after the exit is a full-viewport ink
+  ground: a blue mark rule, a Display MD heading, the final tally in Body LG
+  and a steel Caption MD line saying where the moved files went. Everything
+  behind it is marked `inert`, because every image URL, fetch and progress
+  stream on that page is now a dead end.
+
 ### Keyboard model
 - **All bindings read `KeyboardEvent.code`, never `.key`.** Alternate layouts
   remap letter keys before the app sees them; this is a hard product constraint,
@@ -580,7 +598,10 @@ the checkbox tick, both drawn from borders.
   arrows flip candidates and step groups; Shift+arrows pan the stage while
   inspecting at 1:1 (one tenth of the frame per press, so zoomed inspection is
   reachable without a pointer); Z toggles inspect; O opens full-res; M toggles
-  the ledger; ? or F1 opens help; Escape closes.
+  the ledger; ? or F1 opens help; Q asks to quit; Escape closes.
+- **Q opens the dialog, it never quits outright.** One stray keypress must not
+  end a review that only a terminal on the scanning machine can restart — the
+  same reason the button asks rather than acts.
 - **Destructive keys ignore key repeat** (`e.repeat` returns early) and **yield
   to a focused control** (`button`, `a[href]`, `summary`), so holding Enter
   cannot walk through group after group and Enter on a focused button does that
@@ -610,8 +631,9 @@ the checkbox tick, both drawn from borders.
   cross-fade hides the exact difference being judged. Motion in this system is
   the scan progress fill (`width 180ms cubic-bezier(0.16, 1, 0.3, 1)`) and
   nothing else, and `prefers-reduced-motion` collapses all of it to 1ms.
-- **Don't** let teal, error red or coral pick up a second meaning. A new state
-  gets a new hue or goes neutral.
+- **Don't** let teal or coral pick up a second meaning. Error red carries two,
+  and only two: a failure, and the one control that ends the session. A new
+  state gets a new hue or goes neutral.
 - **Don't** use steel for text on paper — it is ~1.8:1 and vanishes inside the
   tinted keeper column. Graphite is the floor for secondary text on light
   grounds.

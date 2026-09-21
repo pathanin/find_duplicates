@@ -1481,6 +1481,13 @@ function showFarewell() {
         ? `The files you kept are where they always were; the rest are in ${state.params.dest}. You can close this tab.`
         : "No file was moved. You can close this tab.");
   $("farewell").hidden = false;
+  // The curtain covers the page but doesn't remove it from the tab order:
+  // without this, Tab still reaches Confirm keep underneath and fires a
+  // request at a server that is gone, with the error toast painting beneath
+  // the curtain where nobody sees it.
+  for (const el of document.body.children) {
+    if (el.id !== "farewell") el.inert = true;
+  }
   $("farewell").querySelector(".farewell-panel").focus();
   document.title = "Stopped — duplicate review";
 }
