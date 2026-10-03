@@ -307,6 +307,10 @@ def _render_scaled_jpeg(path: Path, max_side: int, quality: int) -> bytes:
     one code path instead of drifting apart."""
     try:
         img = PILImage.open(path)
+        # JPEG only (a no-op elsewhere): libjpeg decodes at 1/2-1/8 scale,
+        # still >= 2x the box like thumbnail()'s own reducing_gap. A 100 MP
+        # file otherwise decodes all of itself for an 800 px preview.
+        img.draft("RGB", (2 * max_side, 2 * max_side))
         img = img.convert("RGB")
         img.thumbnail((max_side, max_side))
     except Exception:  # noqa: BLE001 -- an undecodable file must not 500 the review

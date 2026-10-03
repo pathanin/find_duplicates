@@ -14,6 +14,7 @@ calls it directly instead of allocating a 180 MP image.
 Run: python3 tests/test_large_image.py
 """
 
+import io
 import sys
 import tempfile
 import threading
@@ -77,11 +78,41 @@ def test_analyze_stays_under_memory_budget() -> None:
     print("  ok  concurrent analyze stays under the byte budget; oversized file runs alone")
 
 
+def test_preview_render_uses_reduced_jpeg_decode() -> None:
+    """A stage/thumb render of a 100 MP JPEG used to decode every pixel and
+    convert to RGB first: ~1.5 GB peak and 0.7 s for an 800-1600 px preview.
+    draft() lets libjpeg decode at 1/2-1/8 scale instead. It must keep at
+    least 2x the target, the same margin Pillow's own reducing_gap keeps, or
+    the preview the keep decision is made on loses detail."""
+    import duplicates_web
+    from PIL import JpegImagePlugin
+
+    calls = []
+    real_draft = JpegImagePlugin.JpegImageFile.draft
+
+    def spy(self, mode, size):
+        calls.append(size)
+        return real_draft(self, mode, size)
+
+    JpegImagePlugin.JpegImageFile.draft = spy
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "big.jpg"
+            PILImage.new("RGB", (4000, 3000), (200, 120, 40)).save(p)
+            out = PILImage.open(io.BytesIO(duplicates_web._render_scaled_jpeg(p, 800, 85)))
+    finally:
+        JpegImagePlugin.JpegImageFile.draft = real_draft
+    assert calls == [(1600, 1600)], f"expected one draft at 2x the box, got {calls}"
+    assert out.size == (800, 600), out.size
+    print("  ok  preview render drafts the JPEG at 2x the target box")
+
+
 def main() -> None:
     tests = [
         test_large_photos_pass_the_bomb_check,
         test_analyze_cost_reads_the_header,
         test_analyze_stays_under_memory_budget,
+        test_preview_render_uses_reduced_jpeg_decode,
     ]
     for test in tests:
         print(f"{test.__name__}:")
