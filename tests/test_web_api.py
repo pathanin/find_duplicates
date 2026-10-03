@@ -20,6 +20,7 @@ front end (install.sh does not install it).
 Run: python3 tests/test_web_api.py
 """
 
+import asyncio
 import io
 import shutil
 import sys
@@ -612,6 +613,39 @@ def test_page_and_assets_are_revalidated_not_heuristically_cached() -> None:
         print("  ok  the page and every static asset are served no-cache with an ETag")
 
 
+def test_image_renders_run_off_the_event_loop() -> None:
+    """A preview render of a 100 MP photo takes ~0.5 s. Run on the event
+    loop, every render froze the whole server -- state polls, keypress
+    confirms, the other thumbnails -- so a group of huge files queued up
+    seconds of dead UI."""
+    seen = []
+
+    def off_loop_render(path, max_side, quality):
+        try:
+            asyncio.get_running_loop()
+            seen.append("on loop")
+        except RuntimeError:
+            seen.append("off loop")
+        return b"jpeg"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp)
+        make_duplicate_set(directory, seed=1, n=2)
+        client, _ = _make_client(directory, directory / "_duplicates")
+        saved = web._render_scaled_jpeg
+        web._render_scaled_jpeg = off_loop_render
+        try:
+            with client:
+                _wait_ready(client)
+                for route in ("thumb", "stage"):
+                    r = client.get(f"/api/{route}/0/0", params={"token": TOKEN})
+                    assert r.status_code == 200, r.status_code
+        finally:
+            web._render_scaled_jpeg = saved
+    assert seen == ["off loop", "off loop"], seen
+    print("  ok  /api/thumb and /api/stage render on a worker thread")
+
+
 def main() -> None:
     tests = [
         test_data_endpoint_requires_token,
@@ -620,6 +654,7 @@ def main() -> None:
         test_initial_scan_populates_groups,
         test_group_and_thumb_404_for_out_of_range_index,
         test_stage_and_thumb_render_at_their_own_sizes,
+        test_image_renders_run_off_the_event_loop,
         test_group_detail_numeric_fields_match_their_display_strings,
         test_scan_rejects_invalid_directory_and_out_of_range_threshold,
         test_close_call_group_serializes_without_500,

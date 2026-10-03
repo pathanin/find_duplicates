@@ -477,9 +477,12 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
                     session.image_cache[(generation, i, j, max_side)] = cached
         return Response(content=cached, media_type="image/jpeg")
 
+    # Renders run on a worker thread (to_thread, like the name hint): a
+    # 100 MP photo takes ~0.5 s, and on the loop that froze every other
+    # request, keypress confirms included (tests/test_web_api.py).
     @app.get("/api/thumb/{i}/{j}")
     async def get_thumb(i: int, j: int, _: str = Depends(require_token)) -> Response:
-        return _cached_render(i, j, PREVIEW_MAX_SIDE, 85)
+        return await asyncio.to_thread(_cached_render, i, j, PREVIEW_MAX_SIDE, 85)
 
     @app.get("/api/stage/{i}/{j}")
     async def get_stage(i: int, j: int, _: str = Depends(require_token)) -> Response:
@@ -487,7 +490,7 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
         large enough to fill it without upscaling (see STAGE_MAX_SIDE), at a
         higher JPEG quality since this is the render the keeper decision is
         actually made on."""
-        return _cached_render(i, j, STAGE_MAX_SIDE, 92)
+        return await asyncio.to_thread(_cached_render, i, j, STAGE_MAX_SIDE, 92)
 
     @app.get("/api/full/{i}/{j}")
     async def get_full(i: int, j: int, _: str = Depends(require_token)) -> Response:
@@ -501,10 +504,11 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
         if not path.exists():
             raise HTTPException(404, "file no longer exists on disk")
         if path.suffix.lower() in HEIC_EXTS:
-            img = PILImage.open(path).convert("RGB")
-            buf = io.BytesIO()
-            img.save(buf, format="JPEG", quality=92)
-            return Response(content=buf.getvalue(), media_type="image/jpeg")
+            def transcode() -> bytes:
+                buf = io.BytesIO()
+                PILImage.open(path).convert("RGB").save(buf, format="JPEG", quality=92)
+                return buf.getvalue()
+            return Response(content=await asyncio.to_thread(transcode), media_type="image/jpeg")
         return FileResponse(path)
 
     def _require_generation(session: Session, gen: int | None) -> None:
