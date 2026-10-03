@@ -523,8 +523,10 @@ function stepZoom(dir) {
 }
 
 function setLevel(pct) {
-  const fit = fitLevel(stageBox());
-  view.zoom = pct / 100 > fit + 0.005;
+  // Against the slider's own floor (fitLevel rounded up), not the raw fit:
+  // a looser cutoff left zoom on at the floor, looking unzoomed, so the
+  // next click only switched it off.
+  view.zoom = pct > Math.min(Math.ceil(fitLevel(stageBox()) * 100), 100);
   if (view.zoom) view.level = pct / 100;
   setCenter(view.u, view.v);
   layoutStage();
@@ -743,6 +745,8 @@ function attachStageHandlers() {
   const zoomCtl = $("stage-zoom");
   ["pointerdown", "pointerup", "wheel"].forEach((t) => zoomCtl.addEventListener(t, (ev) => ev.stopPropagation()));
   $("zoom-slider").addEventListener("input", (ev) => setLevel(Number(ev.target.value)));
+  // A mouse drag shouldn't leave the slider holding the arrow keys.
+  $("zoom-slider").addEventListener("pointerup", (ev) => ev.target.blur());
 
   new ResizeObserver(() => layoutStage()).observe($("stage-frame"));
 }
@@ -1642,12 +1646,13 @@ function attachKeyboardHandler() {
     }
 
     const el = document.activeElement;
-    // A focused zoom slider keeps its arrow keys; Escape hands focus back.
+    // A focused zoom slider keeps only the keys that move it; every other
+    // shortcut still works, and Escape hands focus back.
     if (el && el.id === "zoom-slider") {
-      if (e.code === "Escape") { el.blur(); e.preventDefault(); }
-      return;
+      if (e.code === "Escape") { el.blur(); e.preventDefault(); return; }
+      if (/^(Arrow|Home$|End$|Page)/.test(e.code)) return;
     }
-    if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA")) {
+    else if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA")) {
       if (e.code === "Escape") { setScanPanelOpen(false); $("scope-toggle").focus(); e.preventDefault(); }
       return;
     }
