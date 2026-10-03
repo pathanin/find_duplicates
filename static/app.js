@@ -962,6 +962,33 @@ function setLedgerOpen(open) {
   layoutStage();
 }
 
+// Dragging the ledger header trades height between the stage and the table.
+// Growth is capped at the stage's 160px floor (.review's first row).
+function attachLedgerResize() {
+  const head = document.querySelector(".ledger-head");
+  const scroll = $("ledger-scroll");
+  head.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || e.target.closest("button")) return;
+    if (!state.ledgerOpen) setLedgerOpen(true);
+    const startY = e.clientY, startH = scroll.getBoundingClientRect().height;
+    const maxH = startH + $("stage").getBoundingClientRect().height - 160;
+    head.setPointerCapture(e.pointerId);
+    const move = (ev) => {
+      const h = Math.min(maxH, Math.max(0, startH + startY - ev.clientY));
+      scroll.style.height = scroll.style.maxHeight = h + "px";
+    };
+    const up = () => {
+      head.removeEventListener("pointermove", move);
+      head.removeEventListener("pointerup", up);
+      head.removeEventListener("pointercancel", up);
+    };
+    head.addEventListener("pointermove", move);
+    head.addEventListener("pointerup", up);
+    head.addEventListener("pointercancel", up);
+    e.preventDefault();
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Decision bar
 // ---------------------------------------------------------------------------
@@ -1733,6 +1760,7 @@ function attachHandlers() {
 
   attachStageHandlers();
   attachKeyboardHandler();
+  attachLedgerResize();
   window.addEventListener("resize", layoutStage);
 }
 
