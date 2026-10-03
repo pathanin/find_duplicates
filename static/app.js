@@ -33,8 +33,11 @@ const state = {
 // Stage view: which scene point is centred and whether we're inspecting at
 // 1:1. Kept in normalized image coordinates so it survives a flip between
 // candidates of different pixel dimensions -- inspecting the same corner of
-// the photo in every file is the whole point of the stage.
-const view = { zoom: false, u: 0.5, v: 0.5 };
+// the photo in every file is the whole point of the stage. `level` is the
+// inspect scale as a fraction of the largest file's true pixels (1 = 1:1),
+// set by the zoom slider; it outlives a group change so a library of huge
+// files can be reviewed at one comfortable level throughout.
+const view = { zoom: false, level: 1, u: 0.5, v: 0.5 };
 
 const $ = (id) => document.getElementById(id);
 
@@ -207,6 +210,7 @@ function renderAppState() {
     $("stage").dataset.zoom = "off";
     $("hud-group").textContent = "";
     $("hud-zoom").textContent = "";
+    $("stage-zoom").hidden = true;
     renderDecision();
   }
 
@@ -461,7 +465,29 @@ function scaleFor(j, box) {
   const { w, h } = dimsOf(j);
   const contain = Math.min(box.w / w, box.h / h);
   if (!view.zoom) return contain;
-  return Math.max(contain, inspectMaxWidth() / w);
+  return Math.max(contain, view.level * inspectMaxWidth() / w);
+}
+
+// The slider's floor: the level at which the kept file just fits the pane.
+// Anything at or below it looks identical to not inspecting at all.
+function fitLevel(box) {
+  const { w, h } = dimsOf(state.detail.current_pick);
+  return Math.min(box.w / w, box.h / h) * w / inspectMaxWidth();
+}
+
+// Turning inspect on at a level that wouldn't magnify anything (left over
+// from a group whose files were larger) falls back to 1:1.
+function zoomIn() {
+  if (view.level <= fitLevel(stageBox()) + 0.01) view.level = 1;
+  view.zoom = true;
+}
+
+function setLevel(pct) {
+  const fit = fitLevel(stageBox());
+  view.zoom = pct / 100 > fit + 0.005;
+  if (view.zoom) view.level = pct / 100;
+  setCenter(view.u, view.v);
+  layoutStage();
 }
 
 function layoutStage() {
@@ -486,6 +512,12 @@ function layoutStage() {
   const zoomable = inspectMaxWidth() > box.w;
   $("stage").dataset.zoomable = zoomable ? "yes" : "no";
   $("stage").dataset.zoom = view.zoom ? "on" : "off";
+  const slider = $("zoom-slider");
+  const fitPct = Math.ceil(fitLevel(box) * 100);
+  $("stage-zoom").hidden = !zoomable;
+  slider.min = String(Math.min(fitPct, 100));
+  slider.value = String(view.zoom ? Math.round(view.level * 100) : fitPct);
+  $("zoom-value").textContent = `${slider.value}%`;
   renderHud();
 }
 
@@ -531,17 +563,20 @@ function renderHud() {
     ? `keeping the ${d.current_pick === 0 ? "left" : "right"} file`
     : `file ${d.current_pick + 1} of ${d.paths.length}`);
 
+  // Unzoomed, name the level a click would open at (zoomIn's 1:1 fallback).
+  const level = view.zoom || view.level > fitLevel(stageBox()) + 0.01 ? view.level : 1;
+  const at = level >= 0.995 ? "1:1" : `${Math.round(level * 100)}%`;
   if (!view.zoom) {
     $("hud-zoom").textContent = $("stage").dataset.zoomable === "no"
       ? "Fits at full pixels"
-      : "Click to inspect 1:1 · Z";
+      : `Click to inspect ${at} · Z`;
     return;
   }
-  const factor = inspectMaxWidth() / dimsOf(d.current_pick).w;
+  const factor = view.level * inspectMaxWidth() / dimsOf(d.current_pick).w;
   const pan = "drag, scroll or shift+arrows to pan";
   $("hud-zoom").textContent = factor > 1.02
-    ? `Inspecting 1:1 · ${isSplit() ? "kept" : "this"} file upscaled ${factor.toFixed(1)}× · ${pan}`
-    : `Inspecting 1:1 · true pixels · ${pan}`;
+    ? `Inspecting ${at} · ${isSplit() ? "kept" : "this"} file upscaled ${factor.toFixed(1)}× · ${pan}`
+    : `Inspecting ${at} · ${at === "1:1" ? "true pixels" : "downscaled"} · ${pan}`;
 }
 
 // Keyboard pan, one tenth of the visible frame per press. Full keyboard
@@ -559,7 +594,7 @@ function panBy(dirU, dirV) {
 
 function setZoom(on) {
   if (on && $("stage").dataset.zoomable === "no") return;
-  view.zoom = on;
+  if (on) zoomIn(); else view.zoom = false;
   layoutStage();
 }
 
@@ -575,7 +610,7 @@ function zoomAt(ev) {
   const u = clamp((px - before.x) / before.dw, 0, 1);
   const v = clamp((py - before.y) / before.dh, 0, 1);
   if ($("stage").dataset.zoomable === "no") return;
-  view.zoom = true;
+  zoomIn();
   const box = stageBox();
   const after = placement(j, box);
   setCenter(u + (box.w / 2 - px) / after.dw, v + (box.h / 2 - py) / after.dh);
@@ -660,6 +695,12 @@ function attachStageHandlers() {
     setCenter(view.u + (ev.deltaX * unit) / (w * s), view.v + (ev.deltaY * unit) / (h * s));
     layoutStage();
   }, { passive: false });
+
+  // The slider sits on the stage: keep its presses and scrolls from also
+  // reading as a click-to-inspect or a pan.
+  const zoomCtl = $("stage-zoom");
+  ["pointerdown", "pointerup", "wheel"].forEach((t) => zoomCtl.addEventListener(t, (ev) => ev.stopPropagation()));
+  $("zoom-slider").addEventListener("input", (ev) => setLevel(Number(ev.target.value)));
 
   new ResizeObserver(() => layoutStage()).observe($("stage-frame"));
 }
@@ -1432,7 +1473,7 @@ function helpContent(info) {
 
   frag.appendChild(h("h3", "Reading the stage"));
   frag.appendChild(h("p", "One file fills the stage at a time and every file in the group is laid out in exactly the same frame, so moving between them changes the pixels and nothing else — the sharper file is the one that stops looking soft. The file on the stage is the file you're keeping. A group of exactly two shows both side by side instead, with the kept one outlined in blue."));
-  frag.appendChild(h("p", "Click the stage (or press Z) to inspect at 1:1; a click zooms in on the exact spot under the pointer. At that zoom the largest file in the group is shown at its true pixels and the others are scaled to match the same part of the scene, so an export upscaled from a smaller original gives itself away. Drag, scroll the wheel or hold shift with the arrow keys to pan; the spot you're inspecting stays put as you move between files, and side-by-side panes pan together."));
+  frag.appendChild(h("p", "Click the stage (or press Z) to inspect at 1:1; a click zooms in on the exact spot under the pointer. On a very large photo, 1:1 shows only a sliver: drag the zoom slider at the bottom-right of the stage to inspect at a lower level instead, and every later group opens at that level. At that zoom the largest file in the group is shown at its true pixels and the others are scaled to match the same part of the scene, so an export upscaled from a smaller original gives itself away. Drag, scroll the wheel or hold shift with the arrow keys to pan; the spot you're inspecting stays put as you move between files, and side-by-side panes pan together."));
   frag.appendChild(h("p", "n/a in the table means that measurement has no value for that file — either its optional package isn't installed, or it failed on that one image. A measurement missing for any file is dropped from the whole group's score and the remaining weights are rescaled, so the group is still scored, just on fewer inputs."));
 
   frag.appendChild(h("h3", "Keyboard"));
@@ -1444,7 +1485,7 @@ function helpContent(info) {
     ["↑ ↓", "Move between groups"],
     ["Enter / C", "Confirm keep"],
     ["Delete / S", "Skip group — on a confirmed group, move its files back"],
-    ["Z", "Inspect at 1:1"],
+    ["Z", "Inspect (at the zoom slider's level)"],
     ["Shift + arrows", "Pan while inspecting"],
     ["O", "Open the kept file full-res in a new tab"],
     ["M", "Show or hide the measurements"],
@@ -1558,6 +1599,11 @@ function attachKeyboardHandler() {
     }
 
     const el = document.activeElement;
+    // A focused zoom slider keeps its arrow keys; Escape hands focus back.
+    if (el && el.id === "zoom-slider") {
+      if (e.code === "Escape") { el.blur(); e.preventDefault(); }
+      return;
+    }
     if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA")) {
       if (e.code === "Escape") { setScanPanelOpen(false); $("scope-toggle").focus(); e.preventDefault(); }
       return;

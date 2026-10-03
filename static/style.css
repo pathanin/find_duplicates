@@ -436,6 +436,25 @@ button { font-family: inherit; }
 }
 .hud-zoom { color: var(--primary-soft); text-align: right; }
 
+.stage-zoom {
+  position: absolute;
+  right: 18px;
+  bottom: 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  background: var(--ink);
+  font: var(--button-sm);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--steel);
+  cursor: default;
+}
+.stage-zoom[hidden] { display: none; }
+.stage-zoom input { width: 160px; margin: 0; accent-color: var(--primary-bright); }
+.stage-zoom output { min-width: 4ch; text-align: right; font-variant-numeric: tabular-nums; color: var(--primary-soft); }
+
 .stage-message {
   position: absolute;
   inset: 0;
