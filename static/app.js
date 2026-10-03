@@ -126,14 +126,18 @@ async function loadGroup(i) {
 }
 
 // The hot path is confirm -> advance -> next group, so the next pending
-// group's first stage render is warmed while this one is being decided.
+// group's stage renders are warmed while this one is being decided. All of
+// them, not just the pick: the stage shows every candidate at once, and a
+// HEIC can't use JPEG's reduced decode -- a 48 MP one takes ~2.4 s to
+// render, which a cold second candidate cost on every advance.
 function prefetchNextGroup() {
   const n = state.groups.length;
   for (let off = 1; off <= n; off++) {
     const j = (state.activeIndex + off) % n;
     if (j === state.activeIndex) break;
-    if (state.groups[j].status === "pending") {
-      new Image().src = `/api/stage/${j}/${state.groups[j].current_pick}?g=${state.generation}`;
+    const g = state.groups[j];
+    if (g.status === "pending") {
+      for (let k = 0; k < g.file_count; k++) new Image().src = `/api/stage/${j}/${k}?g=${state.generation}`;
       return;
     }
   }
@@ -579,7 +583,9 @@ function upgradeToFullRes(img, i, j) {
   // A failure stays failed until the stage is rebuilt: resetting to "0"
   // re-requested the whole file on every pan event (a confirmed group's
   // moved files 404 for good). The stage render remains on show.
-  pre.onload = () => { img.src = pre.src; };
+  // decode() first: swapped in raw, a 100 MP bitmap decodes at paint time
+  // and the stage freezes for it.
+  pre.onload = () => pre.decode().catch(() => {}).then(() => { img.src = pre.src; });
   pre.src = `/api/full/${i}/${j}?g=${state.generation}`;
 }
 
