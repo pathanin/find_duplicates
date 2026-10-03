@@ -30,6 +30,15 @@ try:
 except ImportError:
     pass
 
+# Pillow's decompression-bomb guard (warn above ~89 MP, raise above ~179 MP)
+# is for untrusted uploads; these are the user's own files, and 100 MP JPEGs
+# are ordinary. Past 2x the limit the error is swallowed and the photo becomes
+# a gray placeholder (or a HEIC drops out of the scan). Keep a ceiling, but
+# one in cv2's ballpark, since cv2 decodes the same files on the scan path.
+# Module level so spawned ProcessPool workers get it too
+# (tests/test_large_image.py).
+PILImage.MAX_IMAGE_PIXELS = 1 << 30
+
 # Maximum image dimension for FFT-based analysis. Images larger than this on
 # either side are downsampled before FFT to cap memory: a 6K×4K image (192 MB
 # float64) would peak at over 1.5 GB through the FFT pipeline (complex128 FFT,
