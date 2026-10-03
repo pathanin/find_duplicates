@@ -56,6 +56,7 @@
   --rail-w: 288px;
 
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in: cubic-bezier(0.68, 0, 0.77, 0); /* --ease-out mirrored */
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -434,7 +435,11 @@ button { font-family: inherit; }
   text-transform: uppercase;
   color: var(--steel);
 }
-.hud-zoom { color: var(--primary-soft); text-align: right; }
+/* Solid ink chips, like the zoom slider's: bare text over the photo
+   vanishes into sky or snow, and a shadow would break the flat rule. */
+.stage-hud > span { padding: 5px 8px; background: var(--ink); }
+.stage-hud > span:empty { display: none; }
+.hud-zoom { margin-left: auto; color: var(--primary-soft); text-align: right; }
 
 .stage-zoom {
   position: absolute;
@@ -786,9 +791,24 @@ button { font-family: inherit; }
 /* Help sheet                                                             */
 /* --------------------------------------------------------------------- */
 
-.sheet { position: fixed; inset: 0; z-index: 50; }
-.sheet[hidden] { display: none; }
-.sheet-scrim { position: absolute; inset: 0; background: rgba(26, 26, 26, 0.4); }
+/* Slides in from the right edge it docks to and leaves the same way, the
+   scrim fading with it. The exit runs the entrance curve mirrored, so the
+   path out is the path in. allow-discrete holds display until it ends. */
+.sheet { position: fixed; inset: 0; z-index: 50; transition: display 240ms allow-discrete; }
+.sheet[hidden] { display: none; pointer-events: none; transition-duration: 200ms; }
+.sheet-scrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(26, 26, 26, 0.4);
+  transition: opacity 240ms var(--ease-out);
+}
+.sheet-panel { transition: transform 240ms var(--ease-out); }
+.sheet[hidden] .sheet-scrim { opacity: 0; transition: opacity 200ms var(--ease-in); }
+.sheet[hidden] .sheet-panel { transform: translateX(100%); transition: transform 200ms var(--ease-in); }
+@starting-style {
+  .sheet-scrim { opacity: 0; }
+  .sheet-panel { transform: translateX(100%); }
+}
 .sheet-panel {
   position: absolute;
   top: 0;

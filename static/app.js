@@ -844,7 +844,20 @@ function renderSwitcher() {
     btn.title = `${path} — quality score ${d.scores[j].toFixed(3)}`
       + (d.scores[j] === best ? " (top scored)" : "")
       + `. Press ${j + 1} to keep this one.`;
-    btn.addEventListener("click", () => pick(j));
+    // The flip is the comparison itself, so a mouse press lands it on the
+    // way down rather than on release. pick() rebuilds this strip, so the
+    // press's own focus would hit a detached button: take it over and focus
+    // the rebuilt tab. Touch keeps click -- the strip scrolls sideways, and a
+    // drag across it must not flip. Keyboard activation is a click with no
+    // pointerType.
+    btn.addEventListener("pointerdown", (ev) => {
+      if (ev.pointerType !== "mouse" || ev.button !== 0) return;
+      ev.preventDefault();
+      pick(j);
+      const tab = $(`cand-${j}`);
+      if (tab) tab.focus({ preventScroll: true });
+    });
+    btn.addEventListener("click", (ev) => { if (ev.pointerType !== "mouse") pick(j); });
     host.appendChild(btn);
   });
 
