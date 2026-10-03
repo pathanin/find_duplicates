@@ -54,6 +54,8 @@
      their right-hand hairlines are a single rule down the page rather than
      two verticals 80px apart. */
   --rail-w: 288px;
+
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -268,7 +270,16 @@ button { font-family: inherit; }
 }
 .notice-error { background: var(--error); color: var(--on-ink); border-bottom-color: var(--bloom-wine); }
 .notice-dry { background: var(--storm-deep); color: var(--on-ink); border-bottom-color: var(--storm-deep); }
-.notice-done { background: var(--primary); color: var(--on-primary); border-bottom-color: var(--primary-deep); }
+.notice-done {
+  background: var(--primary);
+  color: var(--on-primary);
+  border-bottom-color: var(--primary-deep);
+  /* The one celebratory beat in a review: it arrives once, so it can take
+     a little longer than the chrome does. renderNotices reuses the node so
+     this plays on arrival only. */
+  transition: opacity 300ms var(--ease-out);
+}
+@starting-style { .notice-done { opacity: 0; } }
 
 /* --------------------------------------------------------------------- */
 /* App split                                                              */
@@ -860,8 +871,18 @@ button { font-family: inherit; }
   background: var(--ink);
   color: var(--on-ink);
   font: var(--caption-md);
+  /* Enters only when it was hidden -- a burst of confirms swaps the text
+     in place without replaying this -- and fades out rather than vanishing
+     in the corner of the eye. allow-discrete holds display until the fade
+     ends; without support both directions stay instant, as before. */
+  transition: opacity 150ms var(--ease-out), transform 150ms var(--ease-out), display 150ms allow-discrete;
 }
-.toast[hidden] { display: none; }
+@starting-style { .toast { opacity: 0; transform: translateY(4px); } }
+.toast[hidden] {
+  display: none;
+  opacity: 0;
+  transition: opacity 200ms var(--ease-out), display 200ms allow-discrete;
+}
 .toast.is-error { background: var(--error); }
 
 /* --------------------------------------------------------------------- */

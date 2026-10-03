@@ -277,20 +277,27 @@ function notice(kind, tag, text) {
 // reviewed" all have to stay on screen rather than time out.
 function renderNotices() {
   const host = $("notices");
-  host.innerHTML = "";
-  if (state.status === "error" && state.error) {
-    host.appendChild(notice("error", "Scan failed", state.error));
-  }
-  if (state.params && state.params.dry_run) {
-    host.appendChild(notice("dry", "Dry run", "Confirm and skip update this review only. No file will be moved."));
-  }
   const { confirmed, skipped, pending, total } = reviewCounts();
-  if (total && pending === 0 && !scanStillPublishing()) {
-    host.appendChild(notice(
-      "done",
+  const wanted = {
+    error: state.status === "error" && state.error && ["Scan failed", state.error],
+    dry: state.params && state.params.dry_run
+      && ["Dry run", "Confirm and skip update this review only. No file will be moved."],
+    done: total && pending === 0 && !scanStillPublishing() && [
       "All reviewed",
       `${total} group${total === 1 ? "" : "s"} — ${confirmed} kept, ${skipped} skipped. Nothing is half-done: close this tab, or use Quit above to stop the server too.`,
-    ));
+    ],
+  };
+  // Update notices in place and never detach one that stays: "All reviewed"
+  // fades in on insertion (@starting-style), and any remove-and-reinsert --
+  // innerHTML, replaceChildren, even moving the node -- replays that fade on
+  // every state refresh.
+  let prev = null;
+  for (const [kind, want] of Object.entries(wanted)) {
+    let el = host.querySelector(`.notice-${kind}`);
+    if (!want) { if (el) el.remove(); continue; }
+    if (el) el.lastChild.textContent = want[1];
+    else host.insertBefore(el = notice(kind, ...want), prev ? prev.nextSibling : host.firstChild);
+    prev = el;
   }
 }
 
