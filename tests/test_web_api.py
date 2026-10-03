@@ -655,6 +655,27 @@ def test_full_res_is_revalidated_not_heuristically_cached() -> None:
     print("  ok  /api/full is served no-cache with an ETag")
 
 
+def test_full_res_transcodes_formats_browsers_cannot_draw() -> None:
+    """Zoom swaps the stage render for /api/full, and /api/full served TIFF
+    as-is. No mainstream browser but Safari decodes TIFF, so the swap failed
+    and a TIFF was inspected as its 1600px stage render upscaled -- next to
+    the other candidates' real pixels, it read as the worse file. The failed
+    load also re-requested the whole file on every pan event."""
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp)
+        for p in make_duplicate_set(directory, seed=3, n=2):
+            PILImage.open(p).save(p.with_suffix(".tiff"))
+            p.unlink()
+        client, _ = _make_client(directory, directory / "_duplicates")
+        with client:
+            _wait_ready(client)
+            r = client.get("/api/full/0/0", params={"token": TOKEN})
+            assert r.status_code == 200, r.status_code
+            assert r.headers["content-type"] == "image/jpeg", r.headers["content-type"]
+            assert PILImage.open(io.BytesIO(r.content)).format == "JPEG"
+    print("  ok  /api/full transcodes TIFF to JPEG")
+
+
 def test_image_renders_run_off_the_event_loop() -> None:
     """A preview render of a 100 MP photo takes ~0.5 s. Run on the event
     loop, every render froze the whole server -- state polls, keypress
@@ -733,6 +754,7 @@ def main() -> None:
         test_static_assets_require_token_and_serve_with_the_cookie,
         test_page_and_assets_are_revalidated_not_heuristically_cached,
         test_full_res_is_revalidated_not_heuristically_cached,
+        test_full_res_transcodes_formats_browsers_cannot_draw,
         test_scanning_status_blocks_mutating_endpoints,
         test_rescan_bumps_generation_and_resets_group_status,
         test_generation_never_repeats_across_runs,

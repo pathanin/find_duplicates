@@ -67,10 +67,12 @@ COOKIE_NAME = "fd_token"
 # check a 304 on a page that hasn't changed.
 NO_CACHE = {"Cache-Control": "no-cache"}
 
-# The only formats a browser can't render natively -- everything else in
-# duplicates_core.IMAGE_EXTS (jpg/png/webp/bmp/tiff) is served as-is via
-# /api/full; these need transcoding to JPEG on the fly.
-HEIC_EXTS = {".heic", ".heif"}
+# The formats a browser can't render natively -- everything else in
+# duplicates_core.IMAGE_EXTS (jpg/png/webp/bmp) is served as-is via
+# /api/full; these need transcoding to JPEG on the fly. TIFF counts: only
+# Safari decodes it, and a failed zoom swap leaves the file judged on its
+# upscaled stage render.
+TRANSCODE_EXTS = {".heic", ".heif", ".tif", ".tiff"}
 
 # The browser UI shows one candidate at a time at display scale (see the
 # direction contract in static/index.html), so it needs a render well above
@@ -523,11 +525,13 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
             path = g.paths[j]
         if not path.exists():
             raise HTTPException(404, "file no longer exists on disk")
-        if path.suffix.lower() in HEIC_EXTS:
+        if path.suffix.lower() in TRANSCODE_EXTS:
             def transcode() -> bytes:
                 buf = io.BytesIO()
                 with RENDER_SLOTS:
-                    PILImage.open(path).convert("RGB").save(buf, format="JPEG", quality=92)
+                    # Oriented like the stage render it replaces on zoom.
+                    img = ImageOps.exif_transpose(PILImage.open(path))
+                    img.convert("RGB").save(buf, format="JPEG", quality=92)
                 return buf.getvalue()
             return Response(content=await asyncio.to_thread(transcode), media_type="image/jpeg")
         # ?g= restarts every run, so this URL names a different file per

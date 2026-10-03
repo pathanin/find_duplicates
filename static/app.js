@@ -594,8 +594,10 @@ function upgradeToFullRes(img, i, j) {
   const pre = new Image();
   // Geometry comes from the API's pixel dimensions, not from the loaded
   // bitmap, so swapping in a bigger source can't shift the framing.
+  // A failure stays failed until the stage is rebuilt: resetting to "0"
+  // re-requested the whole file on every pan event (a confirmed group's
+  // moved files 404 for good). The stage render remains on show.
   pre.onload = () => { img.src = pre.src; };
-  pre.onerror = () => { img.dataset.full = "0"; };
   pre.src = `/api/full/${i}/${j}?g=${state.generation}`;
 }
 
