@@ -35,6 +35,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
 from PIL import Image as PILImage
+from PIL import ImageOps
 
 from name_hint import name_hint
 
@@ -320,7 +321,12 @@ def _render_scaled_jpeg(path: Path, max_side: int, quality: int) -> bytes:
             # still >= 2x the box like thumbnail()'s own reducing_gap. A 100 MP
             # file otherwise decodes all of itself for an 800 px preview.
             img.draft("RGB", (2 * max_side, 2 * max_side))
-            img = img.convert("RGB")
+            # analyze() lays the file out the way cv2.imread reads it, EXIF
+            # orientation applied, and the browser rotates /api/full the same
+            # way. Unrotated, a phone photo rendered sideways and stretched,
+            # then flipped upright the moment zoom swapped in the full file.
+            # After draft(): the transpose loads the pixels.
+            img = ImageOps.exif_transpose(img).convert("RGB")
             img.thumbnail((max_side, max_side))
         except Exception:  # noqa: BLE001 -- an undecodable file must not 500 the review
             img = PILImage.new("RGB", (max_side, max_side), THUMBNAIL_FAILURE_COLOR)

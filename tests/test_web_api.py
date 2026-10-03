@@ -666,6 +666,29 @@ def test_image_renders_run_off_the_event_loop() -> None:
     print("  ok  /api/thumb and /api/stage render on a worker thread")
 
 
+def test_renders_honour_exif_orientation() -> None:
+    """A phone photo is stored sideways with an EXIF Orientation tag. analyze()
+    (cv2.imread) applies the tag, so the stage lays the file out portrait --
+    but the render ignored it and the sideways pixels were stretched into that
+    portrait box. Zooming then swapped in /api/full, which the browser does
+    rotate, so the photo visibly changed under the reviewer mid-inspection.
+    The render has to come out in analyze's orientation for every format."""
+    from compare_image_quality import analyze
+
+    pixels = (np.random.default_rng(0).random((200, 400, 3)) * 255).astype(np.uint8)
+    exif = PILImage.Exif()
+    exif[0x0112] = 6  # rotate 90 CW to display: stored 400x200, shown 200x400
+    with tempfile.TemporaryDirectory() as tmp:
+        for ext in ("jpg", "png", "webp"):
+            p = Path(tmp) / f"rotated.{ext}"
+            PILImage.fromarray(pixels).save(p, exif=exif.tobytes())
+            want = analyze(str(p))["dimensions"]
+            assert want == (200, 400), f"{ext}: analyze reported {want}"
+            got = PILImage.open(io.BytesIO(web._render_scaled_jpeg(p, 1600, 92))).size
+            assert got == want, f"{ext}: render is {got}, analyze laid it out as {want}"
+    print("  ok  stage/thumb renders come out in analyze's orientation (jpg, png, webp)")
+
+
 def main() -> None:
     tests = [
         test_data_endpoint_requires_token,
@@ -675,6 +698,7 @@ def main() -> None:
         test_group_and_thumb_404_for_out_of_range_index,
         test_stage_and_thumb_render_at_their_own_sizes,
         test_image_renders_run_off_the_event_loop,
+        test_renders_honour_exif_orientation,
         test_group_detail_numeric_fields_match_their_display_strings,
         test_scan_rejects_invalid_directory_and_out_of_range_threshold,
         test_close_call_group_serializes_without_500,
