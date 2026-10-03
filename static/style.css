@@ -753,15 +753,19 @@ button { font-family: inherit; }
 .decision {
   display: flex;
   align-items: center;
-  gap: 20px;
+  flex-wrap: wrap;
+  gap: 8px 20px;
   padding: 12px 20px;
   border-top: 1px solid var(--hairline-strong);
   background: var(--paper);
 }
-.consequence { flex: 1; min-width: 0; font: var(--caption-md); color: var(--graphite); }
+/* Squeezed beside the buttons in a small window, the sentence ran to four
+   or five lines and took that height from the stage; under 520px it takes
+   its own row instead and fits in two. */
+.consequence { flex: 1 1 520px; min-width: 0; font: var(--caption-md); color: var(--graphite); }
 .consequence strong { font: var(--body-emphasis); color: var(--ink); }
 .consequence .warn { color: var(--bloom-deep); font-weight: 700; }
-.decision-actions { display: flex; align-items: center; gap: 10px; }
+.decision-actions { display: flex; align-items: center; gap: 10px; margin-left: auto; }
 
 /* --------------------------------------------------------------------- */
 /* Buttons                                                                */
@@ -990,7 +994,7 @@ button { font-family: inherit; }
   .scope-cue { margin-left: auto; }
 
   .ledger-scroll { max-height: 30vh; }
-  .decision { flex-wrap: wrap; gap: 10px 16px; padding: 12px 14px; }
+  .decision { gap: 10px 16px; padding: 12px 14px; }
   .consequence { flex: 1 0 100%; }
   /* Filenames have no spaces to break at. */
   .consequence strong { overflow-wrap: anywhere; }
