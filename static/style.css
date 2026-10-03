@@ -54,6 +54,8 @@
      their right-hand hairlines are a single rule down the page rather than
      two verticals 80px apart. */
   --rail-w: 288px;
+
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -268,7 +270,16 @@ button { font-family: inherit; }
 }
 .notice-error { background: var(--error); color: var(--on-ink); border-bottom-color: var(--bloom-wine); }
 .notice-dry { background: var(--storm-deep); color: var(--on-ink); border-bottom-color: var(--storm-deep); }
-.notice-done { background: var(--primary); color: var(--on-primary); border-bottom-color: var(--primary-deep); }
+.notice-done {
+  background: var(--primary);
+  color: var(--on-primary);
+  border-bottom-color: var(--primary-deep);
+  /* The one celebratory beat in a review: it arrives once, so it can take
+     a little longer than the chrome does. renderNotices reuses the node so
+     this plays on arrival only. */
+  transition: opacity 300ms var(--ease-out);
+}
+@starting-style { .notice-done { opacity: 0; } }
 
 /* --------------------------------------------------------------------- */
 /* App split                                                              */
@@ -393,17 +404,17 @@ button { font-family: inherit; }
 .stage-img.is-active { opacity: 1; }
 
 .stage-pane { position: absolute; inset: 0; overflow: hidden; }
-/* Two candidates: identical half-width panes, both visible. The divider is
-   an overlay, not a border, so neither pane loses a pixel of width and the
-   two stay framed exactly alike. */
-.stage-frame[data-split="yes"] .stage-pane { right: 50%; }
-.stage-frame[data-split="yes"] .stage-pane + .stage-pane { left: 50%; right: 0; }
+/* Split: identical 1/n-width panes, all visible (left/right are set inline
+   by applySplit, since n varies). The divider is an overlay inside each
+   pane after the first, not a border, so every pane keeps the same width
+   and the panes stay framed exactly alike. */
 .stage-frame[data-split="yes"] .stage-img { opacity: 1; }
-.stage-frame[data-split="yes"]::after {
+.stage-frame[data-split="yes"] .stage-pane + .stage-pane::before {
   content: "";
   position: absolute;
-  inset: 0 auto 0 calc(50% - 1px);
+  inset: 0 auto 0 0;
   width: 2px;
+  z-index: 1;
   background: var(--ink);
   pointer-events: none;
 }
@@ -424,6 +435,25 @@ button { font-family: inherit; }
   color: var(--steel);
 }
 .hud-zoom { color: var(--primary-soft); text-align: right; }
+
+.stage-zoom {
+  position: absolute;
+  right: 18px;
+  bottom: 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  background: var(--ink);
+  font: var(--button-sm);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--steel);
+  cursor: default;
+}
+.stage-zoom[hidden] { display: none; }
+.stage-zoom input { width: 160px; margin: 0; accent-color: var(--primary-bright); }
+.stage-zoom output { min-width: 4ch; text-align: right; font-variant-numeric: tabular-nums; color: var(--primary-soft); }
 
 .stage-message {
   position: absolute;
@@ -860,8 +890,18 @@ button { font-family: inherit; }
   background: var(--ink);
   color: var(--on-ink);
   font: var(--caption-md);
+  /* Enters only when it was hidden -- a burst of confirms swaps the text
+     in place without replaying this -- and fades out rather than vanishing
+     in the corner of the eye. allow-discrete holds display until the fade
+     ends; without support both directions stay instant, as before. */
+  transition: opacity 150ms var(--ease-out), transform 150ms var(--ease-out), display 150ms allow-discrete;
 }
-.toast[hidden] { display: none; }
+@starting-style { .toast { opacity: 0; transform: translateY(4px); } }
+.toast[hidden] {
+  display: none;
+  opacity: 0;
+  transition: opacity 200ms var(--ease-out), display 200ms allow-discrete;
+}
 .toast.is-error { background: var(--error); }
 
 /* --------------------------------------------------------------------- */

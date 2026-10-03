@@ -17,7 +17,9 @@
   EXCEPTION: a group of exactly two splits the stage into two identical
   panes, side by side, that share one zoom and pan. With only two there is
   nothing to flip through, and seeing both at once at the same spot is the
-  faster verdict. Three or more stay stacked.
+  faster verdict. Three or four split the same way when every photo still
+  fits its pane at half its pixels or more (isSplit in app.js); larger
+  photos, and five or more files, stay stacked.
   OWN-WORLD: flat to the millimetre - zero radius, zero shadow. White
   chrome, cloud rail, an ink stage, hairline rules, the OS's own system font
   with tabular figures, and one saturated blue that means exactly one thing:
@@ -109,6 +111,12 @@
         <span class="hud-group" id="hud-group"></span>
         <span class="hud-zoom" id="hud-zoom"></span>
       </div>
+
+      <label class="stage-zoom" id="stage-zoom" hidden>
+        <span>Zoom</span>
+        <input type="range" id="zoom-slider" min="10" max="100" step="1" value="100">
+        <output id="zoom-value" for="zoom-slider">100%</output>
+      </label>
 
       <div class="stage-message" id="stage-message" hidden></div>
 
