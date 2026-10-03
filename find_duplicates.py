@@ -22,7 +22,6 @@ Usage:
     python find_duplicates.py [directory] [--threshold N] [--dest DIR]
                                [--recursive] [--auto] [--dry-run]
                                [--host HOST] [--port PORT]
-    python find_duplicates.py --set-typesafe-key
 
 Requires:
     pip install opencv-python-headless numpy pillow pillow-heif fastapi uvicorn
@@ -30,7 +29,6 @@ Requires:
 
 import argparse
 import asyncio
-import getpass
 import os
 import secrets
 import socket
@@ -41,7 +39,6 @@ from pathlib import Path
 import uvicorn
 
 from duplicates_core import DEFAULT_HASH_THRESHOLD, auto_apply_groups, build_groups, humansize
-from name_hint import KEY_PATH, load_key, save_key
 import duplicates_web
 from duplicates_web import ScanParams, create_app
 
@@ -63,26 +60,6 @@ def _lan_ip() -> str | None:
             return s.getsockname()[0]
     except OSError:
         return None
-
-
-def _prompt_for_key() -> None:
-    """Store a TypeSafe API key for the filename hint, then exit. Prompts
-    instead of taking the key as an argument value: an argument is visible
-    in `ps` and lands in shell history, and this runs on a box you reach
-    over SSH."""
-    # flush: getpass writes its prompt straight to the tty, so a buffered
-    # stdout would print this explanation after the prompt it explains.
-    print("The filename hint is optional. Get a key at https://typesafe.ai; leave blank to cancel.", flush=True)
-    try:
-        key = getpass.getpass("TypeSafe API key (not echoed): ").strip()
-    except (EOFError, KeyboardInterrupt):
-        key = ""
-    if not key:
-        print("Cancelled; nothing written.")
-        return
-    print(f"Saved to {save_key(key)} (readable by you only).")
-    if os.environ.get("TYPESAFE_API_KEY"):
-        print("Note: $TYPESAFE_API_KEY is also set and takes precedence over the file.")
 
 
 def _threshold_arg(s: str) -> int:
@@ -153,19 +130,7 @@ def main() -> None:
     parser.add_argument(
         "--no-browser", action="store_true", help="Don't try to auto-open the URL in a browser."
     )
-    parser.add_argument(
-        "--set-typesafe-key",
-        action="store_true",
-        help="Prompt for a TypeSafe API key, save it for future runs, and exit. "
-             "Enables the optional filename hint in the review UI.",
-    )
     args = parser.parse_args()
-
-    # Before the directory checks: setting the key is not a scan and must
-    # work from anywhere.
-    if args.set_typesafe_key:
-        _prompt_for_key()
-        return
 
     directory = args.directory
     if not directory.exists():
@@ -204,11 +169,6 @@ def main() -> None:
     # the log is the only way to read the URL of a server still running.
     print(f"Scanning {directory} ...", flush=True)
     print(f"Open: {url}", flush=True)
-    if not load_key():
-        # Named once at startup rather than in the page: with no key the
-        # hint route just returns null and the UI has nothing to explain.
-        print(f"Filename hint off (no TypeSafe key). Enable: {sys.argv[0]} --set-typesafe-key",
-              flush=True)
     if args.host in ("127.0.0.1", "localhost") and not args.no_browser:
         try:
             webbrowser.open(url)

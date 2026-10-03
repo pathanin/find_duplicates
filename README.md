@@ -15,22 +15,6 @@ python3 find_duplicates.py [directory] [--threshold N] [--dest DIR] [--recursive
 
 Byte-identical copies score exactly equal, so the tie-break decides: the shorter filename wins, because every convention for naming a copy *appends* to the original (`" copy"`, `" 2"`, `" (1)"`, `"-edited"`). That keeps `holiday.jpg` over `holiday copy.jpg`.
 
-## Optional: the filename hint
-
-The quality metrics read pixels, so they can't see that `Downloads/IMG_4821 (1).jpg` is a re-download of `Originals/IMG_4821.jpg`. With a [TypeSafe](https://typesafe.ai) API key, the review page adds a hint line reading the *names*: which file looks like the original, and whether a group is really one photo stored twice rather than two similar shots.
-
-```bash
-find-duplicates --set-typesafe-key      # prompts, saves, exits
-```
-
-The key is stored in `~/.config/find_duplicates/typesafe-key`, readable by you only. It's prompted rather than passed as a flag so it stays out of `ps` and your shell history. `$TYPESAFE_API_KEY` overrides the file for a single run:
-
-```bash
-TYPESAFE_API_KEY=sk-... find-duplicates ~/Pictures
-```
-
-To turn the hint off again, delete that file and unset the variable.
-
 **Entirely optional.** With no key, no network, or an API error the hint is simply absent and everything else — scanning, scoring, the suggested pick, `--auto` — behaves exactly the same. The hint is advisory in any case: it never changes which file is suggested or moved, and `--auto` never calls it.
 
 ## Install
@@ -81,7 +65,6 @@ Keyboard shortcuts: arrows to change the keeper selection, digit keys to jump to
 | `--host` | `127.0.0.1` | Bind address; use `0.0.0.0` to expose on the LAN |
 | `--port` | `8737` | Port to listen on |
 | `--no-browser` | — | Don't auto-open the URL in a browser |
-| `--set-typesafe-key` | — | Prompt for a TypeSafe API key, save it, and exit — enables the optional filename hint |
 
 ## Tests
 

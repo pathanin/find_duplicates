@@ -942,9 +942,7 @@ def _build_group(members: list[Path], analyzed: dict[Path, dict]) -> Group | Non
     # ponytail: name length is a heuristic, and it only ever runs on an
     # exact tie -- where the pixel metrics have said the files are
     # indistinguishable and something has to break it. When they differ at
-    # all, the metrics still decide alone. name_hint.py reads the names
-    # properly and shows its answer in the review UI; promote it here if
-    # the heuristic turns out to be wrong on a real library.
+    # all, the metrics still decide alone.
     order = sorted(
         range(len(results)),
         key=lambda i: (-results[i]["quality_score"], len(paths[i].name), paths[i].name),

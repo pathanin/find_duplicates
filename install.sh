@@ -27,12 +27,12 @@ BIN_DIR="$HOME/.local/bin"
 
 # Every module the tool imports, in one list: it validates a candidate repo
 # root below AND is what gets copied into libexec, so a module added to the
-# repo can't reach one half and miss the other. name_hint.py did exactly
+# repo can't reach one half and miss the other. A module once did exactly
 # that -- the install ran clean and every run then died on its import.
 # duplicates_core.py + compare_image_quality.py are the shared scan/score/
 # move pipeline; duplicates_web.py + find_duplicates.py + static/ are the
-# (only) front end; name_hint.py is the optional filename hint.
-REQUIRED_FILES="duplicates_core.py compare_image_quality.py duplicates_web.py find_duplicates.py name_hint.py"
+# (only) front end.
+REQUIRED_FILES="duplicates_core.py compare_image_quality.py duplicates_web.py find_duplicates.py"
 
 have_required_files() {
   # $1 is the candidate root directory.

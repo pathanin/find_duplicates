@@ -1,10 +1,10 @@
 """Machine-checks that install.sh ships every module the tool imports.
 
-The bug this locks out: name_hint.py was added to the repo and imported by
+The bug this locks out: a new module was added to the repo and imported by
 find_duplicates.py, but install.sh's hand-written copy list never learned
 about it. The install itself succeeded -- nothing there reads an import
 graph -- and every `find-duplicates` run afterwards died on
-`ModuleNotFoundError: No module named 'name_hint'`. Running from a clone
+`ModuleNotFoundError`. Running from a clone
 hid it completely, because there the module sits next to its importer.
 
 Two halves, both needed: REQUIRED_FILES has to name every local module
@@ -84,7 +84,7 @@ def test_the_copy_step_is_driven_by_that_list() -> None:
     body = copy_block.group(0)
     assert "$REQUIRED_FILES" in body, (
         "the libexec copy step doesn't iterate REQUIRED_FILES -- a second list "
-        "here is exactly what left name_hint.py out of the install"
+        "here is exactly what once left a module out of the install"
     )
     stray = re.findall(r'"\$REPO_ROOT/(\w+\.py)"', body)
     assert not stray, f"the copy step names modules by hand: {stray}"

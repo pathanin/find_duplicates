@@ -10,7 +10,6 @@ A single-purpose tool: scan a directory for near-duplicate images (the same phot
 
 ```bash
 python3 find_duplicates.py [directory] [--threshold N] [--dest DIR] [--recursive] [--auto] [--dry-run] [--host H] [--port N] [--no-browser]
-python3 find_duplicates.py --set-typesafe-key             # prompt for the optional filename-hint key, save it, exit
 python3 compare_image_quality.py imageA.jpg imageB.jpg   # standalone 2-image comparison
 ```
 
@@ -34,7 +33,6 @@ python3 tests/test_help_and_labels.py
 python3 tests/test_install_file_list.py
 python3 tests/test_install_stable_python.py
 python3 tests/test_large_image.py
-python3 tests/test_name_hint.py
 python3 tests/test_optional_metrics.py
 python3 tests/test_quit.py
 python3 tests/test_recursive_scan.py
@@ -57,13 +55,12 @@ Many tests exist to lock in one specific past bug. **Read a test's docstring bef
 
 ## Architecture
 
-Five modules, layered so the bottom two never know about the web:
+Four modules, layered so the bottom two never know about the web:
 
 - **`compare_image_quality.py`** — per-image quality metrics (`analyze`): laplacian sharpness, FFT-based `effective_resolution` (resists fake upscaling), noise, blockiness. Also runs standalone on two files. `brisque`/`niqe` are optional imports that stay unresolved by design, and each **latches after its first failure** (`_brisque_unavailable`/`_niqe_unavailable`) — a missing package is cheap to retry, but `brisque` 0.2.0 computes its whole feature set before dying on modern numpy, which measured 418 ms per image (analyze 25 ms → 443 ms) to return `None` every time. Don't remove the latch, and don't add either package to `setup_venv.sh`: `brisque` costs ~40 MB across 7 packages for a metric that currently never returns a number, and `pyiqa` pulls 61 packages including `transformers`, `tensorboard` and an `opencv-python` that conflicts with the project's `opencv-python-headless`. `tests/test_optional_metrics.py` covers the latch.
 - **`duplicates_core.py`** — the whole scan/score/move pipeline. `find_images` → `group_duplicates` (perceptual hash + `UnionFind`) → `analyze_paths` → `score_group` → `build_groups`, returning `list[Group]`. Applying decisions: `apply_group`, `apply_pick`, `unapply`, `auto_apply_groups`.
-- **`duplicates_web.py`** — FastAPI app (`create_app`) plus the `Session` dataclass holding all server-side state. Routes: `/api/state`, `/api/group/{i}` and its `pick`/`confirm`/`skip` posts, `/api/thumb|stage|full/{i}/{j}`, `/api/scan`, `/api/progress` (SSE), `/api/metrics-info`, `/api/group/{i}/name-hint`, `/api/quit`, and a token-gated `/static/{path}`.
+- **`duplicates_web.py`** — FastAPI app (`create_app`) plus the `Session` dataclass holding all server-side state. Routes: `/api/state`, `/api/group/{i}` and its `pick`/`confirm`/`skip` posts, `/api/thumb|stage|full/{i}/{j}`, `/api/scan`, `/api/progress` (SSE), `/api/metrics-info`, `/api/quit`, and a token-gated `/static/{path}`.
 - **`find_duplicates.py`** — CLI entry point, `--auto` path, signal handling, uvicorn startup.
-- **`name_hint.py`** — asks TypeSafe's Jev which duplicate's *filename* reads as the original, and whether the group is one photo at all. Stdlib-only HTTP, advisory, served by `/api/group/{i}/name-hint` and shown in the ledger note. See "Name hint" below.
 
 Front end is vanilla JS in `static/app.js` (no build step, no framework), organized in commented sections: state/API, queue sidebar, stage, switcher strip, ledger, decision bar.
 
@@ -74,20 +71,6 @@ Front end is vanilla JS in `static/app.js` (no build step, no framework), organi
 The **startup scan streams** (`_launch_scan(..., stream=True)`, `Session.streaming`): `build_groups`' `group_callback` appends each finished group into the live session, so review begins on group 1 while the rest of the library is still being analyzed. `params` and `generation` are set up front and `on_done` swaps nothing, so an index handed out mid-scan keeps addressing the same group and a mid-scan confirm's manifest entry survives. `_require_not_scanning` is exempt while `streaming` (the pick/confirm/skip routes only). A **rescan never streams** — its `on_done` replaces groups and manifest wholesale, which is exactly what the guard exists to protect. `/api/state`'s `streaming` flag is how the frontend knows a "scanning" status still means the groups below are reviewable.
 
 Publication order is `raw_groups` order, not completion order, and a group is scored, permuted best-first and filtered (`< 2` valid members) *before* it is ever handed out. Both matter: `tests/test_streaming_scan.py` locks them.
-
-### Name hint
-
-`name_hint.py` reads what the pixel metrics structurally cannot: the filenames. Two questions per group, one TypeSafe call — a Choice over the group's paths ("which reads as the original") and a Noul ("one photo stored twice, or separate shots"). The Noul is the counterweight to `CONFIRM_HASH_THRESHOLD`'s recall tuning: a burst series shares a filename stem but isn't a duplicate.
-
-It is **advisory and must stay that way**. Nothing it returns feeds `quality_score`, `suggested_idx`, `score_group` or the file moves, and `--auto` never calls it — a wrong hint has to cost one glance in the ledger, never a moved file. It is also optional in the brisque/niqe sense: missing `TYPESAFE_API_KEY`, an unreachable API or a malformed answer all return `None` and the app behaves exactly as before (`tests/test_name_hint.py`).
-
-The ledger shows the pick hint only when it disagrees with the current pick *and* `confidence >= 0.6`. A group merged from two name families (`tests/Test-image` group 1) answers near 0.5 — the names offer no winner, and a flat sentence there would read as certainty the model didn't claim.
-
-The key comes from `$TYPESAFE_API_KEY`, else `~/.config/find_duplicates/typesafe-key` (`load_key`, env var wins). `--set-typesafe-key` prompts via `getpass` and writes that file 0600 — prompted, not a flag value, since an argument is visible in `ps` and lands in shell history, and this runs on boxes reached over SSH where an env var doesn't survive the next login. `tests/test_name_hint.py` redirects `KEY_PATH` before the no-key cases, or the suite's result would depend on whether whoever runs it has saved a real key.
-
-Its own route, not a field on `/api/group/{i}`: the call is blocking third-party HTTP and the detail response is what every keypress waits on. The frontend fetches it after the group is on screen and `asyncio.to_thread` keeps it off the event loop, with `session.lock` released first. The cache is keyed by the paths tuple, so it survives a rescan like `hash_cache`, and only successes are stored — caching a `None` would pin one transient failure for the life of the process.
-
-Deliberately no `METRIC_WEIGHTS` entry. That would drag `METRIC_DESCRIPTIONS`/`METRIC_ROWS` and the help sheet along and route the judgment straight into `suggested_idx`, which is the destructive path.
 
 ### Grouping is two-stage
 
