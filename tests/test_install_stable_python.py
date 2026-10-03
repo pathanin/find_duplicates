@@ -1,4 +1,4 @@
-"""Locks in install.sh building its venv from Homebrew's stable opt/ path.
+"""Locks in setup_venv.sh building its venv from Homebrew's stable opt/ path.
 
 The bug: `python3 -m venv` writes the base interpreter's *resolved* path into
 the venv -- bin/python3.14 -> /opt/homebrew/Cellar/python@3.14/3.14.7/...
@@ -7,8 +7,8 @@ A routine `brew upgrade` to 3.14.8 deletes that Cellar dir, and every
 directory". /opt/homebrew/opt/python@3.14 is a symlink Homebrew moves forward
 on each upgrade, so a venv created from it survives patch releases.
 
-Runs install.sh's `stable_python` function in sh against a fake Cellar/opt
-tree; the rest of install.sh (network, pip) never executes.
+Runs setup_venv.sh's `stable_python` function in sh against a fake Cellar/opt
+tree; the rest of the script (network, pip) never executes.
 
 Run: python3 tests/test_install_stable_python.py
 """
@@ -20,12 +20,12 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-INSTALL = ROOT / "install.sh"
+SETUP = ROOT / "setup_venv.sh"
 
 
 def stable_python(base_executable: str, version: str) -> str:
-    m = re.search(r"^stable_python\(\) \{\n.*?^\}\n", INSTALL.read_text(), re.M | re.S)
-    assert m, "install.sh has no stable_python() function"
+    m = re.search(r"^stable_python\(\) \{\n.*?^\}\n", SETUP.read_text(), re.M | re.S)
+    assert m, "setup_venv.sh has no stable_python() function"
     script = m.group(0) + 'stable_python "$1" "$2"\n'
     out = subprocess.run(
         ["sh", "-c", script, "sh", base_executable, version],

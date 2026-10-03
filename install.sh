@@ -40,6 +40,7 @@ have_required_files() {
     [ -f "$1/$f" ] || return 1
   done
   [ -d "$1/static" ] || return 1
+  [ -f "$1/setup_venv.sh" ] || return 1
   return 0
 }
 
@@ -92,61 +93,8 @@ if [ -z "$REPO_ROOT" ]; then
   REPO_ROOT="$EXTRACTED"
 fi
 
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "error: python3 not found. Install Python 3.10+ first." >&2
-  exit 1
-fi
-
-PY_VERSION="$(python3 -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')"
-PY_OK="$(python3 -c 'import sys; print(1 if sys.version_info >= (3, 10) else 0)')"
-if [ "$PY_OK" != "1" ]; then
-  echo "error: python3 is $PY_VERSION, but 3.10+ is required." >&2
-  exit 1
-fi
-
-echo "==> Using python3 $PY_VERSION"
-
-# `venv` links its python at the base interpreter's resolved path, which for
-# Homebrew is a versioned Cellar dir (.../Cellar/python@3.14/3.14.7/...).
-# The next `brew upgrade` deletes that dir and the wrapper dies with "No
-# such file or directory". Homebrew's opt/python@X.Y symlink follows
-# upgrades, so build the venv from that instead when it exists.
-stable_python() {
-  # $1 is the base interpreter path, $2 its X.Y version.
-  case "$1" in
-    */Cellar/python@*/*)
-      formula="${1#*/Cellar/}"
-      formula="${formula%%/*}"
-      opt="${1%%/Cellar/*}/opt/$formula/bin/python$2"
-      if [ -x "$opt" ]; then
-        echo "$opt"
-        return
-      fi
-      ;;
-  esac
-  echo "$1"
-}
-VENV_PYTHON="$(stable_python "$(python3 -c 'import sys; print(sys._base_executable)')" "$PY_VERSION")"
-
-echo "==> Creating venv at $VENV_DIR"
-# Remove any existing venv rather than letting `venv` upgrade it in place:
-# its python3 symlink points at a specific Cellar version (e.g.
-# python@3.14.6), and once Homebrew upgrades past that version the target
-# is gone -- `venv`'s upgrade path stats the dangling symlink and dies with
-# the same "No such file or directory" this is fixing.
-rm -rf "$VENV_DIR"
 mkdir -p "$DATA_DIR"
-"$VENV_PYTHON" -m venv "$VENV_DIR"
-
-echo "==> Installing dependencies (prebuilt wheels via pip)"
-"$VENV_DIR/bin/pip" install --upgrade pip --quiet
-"$VENV_DIR/bin/pip" install --quiet \
-  numpy \
-  opencv-python-headless \
-  pillow \
-  pillow-heif \
-  fastapi \
-  uvicorn
+sh "$REPO_ROOT/setup_venv.sh" "$VENV_DIR"
 
 echo "==> Installing scripts"
 # Clear libexec rather than copying over it: cp only ever adds, so a module
@@ -160,12 +108,25 @@ for f in $REQUIRED_FILES; do
   cp "$REPO_ROOT/$f" "$DATA_DIR/libexec/"
 done
 cp -r "$REPO_ROOT/static" "$DATA_DIR/libexec/static"
+cp "$REPO_ROOT/setup_venv.sh" "$DATA_DIR/libexec/"
 
 mkdir -p "$BIN_DIR"
 WRAPPER="$BIN_DIR/find-duplicates"
 echo "==> Writing wrapper to $WRAPPER"
+# The venv dies with the Python it was built from (a Homebrew upgrade to a
+# new minor version, then python@X.Y removed), so the wrapper checks for its
+# interpreter and the .complete marker setup_venv.sh writes last, and
+# rebuilds on the spot instead of failing every run until install.sh is
+# found again. Both tests are file checks: nothing is spent on a healthy run.
 cat > "$WRAPPER" <<EOS
 #!/bin/sh
+if [ ! -x "$VENV_DIR/bin/python3" ] || [ ! -f "$VENV_DIR/.complete" ]; then
+  echo "find-duplicates: its Python environment is missing or incomplete (often a Homebrew Python upgrade); rebuilding it..." >&2
+  if ! sh "$DATA_DIR/libexec/setup_venv.sh" "$VENV_DIR" >&2; then
+    echo "find-duplicates: rebuild failed; rerun install.sh to repair it." >&2
+    exit 1
+  fi
+fi
 exec "$VENV_DIR/bin/python3" "$DATA_DIR/libexec/find_duplicates.py" "\$@"
 EOS
 chmod +x "$WRAPPER"
