@@ -7,10 +7,9 @@
 //
 // The organising idea of this UI is the stage: one candidate visible at a
 // time, every candidate laid out at the identical scene rectangle, flipped
-// with no transition. A group of two to four is the exception unless its
-// photos are really huge (see isSplit): those sit side by side in identical panes
-// sharing one zoom and pan. See the direction
-// contract at the top of index.html.
+// with no transition. A group of two to four is the exception when there is
+// room (see isSplit): those sit side by side in identical panes sharing one
+// zoom and pan. See the direction contract at the top of index.html.
 
 const state = {
   status: "idle",
