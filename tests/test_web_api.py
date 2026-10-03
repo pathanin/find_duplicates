@@ -676,6 +676,36 @@ def test_full_res_transcodes_formats_browsers_cannot_draw() -> None:
     print("  ok  /api/full transcodes TIFF to JPEG")
 
 
+def test_full_res_arrives_in_analyze_orientation() -> None:
+    """Zoom swaps the stage render for /api/full, and the stage is laid out in
+    analyze()'s orientation (EXIF applied). Chrome applies EXIF orientation to
+    a raw JPEG or PNG but not to a WebP, so a tagged WebP turned sideways the
+    moment zoom swapped it in. Only JPEG's tag is honoured by every browser:
+    it keeps its original bytes (a re-encode would muddy the 1:1 comparison),
+    any other tagged file is transcoded upright."""
+    pixels = (np.random.default_rng(0).random((200, 400, 3)) * 255).astype(np.uint8)
+    exif = PILImage.Exif()
+    exif[0x0112] = 6
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp)
+        for ext in ("jpg", "png", "webp"):
+            PILImage.fromarray(pixels).save(directory / f"rotated.{ext}", exif=exif.tobytes())
+        client, app = _make_client(directory, directory / "_duplicates")
+        with client:
+            _wait_ready(client)
+            paths = app.state.session.groups[0].paths
+            assert len(paths) == 3, paths
+            for j, path in enumerate(paths):
+                r = client.get(f"/api/full/0/{j}", params={"token": TOKEN})
+                assert r.status_code == 200, r.status_code
+                if path.suffix == ".jpg":
+                    assert r.content == path.read_bytes(), "a JPEG must be served untouched"
+                else:
+                    out = PILImage.open(io.BytesIO(r.content))
+                    assert out.format == "JPEG" and out.size == (200, 400), f"{path.name}: {out.format} {out.size}"
+    print("  ok  /api/full keeps JPEG bytes, transcodes other EXIF-rotated files upright")
+
+
 def test_image_renders_run_off_the_event_loop() -> None:
     """A preview render of a 100 MP photo takes ~0.5 s. Run on the event
     loop, every render froze the whole server -- state polls, keypress
@@ -755,6 +785,7 @@ def main() -> None:
         test_page_and_assets_are_revalidated_not_heuristically_cached,
         test_full_res_is_revalidated_not_heuristically_cached,
         test_full_res_transcodes_formats_browsers_cannot_draw,
+        test_full_res_arrives_in_analyze_orientation,
         test_scanning_status_blocks_mutating_endpoints,
         test_rescan_bumps_generation_and_resets_group_status,
         test_generation_never_repeats_across_runs,

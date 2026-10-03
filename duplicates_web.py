@@ -74,6 +74,23 @@ NO_CACHE = {"Cache-Control": "no-cache"}
 # upscaled stage render.
 TRANSCODE_EXTS = {".heic", ".heif", ".tif", ".tiff"}
 
+
+def _needs_transcode(path: Path) -> bool:
+    """Also any non-JPEG carrying an EXIF rotation: every browser rotates a
+    JPEG by its tag, but Chrome leaves a WebP sideways, and the stage it
+    replaces on zoom is upright. A JPEG keeps its original bytes, since
+    re-encoding would muddy the 1:1 comparison zoom exists for."""
+    suffix = path.suffix.lower()
+    if suffix in TRANSCODE_EXTS:
+        return True
+    if suffix in {".jpg", ".jpeg"}:
+        return False
+    try:
+        with PILImage.open(path) as img:
+            return img.getexif().get(0x0112, 1) != 1  # header only, no decode
+    except Exception:  # noqa: BLE001 -- unreadable: serve as-is, as before
+        return False
+
 # The browser UI shows one candidate at a time at display scale (see the
 # direction contract in static/index.html), so it needs a render well above
 # PREVIEW_MAX_SIDE's 800px -- upscaling a 800px preview to fill a 1400px
@@ -527,7 +544,7 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
             path = g.paths[j]
         if not path.exists():
             raise HTTPException(404, "file no longer exists on disk")
-        if path.suffix.lower() in TRANSCODE_EXTS:
+        if await asyncio.to_thread(_needs_transcode, path):
             def transcode() -> bytes:
                 buf = io.BytesIO()
                 with RENDER_SLOTS:
