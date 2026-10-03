@@ -332,8 +332,10 @@ def _render_scaled_jpeg(path: Path, max_side: int, quality: int) -> bytes:
             # orientation applied, and the browser rotates /api/full the same
             # way. Unrotated, a phone photo rendered sideways and stretched,
             # then flipped upright the moment zoom swapped in the full file.
-            # After draft(): the transpose loads the pixels.
-            img = ImageOps.exif_transpose(img).convert("RGB")
+            # After draft(): the transpose loads the pixels. In place, or an
+            # unrotated full-size HEIC/PNG is copied for nothing.
+            ImageOps.exif_transpose(img, in_place=True)
+            img = img.convert("RGB")
             img.thumbnail((max_side, max_side))
         except Exception:  # noqa: BLE001 -- an undecodable file must not 500 the review
             img = PILImage.new("RGB", (max_side, max_side), THUMBNAIL_FAILURE_COLOR)
@@ -530,7 +532,8 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
                 buf = io.BytesIO()
                 with RENDER_SLOTS:
                     # Oriented like the stage render it replaces on zoom.
-                    img = ImageOps.exif_transpose(PILImage.open(path))
+                    img = PILImage.open(path)
+                    ImageOps.exif_transpose(img, in_place=True)
                     img.convert("RGB").save(buf, format="JPEG", quality=92)
                 return buf.getvalue()
             return Response(content=await asyncio.to_thread(transcode), media_type="image/jpeg")
