@@ -387,24 +387,27 @@ const stageImgs = [];   // one <img> per candidate, all laid out identically
 // they always show the same spot. Three or four stack instead when any photo
 // is really huge -- at fit, a 1/n-width pane shrinks such a photo to a sliver
 // that can't show the sharpness difference being judged, so flipping one
-// full-size frame wins. Five or more panes are too narrow to compare whatever
-// the photo size.
+// full-size frame wins. So do panes narrower than SPLIT_MIN_PANE_WIDTH (a
+// phone, a squeezed window): a thumbnail strip hides the difference too. Five
+// or more panes are too narrow to compare whatever the photo size.
 const SPLIT_MAX_PANES = 4;
 const SPLIT_MAX_PIXELS = 50e6;   // above a 48 MP phone sensor
+const SPLIT_MIN_PANE_WIDTH = 240;
 function isSplit() {
   const d = state.detail;
   if (!d) return false;
   const n = d.paths.length;
   if (n === 2) return true;
   if (n > SPLIT_MAX_PANES) return false;
+  if ($("stage-frame").clientWidth / n < SPLIT_MIN_PANE_WIDTH) return false;
   return d.paths.every((_, j) => {
     const { w, h } = dimsOf(j);
     return w * h <= SPLIT_MAX_PIXELS;
   });
 }
 
-// Re-lay the panes and re-label the images every layout rather than once per
-// build.
+// Split depends on the frame width, so a resize can flip it: re-lay the panes
+// and re-label the images every layout rather than once per build.
 function applySplit() {
   const split = isSplit();
   const n = stageImgs.length;
@@ -1540,7 +1543,7 @@ function helpContent(info) {
   frag.appendChild(ul);
 
   frag.appendChild(h("h3", "Reading the stage"));
-  frag.appendChild(h("p", "One file fills the stage at a time and every file in the group is laid out in exactly the same frame, so moving between them changes the pixels and nothing else — the sharper file is the one that stops looking soft. The file on the stage is the file you're keeping. A group of two to four shows them side by side instead, with the kept one outlined in blue — unless a group of three or four holds a really huge photo (over 50 megapixels)."));
+  frag.appendChild(h("p", "One file fills the stage at a time and every file in the group is laid out in exactly the same frame, so moving between them changes the pixels and nothing else — the sharper file is the one that stops looking soft. The file on the stage is the file you're keeping. A group of two to four shows them side by side instead, with the kept one outlined in blue — unless a group of three or four holds a really huge photo (over 50 megapixels) or the window is too narrow to give each its own usable pane."));
   frag.appendChild(h("p", "Click the stage (or press Z) to inspect at 1:1; a click zooms in on the exact spot under the pointer. On a very large photo, 1:1 shows only a sliver: drag the zoom slider at the bottom-right of the stage to inspect at a lower level instead, and every later group opens at that level. The − and = keys step it. At that zoom the largest file in the group is shown at its true pixels and the others are scaled to match the same part of the scene, so an export upscaled from a smaller original gives itself away. Scroll the wheel (or pinch) to zoom in and out around the pointer. Drag or hold shift with the arrow keys to pan; the spot you're inspecting stays put as you move between files, and side-by-side panes pan together."));
   frag.appendChild(h("p", "n/a in the table means that measurement has no value for that file — either its optional package isn't installed, or it failed on that one image. A measurement missing for any file is dropped from the whole group's score and the remaining weights are rescaled, so the group is still scored, just on fewer inputs."));
 
