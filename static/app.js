@@ -531,7 +531,7 @@ function renderHud() {
     return;
   }
   const factor = inspectMaxWidth() / dimsOf(d.current_pick).w;
-  const pan = "drag or shift+arrows to pan";
+  const pan = "drag, scroll or shift+arrows to pan";
   $("hud-zoom").textContent = factor > 1.02
     ? `Inspecting 1:1 · ${isSplit() ? "kept" : "this"} file upscaled ${factor.toFixed(1)}× · ${pan}`
     : `Inspecting 1:1 · true pixels · ${pan}`;
@@ -639,6 +639,20 @@ function attachStageHandlers() {
   };
   stage.addEventListener("pointerup", endDrag);
   stage.addEventListener("pointercancel", () => { drag = null; stage.classList.remove("is-panning"); });
+
+  // Wheel / trackpad scroll pans while inspecting, the way a scrolled page
+  // would move. ctrlKey is a trackpad pinch (or ctrl+wheel): left to the
+  // browser's own page zoom. Unzoomed, the event is not ours either.
+  stage.addEventListener("wheel", (ev) => {
+    if (!state.detail || !view.zoom || ev.ctrlKey) return;
+    ev.preventDefault();
+    const unit = ev.deltaMode === 1 ? 16 : ev.deltaMode === 2 ? stageBox().h : 1; // lines (Firefox) / pages → px
+    const box = stageBox();
+    const { w, h } = dimsOf(state.detail.current_pick);
+    const s = scaleFor(state.detail.current_pick, box);
+    setCenter(view.u + (ev.deltaX * unit) / (w * s), view.v + (ev.deltaY * unit) / (h * s));
+    layoutStage();
+  }, { passive: false });
 
   new ResizeObserver(() => layoutStage()).observe($("stage-frame"));
 }
@@ -1411,7 +1425,7 @@ function helpContent(info) {
 
   frag.appendChild(h("h3", "Reading the stage"));
   frag.appendChild(h("p", "One file fills the stage at a time and every file in the group is laid out in exactly the same frame, so moving between them changes the pixels and nothing else — the sharper file is the one that stops looking soft. The file on the stage is the file you're keeping. A group of exactly two shows both side by side instead, with the kept one outlined in blue."));
-  frag.appendChild(h("p", "Click the stage (or press Z) to inspect at 1:1; a click zooms in on the exact spot under the pointer. At that zoom the largest file in the group is shown at its true pixels and the others are scaled to match the same part of the scene, so an export upscaled from a smaller original gives itself away. Drag or hold shift with the arrow keys to pan; the spot you're inspecting stays put as you move between files, and side-by-side panes pan together."));
+  frag.appendChild(h("p", "Click the stage (or press Z) to inspect at 1:1; a click zooms in on the exact spot under the pointer. At that zoom the largest file in the group is shown at its true pixels and the others are scaled to match the same part of the scene, so an export upscaled from a smaller original gives itself away. Drag, scroll the wheel or hold shift with the arrow keys to pan; the spot you're inspecting stays put as you move between files, and side-by-side panes pan together."));
   frag.appendChild(h("p", "n/a in the table means that measurement has no value for that file — either its optional package isn't installed, or it failed on that one image. A measurement missing for any file is dropped from the whole group's score and the remaining weights are rescaled, so the group is still scored, just on fewer inputs."));
 
   frag.appendChild(h("h3", "Keyboard"));
