@@ -28,7 +28,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from threading import Event, Lock
+from threading import BoundedSemaphore, Event, Lock
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
@@ -299,22 +299,31 @@ def _require_not_scanning(session: Session) -> None:
         raise HTTPException(409, "a scan is in progress; try again once it finishes")
 
 
+# Renders run on to_thread's pool (~14 threads), and opening one group asks
+# for a stage render and a thumb per candidate plus the next group's prefetch:
+# a dozen decodes at ~0.8 GB each on 100 MP progressive JPEGs, uncounted by
+# the scan's analyze budget. Two at a time keeps memory bounded and still
+# overlaps one decode with another's encode.
+RENDER_SLOTS = BoundedSemaphore(2)
+
+
 def _render_scaled_jpeg(path: Path, max_side: int, quality: int) -> bytes:
     """JPEG bytes of *path* fitted inside a *max_side* box, or a neutral gray
     placeholder of that size if the file can't be decoded -- same contract as
     duplicates_core.make_thumbnail, with the size as a parameter so the
     switcher strip (PREVIEW_MAX_SIDE) and the stage (STAGE_MAX_SIDE) share
     one code path instead of drifting apart."""
-    try:
-        img = PILImage.open(path)
-        # JPEG only (a no-op elsewhere): libjpeg decodes at 1/2-1/8 scale,
-        # still >= 2x the box like thumbnail()'s own reducing_gap. A 100 MP
-        # file otherwise decodes all of itself for an 800 px preview.
-        img.draft("RGB", (2 * max_side, 2 * max_side))
-        img = img.convert("RGB")
-        img.thumbnail((max_side, max_side))
-    except Exception:  # noqa: BLE001 -- an undecodable file must not 500 the review
-        img = PILImage.new("RGB", (max_side, max_side), THUMBNAIL_FAILURE_COLOR)
+    with RENDER_SLOTS:
+        try:
+            img = PILImage.open(path)
+            # JPEG only (a no-op elsewhere): libjpeg decodes at 1/2-1/8 scale,
+            # still >= 2x the box like thumbnail()'s own reducing_gap. A 100 MP
+            # file otherwise decodes all of itself for an 800 px preview.
+            img.draft("RGB", (2 * max_side, 2 * max_side))
+            img = img.convert("RGB")
+            img.thumbnail((max_side, max_side))
+        except Exception:  # noqa: BLE001 -- an undecodable file must not 500 the review
+            img = PILImage.new("RGB", (max_side, max_side), THUMBNAIL_FAILURE_COLOR)
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=quality)
     return buf.getvalue()
@@ -506,7 +515,8 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
         if path.suffix.lower() in HEIC_EXTS:
             def transcode() -> bytes:
                 buf = io.BytesIO()
-                PILImage.open(path).convert("RGB").save(buf, format="JPEG", quality=92)
+                with RENDER_SLOTS:
+                    PILImage.open(path).convert("RGB").save(buf, format="JPEG", quality=92)
                 return buf.getvalue()
             return Response(content=await asyncio.to_thread(transcode), media_type="image/jpeg")
         return FileResponse(path)

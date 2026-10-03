@@ -107,12 +107,45 @@ def test_preview_render_uses_reduced_jpeg_decode() -> None:
     print("  ok  preview render drafts the JPEG at 2x the target box")
 
 
+def test_preview_renders_are_capped() -> None:
+    """Renders moved off the event loop onto to_thread's pool (~14 threads),
+    and opening a group requests a stage render per candidate plus a thumb
+    each plus the next group's prefetch -- a dozen 100 MP decodes at ~0.8 GB
+    apiece, on top of a streaming scan's analyze budget. On the loop they had
+    run one at a time by accident; RENDER_SLOTS keeps that bound on purpose."""
+    import duplicates_web
+
+    lock = threading.Lock()
+    live = [0]
+    peak = [0]
+    real_open = PILImage.open
+
+    def slow_open(path, *a, **k):
+        with lock:
+            live[0] += 1
+            peak[0] = max(peak[0], live[0])
+        time.sleep(0.03)
+        with lock:
+            live[0] -= 1
+        raise OSError("fake undecodable")  # falls through to the placeholder
+
+    PILImage.open = slow_open
+    try:
+        with ThreadPoolExecutor(max_workers=12) as ex:
+            list(ex.map(lambda _: duplicates_web._render_scaled_jpeg(Path("x.jpg"), 64, 85), range(12)))
+    finally:
+        PILImage.open = real_open
+    assert peak[0] <= 2, f"{peak[0]} renders decoded at once"
+    print(f"  ok  at most 2 preview renders decode at once (peak {peak[0]})")
+
+
 def main() -> None:
     tests = [
         test_large_photos_pass_the_bomb_check,
         test_analyze_cost_reads_the_header,
         test_analyze_stays_under_memory_budget,
         test_preview_render_uses_reduced_jpeg_decode,
+        test_preview_renders_are_capped,
     ]
     for test in tests:
         print(f"{test.__name__}:")
