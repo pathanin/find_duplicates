@@ -519,7 +519,9 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
                     PILImage.open(path).convert("RGB").save(buf, format="JPEG", quality=92)
                 return buf.getvalue()
             return Response(content=await asyncio.to_thread(transcode), media_type="image/jpeg")
-        return FileResponse(path)
+        # ?g= restarts every run, so this URL names a different file per
+        # session; Last-Modified alone let Chrome reuse the old run's bytes.
+        return FileResponse(path, headers=NO_CACHE)
 
     def _require_generation(session: Session, gen: int | None) -> None:
         """Reject a mutating request whose client is looking at a pre-rescan

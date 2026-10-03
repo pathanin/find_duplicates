@@ -613,6 +613,26 @@ def test_page_and_assets_are_revalidated_not_heuristically_cached() -> None:
         print("  ok  the page and every static asset are served no-cache with an ETag")
 
 
+def test_full_res_is_revalidated_not_heuristically_cached() -> None:
+    """`?g=` restarts at 1 every process run, so /api/full/3/0?g=1 names a
+    different photo in each session. FileResponse sends Last-Modified, and
+    Chrome's heuristic freshness then served the previous run's file from
+    cache: clicking to zoom swapped the stage to a different photo pair.
+    no-cache forces the revalidation; the ETag (mtime+size) won't match a
+    different file, and still makes the same file a 304."""
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp)
+        make_duplicate_set(directory, seed=1, n=2)
+        client, _ = _make_client(directory, directory / "_duplicates")
+        with client:
+            _wait_ready(client)
+            r = client.get("/api/full/0/0", params={"token": TOKEN})
+            assert r.status_code == 200, r.status_code
+            assert r.headers.get("cache-control") == "no-cache", r.headers
+            assert r.headers.get("etag"), "/api/full has no ETag to revalidate against"
+    print("  ok  /api/full is served no-cache with an ETag")
+
+
 def test_image_renders_run_off_the_event_loop() -> None:
     """A preview render of a 100 MP photo takes ~0.5 s. Run on the event
     loop, every render froze the whole server -- state polls, keypress
@@ -666,6 +686,7 @@ def main() -> None:
         test_stale_generation_is_rejected_on_mutating_posts,
         test_static_assets_require_token_and_serve_with_the_cookie,
         test_page_and_assets_are_revalidated_not_heuristically_cached,
+        test_full_res_is_revalidated_not_heuristically_cached,
         test_scanning_status_blocks_mutating_endpoints,
         test_rescan_bumps_generation_and_resets_group_status,
     ]
