@@ -63,7 +63,9 @@ esac
 
 CLEANUP_DIR=""
 cleanup() {
-  [ -n "$CLEANUP_DIR" ] && rm -rf "$CLEANUP_DIR"
+  # `[ -n ] && rm` would end a clone install with status 1 (the trap's
+  # last status becomes the script's), failing `./install.sh && ...`.
+  [ -z "$CLEANUP_DIR" ] || rm -rf "$CLEANUP_DIR"
 }
 trap cleanup EXIT
 
