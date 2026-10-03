@@ -32,6 +32,7 @@ python3 tests/test_group_ordering.py
 python3 tests/test_heic_support.py
 python3 tests/test_help_and_labels.py
 python3 tests/test_install_file_list.py
+python3 tests/test_install_stable_python.py
 python3 tests/test_name_hint.py
 python3 tests/test_optional_metrics.py
 python3 tests/test_quit.py

@@ -106,6 +106,28 @@ fi
 
 echo "==> Using python3 $PY_VERSION"
 
+# `venv` links its python at the base interpreter's resolved path, which for
+# Homebrew is a versioned Cellar dir (.../Cellar/python@3.14/3.14.7/...).
+# The next `brew upgrade` deletes that dir and the wrapper dies with "No
+# such file or directory". Homebrew's opt/python@X.Y symlink follows
+# upgrades, so build the venv from that instead when it exists.
+stable_python() {
+  # $1 is the base interpreter path, $2 its X.Y version.
+  case "$1" in
+    */Cellar/python@*/*)
+      formula="${1#*/Cellar/}"
+      formula="${formula%%/*}"
+      opt="${1%%/Cellar/*}/opt/$formula/bin/python$2"
+      if [ -x "$opt" ]; then
+        echo "$opt"
+        return
+      fi
+      ;;
+  esac
+  echo "$1"
+}
+VENV_PYTHON="$(stable_python "$(python3 -c 'import sys; print(sys._base_executable)')" "$PY_VERSION")"
+
 echo "==> Creating venv at $VENV_DIR"
 # Remove any existing venv rather than letting `venv` upgrade it in place:
 # its python3 symlink points at a specific Cellar version (e.g.
@@ -114,7 +136,7 @@ echo "==> Creating venv at $VENV_DIR"
 # the same "No such file or directory" this is fixing.
 rm -rf "$VENV_DIR"
 mkdir -p "$DATA_DIR"
-python3 -m venv "$VENV_DIR"
+"$VENV_PYTHON" -m venv "$VENV_DIR"
 
 echo "==> Installing dependencies (prebuilt wheels via pip)"
 "$VENV_DIR/bin/pip" install --upgrade pip --quiet
