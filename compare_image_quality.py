@@ -35,7 +35,7 @@ except ImportError:
 # are ordinary. Past 2x the limit the error is swallowed and the photo becomes
 # a gray placeholder (or a HEIC drops out of the scan). Keep a ceiling, but
 # one in cv2's ballpark, since cv2 decodes the same files on the scan path.
-# Module level so spawned ProcessPool workers get it too
+# Module level so every importer (core, web, standalone) gets it
 # (tests/test_large_image.py).
 PILImage.MAX_IMAGE_PIXELS = 1 << 30
 
