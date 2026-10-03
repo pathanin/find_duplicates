@@ -24,6 +24,7 @@ import json
 import os
 import secrets
 import signal
+import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -135,7 +136,11 @@ class Session:
     # know that -- the frontend appends ?g=<generation> to thumb/full URLs
     # so a rescan's new photo at group 3 slot 0 doesn't render as the old
     # one still sitting in the browser's image cache under the same URL.
-    generation: int = 0
+    # Starts at the launch time in ms, not 0, for the same reason across
+    # runs: restarting at 1 made /api/full/0/0?g=1 a different photo every
+    # session, and a tab left open across a restart could confirm with a g
+    # the new process still accepted.
+    generation: int = field(default_factory=lambda: time.time_ns() // 1_000_000)
     lock: Lock = field(default_factory=Lock)
     # Separate lock for progress: updated frequently from the scan's worker
     # thread and polled frequently by the SSE endpoint -- keeping it apart

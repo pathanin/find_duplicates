@@ -454,6 +454,28 @@ def test_scanning_status_blocks_mutating_endpoints() -> None:
         print("  ok  pick/confirm/skip all reject a request while a scan is in flight")
 
 
+def test_generation_never_repeats_across_runs() -> None:
+    """Every image URL carries ?g=, and it used to restart at 1 each run, so
+    /api/full/0/0?g=1 named a different photo every session. A response the
+    browser cached before /api/full went no-cache stayed heuristically fresh
+    for days under that URL: zooming swapped the stage to a previous run's
+    photo pair. The same reuse let a tab left open across a restart confirm
+    against a group it never showed -- its g=1 matched the new process."""
+    gens = []
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp)
+        make_duplicate_set(directory, seed=9, n=2)
+        for _ in range(2):
+            client, _ = _make_client(directory, directory / "_duplicates")
+            with client:
+                gens.append(_wait_ready(client)["generation"])
+                if len(gens) == 2:
+                    r = client.post("/api/group/0/skip", params={"token": TOKEN, "g": gens[0]})
+                    assert r.status_code == 409, f"previous run's g accepted: {r.status_code}"
+    assert gens[0] != gens[1], f"two runs both served generation {gens[0]}"
+    print("  ok  a restarted server never reuses a previous run's generation")
+
+
 def test_rescan_bumps_generation_and_resets_group_status() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         directory = Path(tmp)
@@ -461,13 +483,13 @@ def test_rescan_bumps_generation_and_resets_group_status() -> None:
         client, app = _make_client(directory, directory / "_duplicates")
         with client:
             data = _wait_ready(client)
-            assert data["generation"] == 1
+            first = data["generation"]
             client.post("/api/group/0/skip", params={"token": TOKEN})
 
             r = client.post("/api/scan", params={"token": TOKEN}, json={"directory": str(directory)})
             assert r.status_code == 200
             data = _wait_ready(client)
-            assert data["generation"] == 2, f"expected generation to bump on a successful rescan, got {data}"
+            assert data["generation"] == first + 1, f"expected generation to bump on a successful rescan, got {data}"
             assert data["groups"][0]["status"] == "pending", "a rescan must produce a fresh, unreviewed group set"
         print("  ok  a rescan bumps generation and resets group status")
 
@@ -713,6 +735,7 @@ def main() -> None:
         test_full_res_is_revalidated_not_heuristically_cached,
         test_scanning_status_blocks_mutating_endpoints,
         test_rescan_bumps_generation_and_resets_group_status,
+        test_generation_never_repeats_across_runs,
     ]
     for test in tests:
         print(f"{test.__name__}:")

@@ -160,7 +160,9 @@ def test_review_works_mid_scan(tmp: Path) -> None:
 
     duplicates_core._analyze_one = gated_analyze
     try:
-        with client_for(tmp) as client:
+        client = client_for(tmp)
+        g0 = client.app.state.session.generation
+        with client:
             session = client.app.state.session
             deadline = time.time() + 10
             while time.time() < deadline:
@@ -173,12 +175,12 @@ def test_review_works_mid_scan(tmp: Path) -> None:
             assert state["status"] == "scanning", state["status"]
             assert state["streaming"] is True, "startup scan should stream"
             assert state["groups"], "no group published while scanning"
-            assert state["generation"] == 1, (
+            assert state["generation"] == g0 + 1, (
                 f"generation must be live before the first group, got {state['generation']}"
             )
 
             # 2. a decision lands mid-scan
-            r = client.post("/api/group/0/confirm", params={"token": TOKEN, "g": 1})
+            r = client.post("/api/group/0/confirm", params={"token": TOKEN, "g": g0 + 1})
             assert r.status_code == 200, f"confirm mid-scan: {r.status_code} {r.text}"
             assert r.json()["status"] == "confirmed"
             moved = list((tmp / "_duplicates").glob("*.jpg"))
@@ -207,7 +209,7 @@ def test_review_works_mid_scan(tmp: Path) -> None:
                 # and unapply could never put those files back.
                 assert len(session.manifest) == 1, f"manifest lost the mid-scan confirm: {session.manifest}"
                 assert session.groups[0].status == "confirmed"
-                assert session.generation == 1, "generation must not bump at the end of a stream"
+                assert session.generation == g0 + 1, "generation must not bump at the end of a stream"
     finally:
         gate.set()
         duplicates_core._analyze_one = real_analyze
