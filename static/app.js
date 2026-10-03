@@ -631,10 +631,10 @@ function setZoom(on) {
   layoutStage();
 }
 
-// Zoom in keeping the clicked scene point under the cursor, rather than
+// Zoom keeping the scene point under the cursor fixed, rather than
 // recentring on it: the detail you clicked is where your eye already is.
-function zoomAt(ev) {
-  const d = state.detail;
+// `apply` changes the zoom (a click turns it on, the wheel steps the level).
+function zoomAt(ev, apply = zoomIn) {
   const j = paneAt(ev);
   const rect = stageImgs[j].parentElement.getBoundingClientRect();
   const px = ev.clientX - rect.left;
@@ -643,7 +643,7 @@ function zoomAt(ev) {
   const u = clamp((px - before.x) / before.dw, 0, 1);
   const v = clamp((py - before.y) / before.dh, 0, 1);
   if ($("stage").dataset.zoomable === "no") return;
-  zoomIn();
+  apply();
   const box = stageBox();
   const after = placement(j, box);
   setCenter(u + (box.w / 2 - px) / after.dw, v + (box.h / 2 - py) / after.dh);
@@ -716,18 +716,22 @@ function attachStageHandlers() {
   stage.addEventListener("pointerup", endDrag);
   stage.addEventListener("pointercancel", () => { drag = null; stage.classList.remove("is-panning"); });
 
-  // Wheel / trackpad scroll pans while inspecting, the way a scrolled page
-  // would move. ctrlKey is a trackpad pinch (or ctrl+wheel): left to the
-  // browser's own page zoom. Unzoomed, the event is not ours either.
+  // Wheel / trackpad scroll zooms around the pointer; drag, shift+arrows and
+  // the slider still pan and set levels. ctrlKey is a trackpad pinch, which
+  // zooms the same way instead of the browser's page zoom. Below the fit
+  // level zoom switches off, the same floor the slider uses.
   stage.addEventListener("wheel", (ev) => {
-    if (!state.detail || !view.zoom || ev.ctrlKey) return;
+    if (!state.detail || $("stage").dataset.zoomable === "no") return;
     ev.preventDefault();
     const unit = ev.deltaMode === 1 ? 16 : ev.deltaMode === 2 ? stageBox().h : 1; // lines (Firefox) / pages → px
-    const box = stageBox();
-    const { w, h } = dimsOf(state.detail.current_pick);
-    const s = scaleFor(state.detail.current_pick, box);
-    setCenter(view.u + (ev.deltaX * unit) / (w * s), view.v + (ev.deltaY * unit) / (h * s));
-    layoutStage();
+    const floor = fitLevel(stageBox());
+    const from = view.zoom ? view.level : floor;
+    // Pinch deltas are small; scale them up to feel like the wheel.
+    const level = clamp(from * Math.exp(-ev.deltaY * unit * (ev.ctrlKey ? 0.01 : 0.002)), floor, 1);
+    zoomAt(ev, () => {
+      view.zoom = level > floor + 0.005;
+      if (view.zoom) view.level = level;
+    });
   }, { passive: false });
 
   // The slider sits on the stage: keep its presses and scrolls from also
@@ -1539,7 +1543,7 @@ function helpContent(info) {
 
   frag.appendChild(h("h3", "Reading the stage"));
   frag.appendChild(h("p", "One file fills the stage at a time and every file in the group is laid out in exactly the same frame, so moving between them changes the pixels and nothing else — the sharper file is the one that stops looking soft. The file on the stage is the file you're keeping. A group of two shows both side by side instead, with the kept one outlined in blue — and so does a group of three or four small photos, when each still fits its own pane at half its pixels or more."));
-  frag.appendChild(h("p", "Click the stage (or press Z) to inspect at 1:1; a click zooms in on the exact spot under the pointer. On a very large photo, 1:1 shows only a sliver: drag the zoom slider at the bottom-right of the stage to inspect at a lower level instead, and every later group opens at that level. The − and = keys step it. At that zoom the largest file in the group is shown at its true pixels and the others are scaled to match the same part of the scene, so an export upscaled from a smaller original gives itself away. Drag, scroll the wheel or hold shift with the arrow keys to pan; the spot you're inspecting stays put as you move between files, and side-by-side panes pan together."));
+  frag.appendChild(h("p", "Click the stage (or press Z) to inspect at 1:1; a click zooms in on the exact spot under the pointer. On a very large photo, 1:1 shows only a sliver: drag the zoom slider at the bottom-right of the stage to inspect at a lower level instead, and every later group opens at that level. The − and = keys step it. At that zoom the largest file in the group is shown at its true pixels and the others are scaled to match the same part of the scene, so an export upscaled from a smaller original gives itself away. Scroll the wheel (or pinch) to zoom in and out around the pointer. Drag or hold shift with the arrow keys to pan; the spot you're inspecting stays put as you move between files, and side-by-side panes pan together."));
   frag.appendChild(h("p", "n/a in the table means that measurement has no value for that file — either its optional package isn't installed, or it failed on that one image. A measurement missing for any file is dropped from the whole group's score and the remaining weights are rescaled, so the group is still scored, just on fewer inputs."));
 
   frag.appendChild(h("h3", "Keyboard"));
