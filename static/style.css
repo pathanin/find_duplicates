@@ -366,6 +366,9 @@ button { font-family: inherit; }
 .review {
   display: grid;
   grid-template-rows: minmax(160px, 1fr) auto minmax(0, auto) auto;
+  /* Explicit, or the implicit auto column grows to its rows' min-content
+     (HUD, decision bar) and .app clips the overflow on narrow screens. */
+  grid-template-columns: minmax(0, 1fr);
   min-height: 0;
   min-width: 0;
 }
@@ -981,13 +984,17 @@ button { font-family: inherit; }
   .commandbar { height: auto; flex-wrap: wrap; }
   .mark { flex: 1 0 100%; height: 44px; border-right: 0; border-bottom: 1px solid var(--hairline); }
   .scope { padding: 10px 14px; flex-wrap: wrap; gap: 2px 12px; }
+  .scope-text { flex-wrap: wrap; gap: 2px 14px; }
   .scope-dir { flex: 1 0 100%; }
+  .scope-meta { white-space: normal; }
   .scope-cue { margin-left: auto; }
 
   .ledger-scroll { max-height: 30vh; }
   .decision { flex-wrap: wrap; gap: 10px 16px; padding: 12px 14px; }
   .consequence { flex: 1 0 100%; }
-  .decision-actions { flex: 1; justify-content: flex-end; }
+  /* Filenames have no spaces to break at. */
+  .consequence strong { overflow-wrap: anywhere; }
+  .decision-actions { flex: 1; flex-wrap: wrap; justify-content: flex-end; }
   .stage-message, .scanning { padding: 24px; }
   .scanning-count { font: var(--display-lg); font-variant-numeric: tabular-nums; }
 }
