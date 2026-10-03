@@ -53,7 +53,7 @@
   /* One measure for the queue rail and the command bar's first cell, so
      their right-hand hairlines are a single rule down the page rather than
      two verticals 80px apart. */
-  --rail-w: 288px;
+  --rail-w: 232px;
 
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
 }
