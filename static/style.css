@@ -404,17 +404,17 @@ button { font-family: inherit; }
 .stage-img.is-active { opacity: 1; }
 
 .stage-pane { position: absolute; inset: 0; overflow: hidden; }
-/* Two candidates: identical half-width panes, both visible. The divider is
-   an overlay, not a border, so neither pane loses a pixel of width and the
-   two stay framed exactly alike. */
-.stage-frame[data-split="yes"] .stage-pane { right: 50%; }
-.stage-frame[data-split="yes"] .stage-pane + .stage-pane { left: 50%; right: 0; }
+/* Split: identical 1/n-width panes, all visible (left/right are set inline
+   by applySplit, since n varies). The divider is an overlay inside each
+   pane after the first, not a border, so every pane keeps the same width
+   and the panes stay framed exactly alike. */
 .stage-frame[data-split="yes"] .stage-img { opacity: 1; }
-.stage-frame[data-split="yes"]::after {
+.stage-frame[data-split="yes"] .stage-pane + .stage-pane::before {
   content: "";
   position: absolute;
-  inset: 0 auto 0 calc(50% - 1px);
+  inset: 0 auto 0 0;
   width: 2px;
+  z-index: 1;
   background: var(--ink);
   pointer-events: none;
 }

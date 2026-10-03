@@ -7,8 +7,9 @@
 //
 // The organising idea of this UI is the stage: one candidate visible at a
 // time, every candidate laid out at the identical scene rectangle, flipped
-// with no transition. A two-file group is the one exception: both sit side
-// by side in identical panes sharing one zoom and pan. See the direction
+// with no transition. A two-file group is the exception, and so is a group
+// of small photos (see isSplit): those sit side by side in identical panes
+// sharing one zoom and pan. See the direction
 // contract at the top of index.html.
 
 const state = {
@@ -397,8 +398,39 @@ const stageImgs = [];   // one <img> per candidate, all laid out identically
 
 // Two candidates fit side by side, so there is nothing to flip between: both
 // panes share `view`, so a pan or zoom moves them together and they always
-// show the same spot. Three or more would shrink each pane past usefulness.
-function isSplit() { return !!state.detail && state.detail.paths.length === 2; }
+// show the same spot. Three or four split too when the photos are small
+// enough that a 1/n-width pane still shows every one at >= half its own
+// pixels -- below that a pane is a thumbnail and can't show the sharpness
+// difference being judged, so flipping one full-size frame wins. Five or
+// more panes are too narrow to compare whatever the photo size.
+const SPLIT_MAX_PANES = 4;
+const SPLIT_MIN_SCALE = 0.5;
+function isSplit() {
+  const d = state.detail;
+  if (!d) return false;
+  const n = d.paths.length;
+  if (n === 2) return true;
+  if (n > SPLIT_MAX_PANES) return false;
+  const f = $("stage-frame");
+  if (!f.clientWidth || !f.clientHeight) return false;
+  return d.paths.every((_, j) => {
+    const { w, h } = dimsOf(j);
+    return Math.min(f.clientWidth / n / w, f.clientHeight / h) >= SPLIT_MIN_SCALE;
+  });
+}
+
+// Split is a function of the frame size, so a resize can flip it: re-lay the
+// panes and re-label the images every layout rather than once per build.
+function applySplit() {
+  const split = isSplit();
+  const n = stageImgs.length;
+  $("stage-frame").dataset.split = split ? "yes" : "no";
+  stageImgs.forEach((img, j) => {
+    img.parentElement.style.left = split ? `${(j * 100) / n}%` : "";
+    img.parentElement.style.right = split ? `${((n - 1 - j) * 100) / n}%` : "";
+    labelStageImg(img, j);
+  });
+}
 
 function labelStageImg(img, j) {
   const d = state.detail;
@@ -482,6 +514,14 @@ function zoomIn() {
   view.zoom = true;
 }
 
+// -/= step the slider by a constant ratio, so each press is the same visual
+// jump at 15% as at 90%: about ten presses from fit to 1:1 on a huge photo.
+function stepZoom(dir) {
+  if (!state.detail || $("stage").dataset.zoomable === "no") return;
+  const s = $("zoom-slider");
+  setLevel(clamp(Math.round(Number(s.value) * 1.25 ** dir), Number(s.min), 100));
+}
+
 function setLevel(pct) {
   const fit = fitLevel(stageBox());
   view.zoom = pct / 100 > fit + 0.005;
@@ -493,6 +533,7 @@ function setLevel(pct) {
 function layoutStage() {
   const d = state.detail;
   if (!d || !stageImgs.length) return;
+  applySplit();
   const box = stageBox();
   if (!box.w || !box.h) return;
 
@@ -559,7 +600,7 @@ function upgradeToFullRes(img, i, j) {
 function renderHud() {
   const d = state.detail;
   if (!d) { $("hud-group").textContent = ""; $("hud-zoom").textContent = ""; return; }
-  $("hud-group").textContent = `Group ${d.index + 1} of ${state.groups.length} · ` + (isSplit()
+  $("hud-group").textContent = `Group ${d.index + 1} of ${state.groups.length} · ` + (isSplit() && d.paths.length === 2
     ? `keeping the ${d.current_pick === 0 ? "left" : "right"} file`
     : `file ${d.current_pick + 1} of ${d.paths.length}`);
 
@@ -621,8 +662,9 @@ function zoomAt(ev) {
 // always the one on show.
 function paneAt(ev) {
   if (!isSplit()) return state.detail.current_pick;
+  const n = stageImgs.length;
   const r = $("stage-frame").getBoundingClientRect();
-  return ev.clientX < r.left + r.width / 2 ? 0 : 1;
+  return clamp(Math.floor(((ev.clientX - r.left) / r.width) * n), 0, n - 1);
 }
 
 function attachStageHandlers() {
@@ -1472,8 +1514,8 @@ function helpContent(info) {
   frag.appendChild(ul);
 
   frag.appendChild(h("h3", "Reading the stage"));
-  frag.appendChild(h("p", "One file fills the stage at a time and every file in the group is laid out in exactly the same frame, so moving between them changes the pixels and nothing else — the sharper file is the one that stops looking soft. The file on the stage is the file you're keeping. A group of exactly two shows both side by side instead, with the kept one outlined in blue."));
-  frag.appendChild(h("p", "Click the stage (or press Z) to inspect at 1:1; a click zooms in on the exact spot under the pointer. On a very large photo, 1:1 shows only a sliver: drag the zoom slider at the bottom-right of the stage to inspect at a lower level instead, and every later group opens at that level. At that zoom the largest file in the group is shown at its true pixels and the others are scaled to match the same part of the scene, so an export upscaled from a smaller original gives itself away. Drag, scroll the wheel or hold shift with the arrow keys to pan; the spot you're inspecting stays put as you move between files, and side-by-side panes pan together."));
+  frag.appendChild(h("p", "One file fills the stage at a time and every file in the group is laid out in exactly the same frame, so moving between them changes the pixels and nothing else — the sharper file is the one that stops looking soft. The file on the stage is the file you're keeping. A group of two shows both side by side instead, with the kept one outlined in blue — and so does a group of three or four small photos, when each still fits its own pane at half its pixels or more."));
+  frag.appendChild(h("p", "Click the stage (or press Z) to inspect at 1:1; a click zooms in on the exact spot under the pointer. On a very large photo, 1:1 shows only a sliver: drag the zoom slider at the bottom-right of the stage to inspect at a lower level instead, and every later group opens at that level. The − and = keys step it. At that zoom the largest file in the group is shown at its true pixels and the others are scaled to match the same part of the scene, so an export upscaled from a smaller original gives itself away. Drag, scroll the wheel or hold shift with the arrow keys to pan; the spot you're inspecting stays put as you move between files, and side-by-side panes pan together."));
   frag.appendChild(h("p", "n/a in the table means that measurement has no value for that file — either its optional package isn't installed, or it failed on that one image. A measurement missing for any file is dropped from the whole group's score and the remaining weights are rescaled, so the group is still scored, just on fewer inputs."));
 
   frag.appendChild(h("h3", "Keyboard"));
@@ -1486,6 +1528,7 @@ function helpContent(info) {
     ["Enter / C", "Confirm keep"],
     ["Delete / S", "Skip group — on a confirmed group, move its files back"],
     ["Z", "Inspect (at the zoom slider's level)"],
+    ["− / =", "Zoom out / in"],
     ["Shift + arrows", "Pan while inspecting"],
     ["O", "Open the kept file full-res in a new tab"],
     ["M", "Show or hide the measurements"],
@@ -1645,6 +1688,8 @@ function attachKeyboardHandler() {
     else if (e.code === "KeyC") { confirmGroup(); e.preventDefault(); }
     else if (e.code === "Delete" || e.code === "Backspace" || e.code === "KeyS") { skipGroup(); e.preventDefault(); }
     else if (e.code === "KeyZ") { setZoom(!view.zoom); e.preventDefault(); }
+    else if (e.code === "Equal" || e.code === "NumpadAdd") { stepZoom(1); e.preventDefault(); }
+    else if (e.code === "Minus" || e.code === "NumpadSubtract") { stepZoom(-1); e.preventDefault(); }
     else if (e.code === "KeyO") { openFullRes(); e.preventDefault(); }
     else if (e.code === "KeyM") { setLedgerOpen(!state.ledgerOpen); e.preventDefault(); }
     else if (e.code === "KeyQ") { quitNow(); e.preventDefault(); }
