@@ -392,6 +392,24 @@ button { font-family: inherit; }
 }
 .stage-img.is-active { opacity: 1; }
 
+.stage-pane { position: absolute; inset: 0; overflow: hidden; }
+/* Two candidates: identical half-width panes, both visible. The divider is
+   an overlay, not a border, so neither pane loses a pixel of width and the
+   two stay framed exactly alike. */
+.stage-frame[data-split="yes"] .stage-pane { right: 50%; }
+.stage-frame[data-split="yes"] .stage-pane + .stage-pane { left: 50%; right: 0; }
+.stage-frame[data-split="yes"] .stage-img { opacity: 1; }
+.stage-frame[data-split="yes"]::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 calc(50% - 1px);
+  width: 2px;
+  background: var(--ink);
+  pointer-events: none;
+}
+/* Outline paints above the image; an inset box-shadow would sit under it. */
+.stage-frame[data-split="yes"] .stage-pane.is-kept { outline: 2px solid var(--primary-bright); outline-offset: -2px; }
+
 .stage-hud {
   position: absolute;
   inset: 0 0 auto 0;

@@ -7,7 +7,9 @@
 //
 // The organising idea of this UI is the stage: one candidate visible at a
 // time, every candidate laid out at the identical scene rectangle, flipped
-// with no transition. See the direction contract at the top of index.html.
+// with no transition. A two-file group is the one exception: both sit side
+// by side in identical panes sharing one zoom and pan. See the direction
+// contract at the top of index.html.
 
 const state = {
   status: "idle",
@@ -382,11 +384,24 @@ function renderScanTally() {
 
 const stageImgs = [];   // one <img> per candidate, all laid out identically
 
+// Two candidates fit side by side, so there is nothing to flip between: both
+// panes share `view`, so a pan or zoom moves them together and they always
+// show the same spot. Three or more would shrink each pane past usefulness.
+function isSplit() { return !!state.detail && state.detail.paths.length === 2; }
+
+function labelStageImg(img, j) {
+  const d = state.detail;
+  const shown = isSplit() || j === d.current_pick;
+  img.alt = shown ? (j === d.current_pick ? `${d.paths[j]} — the file you're keeping` : d.paths[j]) : "";
+  img.setAttribute("aria-hidden", shown ? "false" : "true");
+}
+
 function buildStage() {
   const frame = $("stage-frame");
   frame.innerHTML = "";
   stageImgs.length = 0;
   const d = state.detail;
+  frame.dataset.split = isSplit() ? "yes" : "no";
   if (!d) return;
   d.paths.forEach((path, j) => {
     const img = document.createElement("img");
@@ -399,19 +414,23 @@ function buildStage() {
     // Only the visible layer is exposed: the others are the same photo at
     // other sizes, stacked underneath, and announcing all six as images is
     // noise no one can act on.
-    img.alt = j === d.current_pick ? `${path} — the file you're keeping` : "";
-    img.setAttribute("aria-hidden", j === d.current_pick ? "false" : "true");
+    labelStageImg(img, j);
     img.decoding = "async";
     img.src = `/api/stage/${d.index}/${j}?g=${state.generation}`;
     img.dataset.full = "0";
-    frame.appendChild(img);
+    // Each image clips to its own pane; stacked panes all fill the frame.
+    const pane = document.createElement("div");
+    pane.className = "stage-pane";
+    pane.appendChild(img);
+    frame.appendChild(pane);
     stageImgs.push(img);
   });
 }
 
+// Every pane is the same size, so the first one stands for all of them.
 function stageBox() {
-  const frame = $("stage-frame");
-  return { w: frame.clientWidth, h: frame.clientHeight };
+  const pane = $("stage-frame").firstElementChild || $("stage-frame");
+  return { w: pane.clientWidth, h: pane.clientHeight };
 }
 
 function dimsOf(j) {
@@ -445,16 +464,12 @@ function layoutStage() {
   if (!box.w || !box.h) return;
 
   stageImgs.forEach((img, j) => {
-    const { w, h } = dimsOf(j);
-    const s = scaleFor(j, box);
-    const dw = w * s;
-    const dh = h * s;
-    const x = dw <= box.w ? (box.w - dw) / 2 : clamp(box.w / 2 - view.u * dw, box.w - dw, 0);
-    const y = dh <= box.h ? (box.h - dh) / 2 : clamp(box.h / 2 - view.v * dh, box.h - dh, 0);
+    const { x, y, dw, dh } = placement(j, box);
     img.style.width = `${dw}px`;
     img.style.height = `${dh}px`;
     img.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
     img.classList.toggle("is-active", j === d.current_pick);
+    img.parentElement.classList.toggle("is-kept", j === d.current_pick);
     // Only fetch the original once the stage render (STAGE_MAX_SIDE) is
     // actually being magnified past its own pixels -- /api/full re-encodes
     // HEIC on every request and can be tens of megabytes.
@@ -469,6 +484,29 @@ function layoutStage() {
 
 function clamp(v, lo, hi) { return Math.min(Math.max(v, lo), hi); }
 
+// Where candidate j's image sits inside its pane for the current view.
+function placement(j, box) {
+  const { w, h } = dimsOf(j);
+  const s = scaleFor(j, box);
+  const dw = w * s;
+  const dh = h * s;
+  const x = dw <= box.w ? (box.w - dw) / 2 : clamp(box.w / 2 - view.u * dw, box.w - dw, 0);
+  const y = dh <= box.h ? (box.h - dh) / 2 : clamp(box.h / 2 - view.v * dh, box.h - dh, 0);
+  return { x, y, dw, dh };
+}
+
+// Clamp the centre to where the image still covers the pane. Clamping to
+// [0, 1] alone leaves a dead zone at each edge: the layout pins the image
+// there, but the centre keeps moving, so a drag back does nothing at first.
+function setCenter(u, v) {
+  const box = stageBox();
+  const { dw, dh } = placement(state.detail.current_pick, box);
+  const hu = Math.min(0.5, box.w / 2 / dw);
+  const hv = Math.min(0.5, box.h / 2 / dh);
+  view.u = clamp(u, hu, 1 - hu);
+  view.v = clamp(v, hv, 1 - hv);
+}
+
 function upgradeToFullRes(img, i, j) {
   img.dataset.full = "1";
   const pre = new Image();
@@ -482,7 +520,9 @@ function upgradeToFullRes(img, i, j) {
 function renderHud() {
   const d = state.detail;
   if (!d) { $("hud-group").textContent = ""; $("hud-zoom").textContent = ""; return; }
-  $("hud-group").textContent = `Group ${d.index + 1} of ${state.groups.length} · file ${d.current_pick + 1} of ${d.paths.length}`;
+  $("hud-group").textContent = `Group ${d.index + 1} of ${state.groups.length} · ` + (isSplit()
+    ? `keeping the ${d.current_pick === 0 ? "left" : "right"} file`
+    : `file ${d.current_pick + 1} of ${d.paths.length}`);
 
   if (!view.zoom) {
     $("hud-zoom").textContent = $("stage").dataset.zoomable === "no"
@@ -493,7 +533,7 @@ function renderHud() {
   const factor = inspectMaxWidth() / dimsOf(d.current_pick).w;
   const pan = "drag or shift+arrows to pan";
   $("hud-zoom").textContent = factor > 1.02
-    ? `Inspecting 1:1 · this file upscaled ${factor.toFixed(1)}× · ${pan}`
+    ? `Inspecting 1:1 · ${isSplit() ? "kept" : "this"} file upscaled ${factor.toFixed(1)}× · ${pan}`
     : `Inspecting 1:1 · true pixels · ${pan}`;
 }
 
@@ -506,32 +546,41 @@ function panBy(dirU, dirV) {
   const box = stageBox();
   const { w, h } = dimsOf(d.current_pick);
   const s = scaleFor(d.current_pick, box);
-  view.u = clamp(view.u + dirU * 0.1 * (box.w / (w * s)), 0, 1);
-  view.v = clamp(view.v + dirV * 0.1 * (box.h / (h * s)), 0, 1);
+  setCenter(view.u + dirU * 0.1 * (box.w / (w * s)), view.v + dirV * 0.1 * (box.h / (h * s)));
   layoutStage();
 }
 
-function setZoom(on, u, v) {
+function setZoom(on) {
   if (on && $("stage").dataset.zoomable === "no") return;
   view.zoom = on;
-  if (u !== undefined) { view.u = clamp(u, 0, 1); view.v = clamp(v, 0, 1); }
   layoutStage();
 }
 
-function pointToScene(ev) {
+// Zoom in keeping the clicked scene point under the cursor, rather than
+// recentring on it: the detail you clicked is where your eye already is.
+function zoomAt(ev) {
   const d = state.detail;
+  const j = paneAt(ev);
+  const rect = stageImgs[j].parentElement.getBoundingClientRect();
+  const px = ev.clientX - rect.left;
+  const py = ev.clientY - rect.top;
+  const before = placement(j, stageBox());
+  const u = clamp((px - before.x) / before.dw, 0, 1);
+  const v = clamp((py - before.y) / before.dh, 0, 1);
+  if ($("stage").dataset.zoomable === "no") return;
+  view.zoom = true;
   const box = stageBox();
-  const rect = $("stage-frame").getBoundingClientRect();
-  const { w, h } = dimsOf(d.current_pick);
-  const s = scaleFor(d.current_pick, box);
-  const dw = w * s;
-  const dh = h * s;
-  const x = dw <= box.w ? (box.w - dw) / 2 : clamp(box.w / 2 - view.u * dw, box.w - dw, 0);
-  const y = dh <= box.h ? (box.h - dh) / 2 : clamp(box.h / 2 - view.v * dh, box.h - dh, 0);
-  return {
-    u: clamp((ev.clientX - rect.left - x) / dw, 0, 1),
-    v: clamp((ev.clientY - rect.top - y) / dh, 0, 1),
-  };
+  const after = placement(j, box);
+  setCenter(u + (box.w / 2 - px) / after.dw, v + (box.h / 2 - py) / after.dh);
+  layoutStage();
+}
+
+// Which candidate's pane is under the pointer: in the stacked layout it is
+// always the one on show.
+function paneAt(ev) {
+  if (!isSplit()) return state.detail.current_pick;
+  const r = $("stage-frame").getBoundingClientRect();
+  return ev.clientX < r.left + r.width / 2 ? 0 : 1;
 }
 
 function attachStageHandlers() {
@@ -574,8 +623,7 @@ function attachStageHandlers() {
     const dx = ev.clientX - drag.x;
     const dy = ev.clientY - drag.y;
     if (Math.abs(dx) > 3 || Math.abs(dy) > 3) drag.moved = true;
-    view.u = clamp(drag.u - dx / (w * s), 0, 1);
-    view.v = clamp(drag.v - dy / (h * s), 0, 1);
+    setCenter(drag.u - dx / (w * s), drag.v - dy / (h * s));
     layoutStage();
   });
 
@@ -587,7 +635,7 @@ function attachStageHandlers() {
     drag = null;
     if (wasDrag || !state.detail) return;
     if (view.zoom) setZoom(false);
-    else { const p = pointToScene(ev); setZoom(true, p.u, p.v); }
+    else zoomAt(ev);
   };
   stage.addEventListener("pointerup", endDrag);
   stage.addEventListener("pointercancel", () => { drag = null; stage.classList.remove("is-panning"); });
@@ -931,10 +979,8 @@ function renderPickChange() {
   const d = state.detail;
   if (d) {
     stageImgs.forEach((img, j) => {
-      const active = j === d.current_pick;
-      img.classList.toggle("is-active", active);
-      img.alt = active ? `${d.paths[j]} — the file you're keeping` : "";
-      img.setAttribute("aria-hidden", active ? "false" : "true");
+      img.classList.toggle("is-active", j === d.current_pick);
+      labelStageImg(img, j);
     });
     $("stage").setAttribute("aria-labelledby", `cand-${d.current_pick}`);
   }
@@ -1364,8 +1410,8 @@ function helpContent(info) {
   frag.appendChild(ul);
 
   frag.appendChild(h("h3", "Reading the stage"));
-  frag.appendChild(h("p", "One file fills the stage at a time and every file in the group is laid out in exactly the same frame, so moving between them changes the pixels and nothing else — the sharper file is the one that stops looking soft. The file on the stage is the file you're keeping."));
-  frag.appendChild(h("p", "Click the stage (or press Z) to inspect at 1:1. At that zoom the largest file in the group is shown at its true pixels and the others are scaled to match the same part of the scene, so an export upscaled from a smaller original gives itself away. Drag or hold shift with the arrow keys to pan; the spot you're inspecting stays put as you move between files."));
+  frag.appendChild(h("p", "One file fills the stage at a time and every file in the group is laid out in exactly the same frame, so moving between them changes the pixels and nothing else — the sharper file is the one that stops looking soft. The file on the stage is the file you're keeping. A group of exactly two shows both side by side instead, with the kept one outlined in blue."));
+  frag.appendChild(h("p", "Click the stage (or press Z) to inspect at 1:1; a click zooms in on the exact spot under the pointer. At that zoom the largest file in the group is shown at its true pixels and the others are scaled to match the same part of the scene, so an export upscaled from a smaller original gives itself away. Drag or hold shift with the arrow keys to pan; the spot you're inspecting stays put as you move between files, and side-by-side panes pan together."));
   frag.appendChild(h("p", "n/a in the table means that measurement has no value for that file — either its optional package isn't installed, or it failed on that one image. A measurement missing for any file is dropped from the whole group's score and the remaining weights are rescaled, so the group is still scored, just on fewer inputs."));
 
   frag.appendChild(h("h3", "Keyboard"));
