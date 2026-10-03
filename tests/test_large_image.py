@@ -15,13 +15,17 @@ Run: python3 tests/test_large_image.py
 """
 
 import sys
+import tempfile
+import threading
+import time
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from PIL import Image as PILImage
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import duplicates_core  # noqa: F401 -- importing it must raise the limit
+import duplicates_core as dc  # importing it must raise the limit
 
 
 def test_large_photos_pass_the_bomb_check() -> None:
@@ -32,8 +36,53 @@ def test_large_photos_pass_the_bomb_check() -> None:
     print("  ok  102 MP and 182 MP images open without warning or error")
 
 
+def test_analyze_cost_reads_the_header() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "a.png"
+        PILImage.new("L", (300, 200)).save(p)
+        assert dc._analyze_cost(str(p)) == 300 * 200 * dc.ANALYZE_BYTES_PER_PIXEL
+        assert dc._analyze_cost(str(Path(tmp) / "missing.jpg")) == 0
+    print("  ok  analyze cost comes from the header; unreadable costs 0")
+
+
+def test_analyze_stays_under_memory_budget() -> None:
+    """analyze() peaks at ~2.7 GB on a 100 MP JPEG. Ten of those at once (one
+    per core) swapped a 24 GB Mac to a crawl -- browser included -- so
+    _analyze_one admits work against a byte budget. A file bigger than the
+    whole budget must still run, alone, or the scan would hang on it."""
+    costs = {"a": 60, "b": 60, "c": 60, "d": 60, "huge": 250, "e": 30, "f": 30}
+    lock = threading.Lock()
+    in_flight: dict[str, int] = {}
+    violations: list[dict] = []
+
+    def fake_analyze(p: str) -> dict:
+        with lock:
+            in_flight[p] = costs[p]
+            if sum(in_flight.values()) > 100 and list(in_flight) != ["huge"]:
+                violations.append(dict(in_flight))
+        time.sleep(0.03)
+        with lock:
+            del in_flight[p]
+        return {"path": p}
+
+    saved = dc.analyze, dc._analyze_cost, dc.ANALYZE_MEMORY_BUDGET
+    dc.analyze, dc._analyze_cost, dc.ANALYZE_MEMORY_BUDGET = fake_analyze, costs.__getitem__, 100
+    try:
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            out = list(ex.map(dc._analyze_one, costs))
+    finally:
+        dc.analyze, dc._analyze_cost, dc.ANALYZE_MEMORY_BUDGET = saved
+    assert [r["path"] for r in out] == list(costs), "every file must be analyzed, in order"
+    assert not violations, f"over budget: {violations}"
+    print("  ok  concurrent analyze stays under the byte budget; oversized file runs alone")
+
+
 def main() -> None:
-    tests = [test_large_photos_pass_the_bomb_check]
+    tests = [
+        test_large_photos_pass_the_bomb_check,
+        test_analyze_cost_reads_the_header,
+        test_analyze_stays_under_memory_budget,
+    ]
     for test in tests:
         print(f"{test.__name__}:")
         test()

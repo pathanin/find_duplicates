@@ -15,6 +15,7 @@ import math
 import os
 import shutil
 import sys
+import threading
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import lru_cache
@@ -788,11 +789,46 @@ def store_result(cache: dict, p: Path, st: os.stat_result, result: dict) -> None
     cache[_cache_key(p)] = {"mtime": st.st_mtime_ns, "size": st.st_size, "result": dict(result)}
 
 
+# analyze() works on the full-resolution image (the metrics must; see the
+# scoring trap in CLAUDE.md), so its memory scales with pixel count: measured
+# ~2.7 GB peak on a 100 MP JPEG. One thread per core of those swapped a 24 GB
+# Mac to a crawl, so _analyze_one admits work against a byte budget instead.
+# Ordinary 12-24 MP photos still run one per core; only huge ones queue.
+# A third of RAM, measured on 15 of those 100 MP files (24 GB, 10 cores):
+# 8.1 s / 7.5 GB peak, against 12.4 s / 11.7 GB unbudgeted -- a half was no
+# faster and a quarter starved the cores (11.6 s).
+ANALYZE_BYTES_PER_PIXEL = 26
+ANALYZE_MEMORY_BUDGET = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") // 3
+_analyze_slots = threading.Condition()
+_analyze_in_flight = 0
+
+
+def _analyze_cost(path_str: str) -> int:
+    """Estimated peak bytes for analyze(), from the header alone (PIL's open
+    is lazy). Unreadable means 0: analyze() will fail on it cheaply too."""
+    try:
+        with PILImage.open(path_str) as im:
+            w, h = im.size
+        return w * h * ANALYZE_BYTES_PER_PIXEL
+    except Exception:
+        return 0
+
+
 def _analyze_one(path_str: str) -> dict | None:
+    global _analyze_in_flight
+    # Capped at the budget so a file bigger than all of it still runs, alone.
+    cost = min(_analyze_cost(path_str), ANALYZE_MEMORY_BUDGET)
+    with _analyze_slots:
+        _analyze_slots.wait_for(lambda: _analyze_in_flight + cost <= ANALYZE_MEMORY_BUDGET)
+        _analyze_in_flight += cost
     try:
         return analyze(path_str)
     except Exception:
         return None
+    finally:
+        with _analyze_slots:
+            _analyze_in_flight -= cost
+            _analyze_slots.notify_all()
 
 
 def analyze_paths(paths: list[Path], cache: dict,
