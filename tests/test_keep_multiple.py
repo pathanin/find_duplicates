@@ -200,8 +200,12 @@ def test_keep_route_then_confirm_moves_only_unpinned() -> None:
             assert r.status_code == 200
             assert p0.exists() and not p1.exists() and not p2.exists(), "unpinned then reconfirmed: p2 must move too"
 
+            r = client.post("/api/group/0/keep", params={"token": TOKEN}, json={"idx": 2, "keep": True})
             r = client.post("/api/group/0/skip", params={"token": TOKEN})
             assert all(p.exists() for p in (p0, p1, p2)), "skip must restore everything"
+            assert r.json()["restored"] == 2, (
+                f"skip must report what the manifest moved (2), not paths minus today's pins (1): {r.json()['restored']}"
+            )
         print("  ok  /keep pins a file, confirm leaves it, unpin + reconfirm moves it, skip restores all")
 
 

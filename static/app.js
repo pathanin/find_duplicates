@@ -895,8 +895,20 @@ function renderSwitcher() {
     pin.title = pinned
       ? `Kept alongside the pick — click (or Shift+${j + 1}) to let it move with the duplicates again.`
       : `Keep this file too, whichever file is on the stage — for a different photo that got grouped with real duplicates. Shift+${j + 1}${active ? " or K" : ""}.`;
-    pin.addEventListener("click", () => {
+    // A mouse press must not leave focus on the pin: Enter defers to a
+    // focused button, so "click +, press Enter to confirm" would toggle the
+    // pin back off instead -- reversing a keep. Focus goes to the stage, as
+    // after advance(). Keyboard activation keeps its place on the rebuilt pin.
+    pin.addEventListener("pointerdown", (ev) => {
+      if (ev.pointerType !== "mouse" || ev.button !== 0) return;
+      ev.preventDefault();
       togglePin(j);
+      $("stage").focus({ preventScroll: true });
+    });
+    pin.addEventListener("click", (ev) => {
+      if (ev.pointerType === "mouse") return;
+      togglePin(j);
+      if (ev.pointerType) { $("stage").focus({ preventScroll: true }); return; }
       const again = $(`cand-pin-${j}`);
       if (again) again.focus({ preventScroll: true });
     });
@@ -1369,7 +1381,7 @@ async function skipGroup() {
     // Undoing a confirmed group is a second real move -- files come back out
     // of the destination folder -- so it gets said as plainly as the first.
     if (wasConfirmed && !(state.params && state.params.dry_run)) {
-      const moved = data.paths.length - keptIndices(data).length;
+      const moved = data.restored;
       showReceipt(`Group ${i + 1}: ${moved} file${moved === 1 ? "" : "s"} moved back, group marked skipped.`, i);
     }
     if (data.status === "skipped") advance();

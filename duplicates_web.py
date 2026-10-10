@@ -657,12 +657,18 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
             if not (0 <= i < len(session.groups)):
                 raise HTTPException(404, "no such group")
             g = session.groups[i]
+            # Counted off the manifest, not the kept set: pins changed after
+            # a confirm would otherwise misreport what actually came back.
+            def on_disk_moved() -> int:
+                entry = next((m for m in session.manifest if m["group"] == i), None)
+                return len(entry["moved"]) if entry else 0
+            before = on_disk_moved()
             if g.status in ("pending", "confirmed"):
                 unapply(session.manifest, i)
                 g.status = "skipped"
             elif g.status == "skipped":
                 g.status = "pending"
-            return JSONResponse(_group_detail(session, i, g))
+            return JSONResponse({**_group_detail(session, i, g), "restored": before - on_disk_moved()})
 
     @app.post("/api/scan")
     async def start_scan(req: ScanRequest, _: str = Depends(require_token)) -> JSONResponse:
