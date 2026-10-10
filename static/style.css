@@ -766,6 +766,34 @@ button { font-family: inherit; }
 .consequence strong { font: var(--body-emphasis); color: var(--ink); }
 .consequence .warn { color: var(--bloom-deep); font-weight: 700; }
 .decision-actions { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+/* What the last confirm or undo did. It used to be a toast, which sat on
+   the queue rail -- over the very rows it was reporting on. It lives here
+   instead and stays until the next one replaces it: the bar has already
+   moved on to the next group, so this line is the only record of the move,
+   and a toast that timed out took its way back with it. */
+.receipt {
+  flex: 1 0 100%;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--hairline);
+  font: var(--caption-sm);
+  color: var(--steel);
+}
+.receipt[hidden] { display: none; }
+.receipt-reopen {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.receipt-reopen:hover { color: var(--primary); }
 
 /* --------------------------------------------------------------------- */
 /* Buttons                                                                */
@@ -909,13 +937,14 @@ button { font-family: inherit; }
 /* --------------------------------------------------------------------- */
 
 /* Clear of the decision bar: a toast that lands on top of the sentence
-   describing what confirm just did is the one thing it must not cover. */
+   describing what confirm just did is the one thing it must not cover. And
+   clear of the queue rail, where it hid the rows a message was about. */
 .toast {
   position: fixed;
-  left: 20px;
+  left: calc(var(--rail-w) + 20px);
   bottom: 84px;
   z-index: 55;
-  max-width: min(520px, calc(100vw - 40px));
+  max-width: min(520px, calc(100vw - var(--rail-w) - 40px));
   padding: 12px 16px;
   background: var(--ink);
   color: var(--on-ink);
@@ -999,6 +1028,7 @@ button { font-family: inherit; }
   /* Filenames have no spaces to break at. */
   .consequence strong { overflow-wrap: anywhere; }
   .decision-actions { flex: 1; flex-wrap: wrap; justify-content: flex-end; }
+  .toast { left: 14px; max-width: calc(100vw - 28px); }
   .stage-message, .scanning { padding: 24px; }
   .scanning-count { font: var(--display-lg); font-variant-numeric: tabular-nums; }
 }

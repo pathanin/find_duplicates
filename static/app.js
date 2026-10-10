@@ -74,6 +74,21 @@ function showToast(message, isError = false) {
   showToast._t = setTimeout(() => { el.hidden = true; }, 5000);
 }
 
+// The last confirm or undo, kept on a line in the decision bar until the next
+// one -- see .receipt in style.css for why it isn't a toast. Reopen goes back
+// to the group, where Skip undoes a confirm or a new pick can be confirmed.
+function showReceipt(message, i) {
+  $("receipt-text").textContent = message;
+  const btn = $("receipt-reopen");
+  btn.textContent = `Reopen group ${i + 1}`;
+  btn.onclick = () => loadGroup(i);
+  $("receipt").hidden = false;
+}
+
+function clearReceipt() {
+  $("receipt").hidden = true;
+}
+
 function fmtInt(n) {
   return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ");
 }
@@ -87,6 +102,9 @@ async function refreshState() {
   state.status = data.status;
   state.streaming = !!data.streaming;
   state.error = data.error;
+  // A rescan reuses group indices, so the last receipt's Reopen would point
+  // at a different group.
+  if (data.generation !== state.generation) clearReceipt();
   state.generation = data.generation;
   state.params = data.params;
   state.groups = data.groups;
@@ -1257,9 +1275,9 @@ async function confirmGroup() {
     // A real move gets said out loud, with the way back: the group advances
     // immediately, so the decision bar is already describing the next group
     // by the time the user looks down at it.
-    showToast(state.params && state.params.dry_run
+    showReceipt(state.params && state.params.dry_run
       ? `Dry run: group ${i + 1} would keep ${name} and move ${files}. Nothing was moved.`
-      : `Group ${i + 1}: kept ${name}, ${files} moved. Reopen group ${i + 1} to undo.`);
+      : `Group ${i + 1}: kept ${name}, ${files} moved.`, i);
     advance();
   } catch (e) {
     if (e.status === 409) await handleStale();
@@ -1282,7 +1300,7 @@ async function skipGroup() {
     // of the destination folder -- so it gets said as plainly as the first.
     if (wasConfirmed && !(state.params && state.params.dry_run)) {
       const moved = data.paths.length - 1;
-      showToast(`Group ${i + 1}: ${moved} file${moved === 1 ? "" : "s"} moved back, group marked skipped.`);
+      showReceipt(`Group ${i + 1}: ${moved} file${moved === 1 ? "" : "s"} moved back, group marked skipped.`, i);
     }
     if (data.status === "skipped") advance();
   } catch (e) {
