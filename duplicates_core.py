@@ -17,7 +17,7 @@ import shutil
 import sys
 import threading
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Callable, NamedTuple
@@ -533,6 +533,14 @@ class Group:
     current_pick: int
     is_close_call: bool
     status: str = "pending"  # pending | confirmed | skipped
+    # Indices kept *alongside* current_pick -- for a group that caught a
+    # similar-but-different photo (a false positive) next to its real
+    # duplicates. Independent of the pick: the kept set is always
+    # {current_pick} | also_keep, so flipping the stage never drops a pin.
+    also_keep: list[int] = field(default_factory=list)
+
+    def kept_indices(self, keep_idx: int | None = None) -> set[int]:
+        return {self.current_pick if keep_idx is None else keep_idx, *self.also_keep}
 
 
 def _compute_dest(
@@ -570,10 +578,11 @@ def apply_group(
     recursive: bool = False,
     scan_root: Path | None = None,
 ) -> dict:
-    """Move every non-kept file in *group* to *dest_dir*. Shared by the
-    interactive confirm path (apply_pick) and --auto mode. Files that are
-    symlinks to the kept file's real target are left alone (moving the
-    target would leave the kept path dangling). Records whatever was
+    """Move every non-kept file in *group* to *dest_dir* -- kept being
+    *keep_idx* plus any pinned group.also_keep indices. Shared by the
+    interactive confirm path (apply_pick) and --auto mode. Files whose real
+    target is a kept symlink's target are left alone (moving the target
+    would leave the kept path dangling). Records whatever was
     actually moved into a manifest entry from a `finally` -- even a failure
     partway through the loop (disk full, permission error) leaves an
     accurate, reversible record instead of silently losing track of files
@@ -583,24 +592,27 @@ def apply_group(
     Appends the entry to *manifest* if given, and always returns it."""
     group.current_pick = keep_idx
     kept_path = group.paths[keep_idx]
+    keep = group.kept_indices(keep_idx)
+    also_kept = [str(group.paths[j]) for j in sorted(keep - {keep_idx})]
     moved = []
     try:
         # is_symlink()/resolve() can themselves raise (e.g. EACCES on a
         # parent directory) -- kept inside the try so a failure here still
         # goes through the finally below instead of leaving *manifest*
         # without an entry for this group at all.
-        kept_real = kept_path.resolve() if kept_path.is_symlink() else None
+        kept_reals = {group.paths[j].resolve() for j in keep if group.paths[j].is_symlink()}
         for idx, path in enumerate(group.paths):
-            if idx == keep_idx:
+            if idx in keep:
                 continue
-            if kept_real is not None and path.resolve() == kept_real:
+            if kept_reals and path.resolve() in kept_reals:
                 continue
             dest = _compute_dest(path, dest_dir, dry_run, recursive=recursive, scan_root=scan_root)
             if not dry_run:
                 shutil.move(str(path), str(dest))
             moved.append({"from": str(path), "to": str(dest)})
     finally:
-        entry = {"group": group_index, "kept": str(kept_path), "moved": moved, "dry_run": dry_run}
+        entry = {"group": group_index, "kept": str(kept_path), "also_kept": also_kept,
+                 "moved": moved, "dry_run": dry_run}
         if manifest is not None:
             manifest.append(entry)
     return entry
@@ -736,13 +748,18 @@ def unapply(manifest: list[dict], group_index: int) -> None:
 
 
 def pick_needs_reapply(manifest: list[dict], group_index: int, group: Group) -> bool:
-    """True for a confirmed group whose current_pick has since diverged from
-    what's actually on disk (manifest's record of what got applied) -- i.e.
-    re-applying would really re-move files, rather than being a no-op.
-    Re-picking on an already confirmed group only stages current_pick;
+    """True for a confirmed group whose kept set (current_pick plus pins)
+    has since diverged from what's actually on disk (manifest's record of
+    what got applied) -- i.e. re-applying would really re-move files, rather
+    than being a no-op. Compares the whole set: making an already pinned
+    file the primary keeps the same files and moves nothing. Re-picking or
+    re-pinning on an already confirmed group only stages the change;
     nothing moves until the caller explicitly re-applies."""
     entry = next((m for m in manifest if m["group"] == group_index), None)
-    return entry is None or entry["kept"] != str(group.paths[group.current_pick])
+    if entry is None:
+        return True
+    on_disk = {entry["kept"], *entry.get("also_kept", [])}
+    return on_disk != {str(group.paths[j]) for j in group.kept_indices()}
 
 
 def apply_pick(

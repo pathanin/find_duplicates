@@ -22,9 +22,9 @@ const state = {
   error: null,
   generation: 0,
   params: null,
-  groups: [],       // summaries: {index, status, file_count, current_pick, suggested_idx, is_close_call}
+  groups: [],       // summaries: {index, status, file_count, current_pick, also_keep, suggested_idx, is_close_call}
   activeIndex: -1,
-  detail: null,     // {index, status, current_pick, suggested_idx, is_close_call, paths, dimensions, sizes, size_labels, scores, metrics}
+  detail: null,     // {index, status, current_pick, also_keep, suggested_idx, is_close_call, paths, dimensions, sizes, size_labels, scores, metrics}
   eventSource: null,
   ledgerOpen: true,
 };
@@ -39,6 +39,16 @@ const state = {
 const view = { zoom: false, level: 1, u: 0.5, v: 0.5 };
 
 const $ = (id) => document.getElementById(id);
+
+// Every file confirm will leave in place: the pick on the stage first, then
+// any pinned with "keep too" (also_keep). Pins are independent of the pick --
+// a group can hold a false positive next to its real duplicates, and both the
+// keeper and that different photo have to survive the confirm.
+function keptIndices(g) {
+  return [g.current_pick, ...(g.also_keep || []).filter((j) => j !== g.current_pick)];
+}
+function isKept(g, j) { return j === g.current_pick || (g.also_keep || []).includes(j); }
+function keptLabel(g) { return keptIndices(g).map((j) => j + 1).join(", "); }
 
 async function api(path, opts = {}) {
   const res = await fetch(path, {
@@ -355,7 +365,7 @@ function renderQueue() {
     const label = document.createElement("span");
     label.className = "q-label";
     label.textContent = g.status === "confirmed"
-      ? `${g.file_count} files · kept [${g.current_pick + 1}]`
+      ? `${g.file_count} files · kept [${keptLabel(g)}]`
       : `${g.file_count} files`;
 
     btn.append(idx, dot, label);
@@ -439,7 +449,7 @@ function applySplit() {
 function labelStageImg(img, j) {
   const d = state.detail;
   const shown = isSplit() || j === d.current_pick;
-  img.alt = shown ? (j === d.current_pick ? `${d.paths[j]} — the file you're keeping` : d.paths[j]) : "";
+  img.alt = shown ? (isKept(d, j) ? `${d.paths[j]} — a file you're keeping` : d.paths[j]) : "";
   img.setAttribute("aria-hidden", shown ? "false" : "true");
 }
 
@@ -549,7 +559,7 @@ function layoutStage() {
     img.style.height = `${dh}px`;
     img.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
     img.classList.toggle("is-active", j === d.current_pick);
-    img.parentElement.classList.toggle("is-kept", j === d.current_pick);
+    img.parentElement.classList.toggle("is-kept", isKept(d, j));
     // Only fetch the original once the stage render (STAGE_MAX_SIDE) is
     // actually being magnified past its own pixels -- /api/full re-encodes
     // HEIC on every request and can be tens of megabytes.
@@ -610,9 +620,10 @@ function upgradeToFullRes(img, i, j) {
 function renderHud() {
   const d = state.detail;
   if (!d) { $("hud-group").textContent = ""; $("hud-zoom").textContent = ""; return; }
+  const nKept = keptIndices(d).length;
   $("hud-group").textContent = `Group ${d.index + 1} of ${state.groups.length} · ` + (isSplit() && d.paths.length === 2
-    ? `keeping the ${d.current_pick === 0 ? "left" : "right"} file`
-    : `file ${d.current_pick + 1} of ${d.paths.length}`);
+    ? (nKept === 2 ? "keeping both files" : `keeping the ${d.current_pick === 0 ? "left" : "right"} file`)
+    : `file ${d.current_pick + 1} of ${d.paths.length}` + (nKept > 1 ? ` · keeping ${nKept}` : ""));
 
   // Unzoomed, name the level a click would open at (zoomIn's 1:1 fallback).
   const level = view.zoom || view.level > fitLevel(stageBox()) + 0.01 ? view.level : 1;
@@ -798,9 +809,10 @@ function renderSwitcher() {
 
   d.paths.forEach((path, j) => {
     const active = j === d.current_pick;
+    const pinned = (d.also_keep || []).includes(j);
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.className = "cand" + (active ? " is-active" : "");
+    btn.className = "cand" + (active ? " is-active" : "") + (pinned ? " is-pinned" : "");
     btn.id = `cand-${j}`;
     btn.setAttribute("role", "tab");
     btn.setAttribute("aria-selected", String(active));
@@ -828,10 +840,10 @@ function renderSwitcher() {
     const dim = d.dimensions[j];
     facts.textContent = `${dim[0]}×${dim[1]} · ${d.size_labels[j]}`;
     meta.appendChild(facts);
-    if (active) {
+    if (active || pinned) {
       const tag = document.createElement("span");
       tag.className = "cand-tag";
-      tag.textContent = "Keeping";
+      tag.textContent = active ? "Keeping" : "Keeping too";
       meta.appendChild(tag);
     } else if (j === d.suggested_idx) {
       const mark = document.createElement("span");
@@ -855,7 +867,7 @@ function renderSwitcher() {
     btn.append(top, meta, score);
     btn.title = `${path} — quality score ${d.scores[j].toFixed(3)}`
       + (d.scores[j] === best ? " (top scored)" : "")
-      + `. Press ${j + 1} to keep this one.`;
+      + `. Press ${j + 1} to keep this one, Shift+${j + 1} to keep it as well.`;
     // The flip is the comparison itself, so a mouse press lands it on the
     // way down rather than on release. pick() rebuilds this strip, so the
     // press's own focus would hit a detached button: take it over and focus
@@ -870,7 +882,30 @@ function renderSwitcher() {
       if (tab) tab.focus({ preventScroll: true });
     });
     btn.addEventListener("click", (ev) => { if (ev.pointerType !== "mouse") pick(j); });
-    host.appendChild(btn);
+
+    // A sibling of the tab, not a child: a button can't nest in a button.
+    // The slot is presentational so the tablist still reads as its tabs.
+    const pin = document.createElement("button");
+    pin.type = "button";
+    pin.className = "cand-pin";
+    pin.id = `cand-pin-${j}`;
+    pin.setAttribute("aria-pressed", String(pinned));
+    pin.setAttribute("aria-label", `Keep ${path} too`);
+    pin.textContent = pinned ? "✓" : "+";
+    pin.title = pinned
+      ? `Kept alongside the pick — click (or Shift+${j + 1}) to let it move with the duplicates again.`
+      : `Keep this file too, whichever file is on the stage — for a different photo that got grouped with real duplicates. Shift+${j + 1}${active ? " or K" : ""}.`;
+    pin.addEventListener("click", () => {
+      togglePin(j);
+      const again = $(`cand-pin-${j}`);
+      if (again) again.focus({ preventScroll: true });
+    });
+
+    const slot = document.createElement("div");
+    slot.className = "cand-slot";
+    slot.setAttribute("role", "presentation");
+    slot.append(btn, pin);
+    host.appendChild(slot);
   });
 
   if (focusedTab && $(focusedTab)) $(focusedTab).focus({ preventScroll: true });
@@ -912,11 +947,11 @@ function renderLedger() {
   d.paths.forEach((path, j) => {
     const th = document.createElement("th");
     th.scope = "col";
-    if (j === d.current_pick) th.classList.add("col-pick");
+    if (isKept(d, j)) th.classList.add("col-pick");
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "col-head-btn";
-    btn.textContent = j === d.current_pick ? `${j + 1} · keeping` : String(j + 1);
+    btn.textContent = isKept(d, j) ? `${j + 1} · keeping` : String(j + 1);
     btn.title = `${path} — click to keep this one instead`;
     btn.addEventListener("click", () => pick(j));
     th.appendChild(btn);
@@ -946,7 +981,7 @@ function renderLedger() {
 
     values.forEach((v, j) => {
       const td = document.createElement("td");
-      if (j === d.current_pick) td.classList.add("col-pick");
+      if (isKept(d, j)) td.classList.add("col-pick");
       if (isScore) {
         const cell = document.createElement("span");
         cell.className = "score-cell";
@@ -1034,9 +1069,9 @@ function renderDecision() {
     else el.textContent = state.groups.length ? "No group selected." : "";
     return;
   }
-  const nMoved = d.paths.length - 1;
+  const kept = keptIndices(d);
+  const nMoved = d.paths.length - kept.length;
   const dest = state.params ? state.params.dest : "the destination folder";
-  const keptName = d.paths[d.current_pick];
 
   const add = (text, cls) => {
     const s = document.createElement(cls ? "span" : "span");
@@ -1049,6 +1084,13 @@ function renderDecision() {
     s.textContent = text;
     el.appendChild(s);
   };
+  // Names every kept file, not just the pick: with pins, glancing at a third
+  // file makes it the pick and keeps it too, and this sentence is where that
+  // has to show before anything moves.
+  const keptNames = () => kept.forEach((j, n) => {
+    if (n) add(n === kept.length - 1 ? " and " : ", ");
+    strong(`[${j + 1}] ${d.paths[j]}`);
+  });
 
   // Under --dry-run nothing is ever moved, so the sentence the user reads
   // before acting has to be conditional too -- stating "moves 5 files" under
@@ -1059,19 +1101,19 @@ function renderDecision() {
 
   if (d.status === "confirmed") {
     add(dry ? "Marked kept (dry run) " : "Kept ");
-    strong(`[${d.current_pick + 1}] ${keptName}`);
+    keptNames();
     add(dry ? `. ${files} would have moved to ${dest}.` : `. ${files} moved to ${dest} — undo with Skip group.`);
-    if (d.needs_reapply) add("  Pick changed since confirming — confirm again to apply it.", "warn");
+    if (d.needs_reapply) add("  Kept files changed since confirming — confirm again to apply it.", "warn");
   } else if (d.status === "skipped") {
     add("Skipped — every file left where it is. Confirming would keep ");
-    strong(`[${d.current_pick + 1}] ${keptName}`);
+    keptNames();
     add(` and move ${nMoved} other${nMoved === 1 ? "" : "s"}.`);
   } else {
     add(dry ? "Confirm would keep " : "Confirm keeps ");
-    strong(`[${d.current_pick + 1}] ${keptName}`);
+    keptNames();
     if (!nMoved) add(dry ? " and move nothing else." : " and moves nothing else.");
     else add(dry ? ` and would move ${files} to ${dest} — dry run, so nothing actually moves.` : ` and moves ${files} to ${dest}.`);
-    if (d.current_pick !== d.suggested_idx) {
+    if (!isKept(d, d.suggested_idx)) {
       add(`  Suggested was [${d.suggested_idx + 1}] ${d.paths[d.suggested_idx]}.`);
     }
   }
@@ -1150,17 +1192,20 @@ function renderPickChange() {
 // ---------------------------------------------------------------------------
 
 function applyGroupPatch(i, data, keepLocalPick = false) {
-  const localPick = state.detail && i === state.activeIndex ? state.detail.current_pick : data.current_pick;
-  const pick = keepLocalPick ? localPick : data.current_pick;
+  // Pins ride the same queue as picks, so a stale response is stale for both.
+  const local = state.detail && i === state.activeIndex ? state.detail : data;
+  const pick = keepLocalPick ? local.current_pick : data.current_pick;
+  const alsoKeep = keepLocalPick ? (local.also_keep || []) : (data.also_keep || []);
   state.groups[i] = {
     index: i,
     status: data.status,
     file_count: data.paths.length,
     current_pick: pick,
+    also_keep: alsoKeep,
     suggested_idx: data.suggested_idx,
     is_close_call: data.is_close_call,
   };
-  if (i === state.activeIndex) state.detail = { ...data, current_pick: pick };
+  if (i === state.activeIndex) state.detail = { ...data, current_pick: pick, also_keep: alsoKeep };
   renderQueue();
   renderNotices();
   if (i === state.activeIndex) renderPickChange();
@@ -1221,9 +1266,33 @@ function pick(j) {
   renderPickChange();
   renderQueue();
 
+  return queueStaging(i, "pick", { idx: j }, "change the pick");
+}
+
+// "keep too": pin or unpin file j alongside the pick. Same queue as pick() --
+// confirm awaits pickChain, so a K followed at once by Enter still lands the
+// pin before anything moves.
+function togglePin(j) {
+  const i = state.activeIndex;
+  const d = state.detail;
+  if (i < 0 || !d || j < 0 || j >= d.paths.length) return pickChain;
+  if (decisionsLocked()) { showToast(SCAN_LOCKED_MSG); return pickChain; }
+  if (confirming) { showToast("Confirming — kept files are locked until it lands."); return pickChain; }
+
+  const keep = !(d.also_keep || []).includes(j);
+  const pins = new Set(d.also_keep || []);
+  if (keep) pins.add(j); else pins.delete(j);
+  d.also_keep = [...pins].sort((a, b) => a - b);
+  state.groups[i].also_keep = d.also_keep;
+  renderPickChange();
+  renderQueue();
+  return queueStaging(i, "keep", { idx: j, keep }, keep ? "keep that file too" : "unpin that file");
+}
+
+function queueStaging(i, route, body, what) {
   pendingPicks += 1;
   pickChain = pickChain
-    .then(() => api(`/api/group/${i}/pick?g=${state.generation}`, { method: "POST", body: JSON.stringify({ idx: j }) }))
+    .then(() => api(`/api/group/${i}/${route}?g=${state.generation}`, { method: "POST", body: JSON.stringify(body) }))
     .then((data) => {
       pendingPicks -= 1;
       // While more picks are queued, this response is already stale for the
@@ -1233,9 +1302,9 @@ function pick(j) {
     .catch(async (e) => {
       pendingPicks -= 1;
       if (e.status === 409) return handleStale();
-      showToast(`Couldn't change the pick: ${e.message}`, true);
-      // The optimistic flip never reached the server, so confirm would keep
-      // a different file than the stage is showing: re-read what it holds.
+      showToast(`Couldn't ${what}: ${e.message}`, true);
+      // The optimistic change never reached the server, so confirm would
+      // keep different files than the page is showing: re-read what it holds.
       // A later queued pick will land the truth itself, so only the last
       // failure has to repair.
       if (pendingPicks > 0) return;
@@ -1267,11 +1336,12 @@ async function confirmGroup() {
     await pickChain;  // the server must be holding the pick that's on screen
     const data = await api(`/api/group/${i}/confirm?g=${state.generation}`, { method: "POST" });
     applyGroupPatch(i, data);
-    const moved = data.paths.length - 1;
+    const kept = keptIndices(data);
+    const moved = data.paths.length - kept.length;
     const files = `${moved} file${moved === 1 ? "" : "s"}`;
     // Named off the confirm response, never off the pick at key-press: the
-    // toast has to say the file the server actually kept.
-    const name = data.paths[data.current_pick];
+    // toast has to say the files the server actually kept.
+    const name = kept.map((j) => data.paths[j]).join(", ");
     // A real move gets said out loud, with the way back: the group advances
     // immediately, so the decision bar is already describing the next group
     // by the time the user looks down at it.
@@ -1299,7 +1369,7 @@ async function skipGroup() {
     // Undoing a confirmed group is a second real move -- files come back out
     // of the destination folder -- so it gets said as plainly as the first.
     if (wasConfirmed && !(state.params && state.params.dry_run)) {
-      const moved = data.paths.length - 1;
+      const moved = data.paths.length - keptIndices(data).length;
       showReceipt(`Group ${i + 1}: ${moved} file${moved === 1 ? "" : "s"} moved back, group marked skipped.`, i);
     }
     if (data.status === "skipped") advance();
@@ -1563,7 +1633,7 @@ function helpContent(info) {
   frag.appendChild(ul);
 
   frag.appendChild(h("h3", "Reading the stage"));
-  frag.appendChild(h("p", "One file fills the stage at a time and every file in the group is laid out in exactly the same frame, so moving between them changes the pixels and nothing else — the sharper file is the one that stops looking soft. The file on the stage is the file you're keeping. A group of two to four shows them side by side instead, with the kept one outlined in blue — unless a group of three or four holds a really huge photo (over 50 megapixels) or the window is too narrow to give each its own usable pane."));
+  frag.appendChild(h("p", "One file fills the stage at a time and every file in the group is laid out in exactly the same frame, so moving between them changes the pixels and nothing else — the sharper file is the one that stops looking soft. The file on the stage is the file you're keeping. If a group caught a different photo alongside real duplicates, pin it with the + in the corner of its tab (Shift and its number, or K for the file on the stage) and it's kept too, whichever file you then pick. A group of two to four shows them side by side instead, with the kept ones outlined in blue — unless a group of three or four holds a really huge photo (over 50 megapixels) or the window is too narrow to give each its own usable pane."));
   frag.appendChild(h("p", "Click the stage (or press Z) to inspect at 1:1; a click zooms in on the exact spot under the pointer. On a very large photo, 1:1 shows only a sliver: drag the zoom slider at the bottom-right of the stage to inspect at a lower level instead, and every later group opens at that level. The − and = keys step it. At that zoom the largest file in the group is shown at its true pixels and the others are scaled to match the same part of the scene, so an export upscaled from a smaller original gives itself away. Scroll the wheel (or pinch) to zoom in and out around the pointer. Drag or hold shift with the arrow keys to pan; the spot you're inspecting stays put as you move between files, and side-by-side panes pan together."));
   frag.appendChild(h("p", "n/a in the table means that measurement has no value for that file — either its optional package isn't installed, or it failed on that one image. A measurement missing for any file is dropped from the whole group's score and the remaining weights are rescaled, so the group is still scored, just on fewer inputs."));
 
@@ -1573,6 +1643,8 @@ function helpContent(info) {
   [
     ["← →", "Move between the files in this group"],
     ["1 – 9", "Keep a specific file"],
+    ["Shift + 1 – 9", "Keep that file too, alongside the pick (press again to undo)"],
+    ["K", "Keep the file on the stage too, even after moving to another"],
     ["↑ ↓", "Move between groups"],
     ["Enter / C", "Confirm keep"],
     ["Delete / S", "Skip group — on a confirmed group, move its files back"],
@@ -1737,6 +1809,7 @@ function attachKeyboardHandler() {
     else if (e.code === "ArrowDown") { stepGroup(1); e.preventDefault(); }
     else if (e.code === "KeyC") { confirmGroup(); e.preventDefault(); }
     else if (e.code === "Delete" || e.code === "Backspace" || e.code === "KeyS") { skipGroup(); e.preventDefault(); }
+    else if (e.code === "KeyK") { if (!e.repeat && state.detail) togglePin(state.detail.current_pick); e.preventDefault(); }
     else if (e.code === "KeyZ") { setZoom(!view.zoom); e.preventDefault(); }
     else if (e.code === "Equal" || e.code === "NumpadAdd") { stepZoom(1); e.preventDefault(); }
     else if (e.code === "Minus" || e.code === "NumpadSubtract") { stepZoom(-1); e.preventDefault(); }
@@ -1745,7 +1818,11 @@ function attachKeyboardHandler() {
     else if (e.code === "KeyQ") { quitNow(); e.preventDefault(); }
     else if (e.code.startsWith("Digit")) {
       const n = parseInt(e.code.slice(5), 10);
-      if (n >= 1 && n <= 9 && state.detail && n <= state.detail.paths.length) { pick(n - 1); e.preventDefault(); }
+      if (n >= 1 && n <= 9 && state.detail && n <= state.detail.paths.length) {
+        // A held toggle would flicker the pin on and off.
+        if (e.shiftKey) { if (!e.repeat) togglePin(n - 1); } else pick(n - 1);
+        e.preventDefault();
+      }
     }
   });
 }

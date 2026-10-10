@@ -298,6 +298,7 @@ def _group_summary(i: int, g: Group) -> dict:
         "status": g.status,
         "file_count": len(g.paths),
         "current_pick": g.current_pick,
+        "also_keep": sorted(g.also_keep),
         "suggested_idx": g.suggested_idx,
         "is_close_call": g.is_close_call,
     }
@@ -404,6 +405,11 @@ class ScanRequest(BaseModel):
 
 class PickRequest(BaseModel):
     idx: int
+
+
+class KeepRequest(BaseModel):
+    idx: int
+    keep: bool
 
 
 def create_app(initial_params: ScanParams, token: str) -> FastAPI:
@@ -568,6 +574,31 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
             if not (0 <= body.idx < len(g.paths)):
                 raise HTTPException(400, "idx out of range")
             g.current_pick = body.idx
+            return JSONResponse(_group_detail(session, i, g))
+
+    @app.post("/api/group/{i}/keep")
+    async def keep_group_file(
+        i: int, body: KeepRequest, gen: int | None = Query(default=None, alias="g"),
+        _: str = Depends(require_token),
+    ) -> JSONResponse:
+        """Pin (or unpin) file *idx* as kept alongside current_pick -- for a
+        false positive the hash grouped with real duplicates. Stages only,
+        like /pick: nothing moves until confirm, and on a confirmed group
+        the change shows up as needs_reapply."""
+        with session.lock:
+            _require_not_scanning(session)
+            _require_generation(session, gen)
+            if not (0 <= i < len(session.groups)):
+                raise HTTPException(404, "no such group")
+            g = session.groups[i]
+            if not (0 <= body.idx < len(g.paths)):
+                raise HTTPException(400, "idx out of range")
+            pins = set(g.also_keep)
+            if body.keep:
+                pins.add(body.idx)
+            else:
+                pins.discard(body.idx)
+            g.also_keep = sorted(pins)
             return JSONResponse(_group_detail(session, i, g))
 
     @app.post("/api/group/{i}/confirm")

@@ -522,11 +522,19 @@ button { font-family: inherit; }
 }
 .switcher:empty { display: none; }
 
-.cand {
+/* The slot carries the tab and its keep-too toggle side by side in one
+   box: a button can't nest inside the tab button. */
+.cand-slot {
+  position: relative;
   flex: 1 1 168px;
   /* A tab narrower than this can't show enough of a filename to tell two
      exports apart, so the strip scrolls instead of shrinking past it. */
   min-width: 152px;
+  display: flex;
+}
+.cand {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -552,7 +560,30 @@ button { font-family: inherit; }
   border: 1px solid var(--charcoal);
   color: var(--steel);
 }
-.cand.is-active .cand-idx { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
+.cand.is-active .cand-idx,
+.cand.is-pinned .cand-idx { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
+/* Room for the keep-too toggle in the slot's top-right corner. */
+.cand-top { padding-right: 26px; }
+.cand-pin {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-content: center;
+  padding: 0;
+  border: 1px solid var(--charcoal);
+  background: none;
+  color: var(--steel);
+  font: var(--button-sm);
+  cursor: pointer;
+}
+.cand-pin:hover { border-color: var(--steel); color: var(--on-ink); }
+.cand-slot:has(.cand.is-active) .cand-pin { border-color: var(--hairline-strong); color: var(--graphite); }
+.cand-slot:has(.cand.is-active) .cand-pin:hover { border-color: var(--graphite); color: var(--ink); }
+.cand-pin[aria-pressed="true"],
+.cand-slot:has(.cand.is-active) .cand-pin[aria-pressed="true"] { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
 /* Two lines rather than one ellipsed line: near-duplicate exports differ
    late in the name ("… copy 2.jpg" against "… copy.jpg"), and a single
    clipped line in a six-candidate strip cuts exactly that part off. */

@@ -32,6 +32,7 @@ python3 tests/test_heic_support.py
 python3 tests/test_help_and_labels.py
 python3 tests/test_install_file_list.py
 python3 tests/test_install_stable_python.py
+python3 tests/test_keep_multiple.py
 python3 tests/test_large_image.py
 python3 tests/test_optional_metrics.py
 python3 tests/test_quit.py
@@ -59,7 +60,7 @@ Four modules, layered so the bottom two never know about the web:
 
 - **`compare_image_quality.py`** — per-image quality metrics (`analyze`): laplacian sharpness, FFT-based `effective_resolution` (resists fake upscaling), noise, blockiness. Also runs standalone on two files. `brisque`/`niqe` are optional imports that stay unresolved by design, and each **latches after its first failure** (`_brisque_unavailable`/`_niqe_unavailable`) — a missing package is cheap to retry, but `brisque` 0.2.0 computes its whole feature set before dying on modern numpy, which measured 418 ms per image (analyze 25 ms → 443 ms) to return `None` every time. Don't remove the latch, and don't add either package to `setup_venv.sh`: `brisque` costs ~40 MB across 7 packages for a metric that currently never returns a number, and `pyiqa` pulls 61 packages including `transformers`, `tensorboard` and an `opencv-python` that conflicts with the project's `opencv-python-headless`. `tests/test_optional_metrics.py` covers the latch.
 - **`duplicates_core.py`** — the whole scan/score/move pipeline. `find_images` → `group_duplicates` (perceptual hash + `UnionFind`) → `analyze_paths` → `score_group` → `build_groups`, returning `list[Group]`. Applying decisions: `apply_group`, `apply_pick`, `unapply`, `auto_apply_groups`.
-- **`duplicates_web.py`** — FastAPI app (`create_app`) plus the `Session` dataclass holding all server-side state. Routes: `/api/state`, `/api/group/{i}` and its `pick`/`confirm`/`skip` posts, `/api/thumb|stage|full/{i}/{j}`, `/api/scan`, `/api/progress` (SSE), `/api/metrics-info`, `/api/quit`, and a token-gated `/static/{path}`.
+- **`duplicates_web.py`** — FastAPI app (`create_app`) plus the `Session` dataclass holding all server-side state. Routes: `/api/state`, `/api/group/{i}` and its `pick`/`keep`/`confirm`/`skip` posts, `/api/thumb|stage|full/{i}/{j}`, `/api/scan`, `/api/progress` (SSE), `/api/metrics-info`, `/api/quit`, and a token-gated `/static/{path}`.
 - **`find_duplicates.py`** — CLI entry point, `--auto` path, signal handling, uvicorn startup.
 
 Front end is vanilla JS in `static/app.js` (no build step, no framework), organized in commented sections: state/API, queue sidebar, stage, switcher strip, ledger, decision bar.
@@ -90,6 +91,7 @@ Publication order is `raw_groups` order, not completion order, and a group is sc
 - `load_hash_gray`'s reduced-decode and full-decode paths must agree on the **64-bit** hash bits — check `MIN_REDUCED_DECODE_SIDE` before touching either. They do *not* agree on the 256-bit half, which reaches into mid frequencies where the decode paths genuinely differ. That drift is content-dependent (single digits on real photos, tens of bits on synthetic noise), expected, and absorbed by `CONFIRM_HASH_THRESHOLD`. Don't chase it as a bug.
 - `METRIC_WEIGHTS`, `METRIC_DESCRIPTIONS`, and `METRIC_ROWS` get entries added and removed together; the UI's help sheet renders off the first.
 - Moving files is the only genuinely destructive path (`apply_group`, `_compute_dest`, `apply_pick`, `unapply`, `auto_apply_groups`). Non-kept files are **moved to `_duplicates/`, never deleted** — preserve that invariant. The manifest is in-memory only; recovery after process exit is a manual move back out.
+- A group's kept set is `{current_pick} ∪ also_keep`. The pins (`also_keep`, the UI's "keep too") exist for a false positive grouped with real duplicates, and stay independent of the pick so flipping the stage never drops one. `apply_group` skips every kept index, and its symlink guard covers each of them. The manifest records the pins as `also_kept`. `pick_needs_reapply` compares the whole set, so making a pinned file the primary is not a reapply. In the frontend, `/keep` rides `pickChain` like `/pick`, so a confirm can't overtake a pin. `tests/test_keep_multiple.py` covers all of this.
 - `apply_group` never sets `group.status` — the caller owns that, including the "stays pending on failure" invariant.
 - `auto_apply_groups` must read `file_size` *before* the move; the source path is gone once `apply_group` returns.
 - Any numpy-derived value reaching the JSON API needs an explicit `bool()`/`float()`/`int()` cast **where it's computed**. `numpy.bool_` doesn't subclass `bool` and isn't JSON-serializable (this bit `build_groups`'s `is_close_call`).
