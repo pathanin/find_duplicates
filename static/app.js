@@ -650,7 +650,7 @@ function renderHud() {
   const factor = view.level * inspectMaxWidth() / dimsOf(shownIdx()).w;
   const pan = "drag, scroll or shift+arrows to pan";
   $("hud-zoom").textContent = factor > 1.02
-    ? `Inspecting ${at} · ${isSplit() ? "kept" : "this"} file upscaled ${factor.toFixed(1)}× · ${pan}`
+    ? `Inspecting ${at} · ${isSplit() ? "selected" : "this"} file upscaled ${factor.toFixed(1)}× · ${pan}`
     : `Inspecting ${at} · ${at === "1:1" ? "true pixels" : "downscaled"} · ${pan}`;
 }
 
@@ -1113,9 +1113,8 @@ function renderDecision() {
     s.textContent = text;
     el.appendChild(s);
   };
-  // Names every kept file, not just the pick: with pins, glancing at a third
-  // file makes it the pick and keeps it too, and this sentence is where that
-  // has to show before anything moves.
+  // Names every kept file, not just the pick: with several kept, this is the
+  // one place the whole decision reads as a sentence before anything moves.
   const keptNames = () => kept.forEach((j, n) => {
     if (n) add(n === kept.length - 1 ? " and " : ", ");
     strong(`[${j + 1}] ${d.paths[j]}`);
@@ -1705,7 +1704,7 @@ function helpContent(info) {
   frag.appendChild(ul);
 
   frag.appendChild(h("h3", "Reading the stage"));
-  frag.appendChild(h("p", "One file fills the stage at a time and every file in the group is laid out in exactly the same frame, so moving between them changes the pixels and nothing else — the sharper file is the one that stops looking soft. The file on the stage is the file you're keeping. If a group caught a different photo alongside real duplicates, press + Keep too under it (or Shift and its number, or K for the file on the stage). While more than one file is kept, the tabs and arrows only change what's on the stage, and the Keep bars alone decide what stays. A group of two to four shows them side by side instead, with the kept ones outlined in blue — unless a group of three or four holds a really huge photo (over 50 megapixels) or the window is too narrow to give each its own usable pane."));
+  frag.appendChild(h("p", "One file fills the stage at a time and every file in the group is laid out in exactly the same frame, so moving between them changes the pixels and nothing else — the sharper file is the one that stops looking soft. With one file kept, the file on the stage is the file you're keeping. If a group caught a different photo alongside real duplicates, press + Keep too under it (or Shift and its number, or K for the file on the stage). While more than one file is kept, the tabs and arrows only change what's on the stage, and the Keep bars alone decide what stays. A group of two to four shows them side by side instead, with the kept ones outlined in blue — unless a group of three or four holds a really huge photo (over 50 megapixels) or the window is too narrow to give each its own usable pane."));
   frag.appendChild(h("p", "Click the stage (or press Z) to inspect at 1:1; a click zooms in on the exact spot under the pointer. On a very large photo, 1:1 shows only a sliver: drag the zoom slider at the bottom-right of the stage to inspect at a lower level instead, and every later group opens at that level. The − and = keys step it. At that zoom the largest file in the group is shown at its true pixels and the others are scaled to match the same part of the scene, so an export upscaled from a smaller original gives itself away. Scroll the wheel (or pinch) to zoom in and out around the pointer. Drag or hold shift with the arrow keys to pan; the spot you're inspecting stays put as you move between files, and side-by-side panes pan together."));
   frag.appendChild(h("p", "n/a in the table means that measurement has no value for that file — either its optional package isn't installed, or it failed on that one image. A measurement missing for any file is dropped from the whole group's score and the remaining weights are rescaled, so the group is still scored, just on fewer inputs."));
 
@@ -1714,7 +1713,7 @@ function helpContent(info) {
   keys.className = "keys";
   [
     ["← →", "Move between the files in this group"],
-    ["1 – 9", "Keep a specific file"],
+    ["1 – 9", "Keep a specific file (just look at it, while several are kept)"],
     ["Shift + 1 – 9", "Keep that file as well, or stop keeping it"],
     ["K", "Same, for the file on the stage"],
     ["↑ ↓", "Move between groups"],

@@ -522,8 +522,8 @@ button { font-family: inherit; }
 }
 .switcher:empty { display: none; }
 
-/* The slot carries the tab and its keep-too toggle side by side in one
-   box: a button can't nest inside the tab button. */
+/* The slot stacks the tab over its Keep bar in one box: a button can't
+   nest inside the tab button. */
 .cand-slot {
   flex: 1 1 168px;
   /* A tab narrower than this can't show enough of a filename to tell two

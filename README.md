@@ -50,7 +50,7 @@ find-duplicates /path/to/photos --host 0.0.0.0
 
 ...and open the printed LAN URL (with its token) from the other machine's browser. The URL's token is required for every request — treat it like a password on a shared network.
 
-Keyboard shortcuts: arrows to change the keeper selection, digit keys to jump to an image by number, `c`/`Enter` to confirm, `s`/`Delete`/`Backspace` to skip, `z`/click the stage to inspect at 1:1, `o` to open the full-res original, `q` to quit the server, `?`/`F1` for help. The sidebar marks each group's status (pending/kept/skipped) with a shape-and-color dot; a "close call" (top two picks scored nearly the same) shows on the row's tooltip and the active group's ledger note, not as a sidebar mark of its own — most groups in a real scan are close calls, so flagging every row would stop meaning anything.
+Keyboard shortcuts: arrows to change the keeper selection, digit keys to jump to an image by number, `Shift`+digit (or `k` for the file on the stage) to keep a file as well — for a different photo grouped in with real duplicates; while several are kept, arrows and digits only change what's shown — `c`/`Enter` to confirm, `s`/`Delete`/`Backspace` to skip, `z`/click the stage to inspect at 1:1, `o` to open the full-res original, `q` to quit the server, `?`/`F1` for help. The sidebar marks each group's status (pending/kept/skipped) with a shape-and-color dot; a "close call" (top two picks scored nearly the same) shows on the row's tooltip and the active group's ledger note, not as a sidebar mark of its own — most groups in a real scan are close calls, so flagging every row would stop meaning anything.
 
 ## CLI options
 
