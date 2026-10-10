@@ -908,6 +908,9 @@ function renderLedger() {
 
   let prevWasReference = null;
   d.metrics.forEach(({ label, values, direction, kind }) => {
+    // A row that's "n/a" for every file (BRISQUE/NIQE without their optional
+    // packages) says nothing about this group; the Help sheet explains why.
+    if (values.every((v) => v === "n/a")) return;
     const isScore = kind === "score";
     const isReference = kind === "reference";
     const winners = isScore ? [] : bestIndices(direction, values);
