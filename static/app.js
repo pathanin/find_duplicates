@@ -36,19 +36,31 @@ const state = {
 // inspect scale as a fraction of the largest file's true pixels (1 = 1:1),
 // set by the zoom slider; it outlives a group change so a library of huge
 // files can be reviewed at one comfortable level throughout.
-const view = { zoom: false, level: 1, u: 0.5, v: 0.5 };
+const view = { zoom: false, level: 1, u: 0.5, v: 0.5, shown: null };
 
 const $ = (id) => document.getElementById(id);
 
-// Every file confirm will leave in place: the pick on the stage first, then
-// any pinned with "keep too" (also_keep). Pins are independent of the pick --
-// a group can hold a false positive next to its real duplicates, and both the
-// keeper and that different photo have to survive the confirm.
+// Every file confirm will leave in place: the pick plus any marked "keep too"
+// (also_keep) -- a group can hold a false positive next to its real
+// duplicates, and both the keeper and that different photo have to survive
+// the confirm. File order, not click order: once two files are kept neither
+// is "the main one" to the user, so nothing on screen ranks them.
 function keptIndices(g) {
-  return [g.current_pick, ...(g.also_keep || []).filter((j) => j !== g.current_pick)];
+  return [...new Set([g.current_pick, ...(g.also_keep || [])])].sort((a, b) => a - b);
 }
 function isKept(g, j) { return j === g.current_pick || (g.also_keep || []).includes(j); }
 function keptLabel(g) { return keptIndices(g).map((j) => j + 1).join(", "); }
+// With one file kept, the stage *is* the pick: flipping to a file keeps it.
+// Once several are kept that can't hold -- flipping to compare would swap
+// one of them out (or, with the pick always kept, quietly add whatever is on
+// show). So then the stage only shows, and the Keep bars alone decide.
+function multiKeep(g) { return keptIndices(g).length > 1; }
+// The file on the stage: view.shown while several are kept, else the pick.
+function shownIdx() {
+  const d = state.detail;
+  const j = view.shown;
+  return j != null && j >= 0 && j < d.paths.length && multiKeep(d) ? j : d.current_pick;
+}
 
 async function api(path, opts = {}) {
   const res = await fetch(path, {
@@ -141,6 +153,7 @@ async function loadGroup(i) {
     if (token !== loadGroupToken) return; // superseded by a newer loadGroup
     state.activeIndex = i;
     state.detail = data;
+    view.shown = null;
     view.zoom = false;
     view.u = 0.5;
     view.v = 0.5;
@@ -448,7 +461,7 @@ function applySplit() {
 
 function labelStageImg(img, j) {
   const d = state.detail;
-  const shown = isSplit() || j === d.current_pick;
+  const shown = isSplit() || j === shownIdx();
   img.alt = shown ? (isKept(d, j) ? `${d.paths[j]} — a file you're keeping` : d.paths[j]) : "";
   img.setAttribute("aria-hidden", shown ? "false" : "true");
 }
@@ -514,10 +527,10 @@ function scaleFor(j, box) {
   return Math.max(contain, view.level * inspectMaxWidth() / w);
 }
 
-// The slider's floor: the level at which the kept file just fits the pane.
+// The slider's floor: the level at which the shown file just fits the pane.
 // Anything at or below it looks identical to not inspecting at all.
 function fitLevel(box) {
-  const { w, h } = dimsOf(state.detail.current_pick);
+  const { w, h } = dimsOf(shownIdx());
   return Math.min(box.w / w, box.h / h) * w / inspectMaxWidth();
 }
 
@@ -558,7 +571,7 @@ function layoutStage() {
     img.style.width = `${dw}px`;
     img.style.height = `${dh}px`;
     img.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
-    img.classList.toggle("is-active", j === d.current_pick);
+    img.classList.toggle("is-active", j === shownIdx());
     img.parentElement.classList.toggle("is-kept", isKept(d, j));
     // Only fetch the original once the stage render (STAGE_MAX_SIDE) is
     // actually being magnified past its own pixels -- /api/full re-encodes
@@ -596,7 +609,7 @@ function placement(j, box) {
 // there, but the centre keeps moving, so a drag back does nothing at first.
 function setCenter(u, v) {
   const box = stageBox();
-  const { dw, dh } = placement(state.detail.current_pick, box);
+  const { dw, dh } = placement(shownIdx(), box);
   const hu = Math.min(0.5, box.w / 2 / dw);
   const hv = Math.min(0.5, box.h / 2 / dh);
   view.u = clamp(u, hu, 1 - hu);
@@ -623,7 +636,7 @@ function renderHud() {
   const nKept = keptIndices(d).length;
   $("hud-group").textContent = `Group ${d.index + 1} of ${state.groups.length} · ` + (isSplit() && d.paths.length === 2
     ? (nKept === 2 ? "keeping both files" : `keeping the ${d.current_pick === 0 ? "left" : "right"} file`)
-    : `file ${d.current_pick + 1} of ${d.paths.length}` + (nKept > 1 ? ` · keeping ${nKept}` : ""));
+    : `file ${shownIdx() + 1} of ${d.paths.length}` + (nKept > 1 ? ` · keeping ${nKept}` : ""));
 
   // Unzoomed, name the level a click would open at (zoomIn's 1:1 fallback).
   const level = view.zoom || view.level > fitLevel(stageBox()) + 0.01 ? view.level : 1;
@@ -634,7 +647,7 @@ function renderHud() {
       : `Click to inspect ${at} · Z`;
     return;
   }
-  const factor = view.level * inspectMaxWidth() / dimsOf(d.current_pick).w;
+  const factor = view.level * inspectMaxWidth() / dimsOf(shownIdx()).w;
   const pan = "drag, scroll or shift+arrows to pan";
   $("hud-zoom").textContent = factor > 1.02
     ? `Inspecting ${at} · ${isSplit() ? "kept" : "this"} file upscaled ${factor.toFixed(1)}× · ${pan}`
@@ -648,8 +661,8 @@ function panBy(dirU, dirV) {
   const d = state.detail;
   if (!d || !view.zoom) return;
   const box = stageBox();
-  const { w, h } = dimsOf(d.current_pick);
-  const s = scaleFor(d.current_pick, box);
+  const { w, h } = dimsOf(shownIdx());
+  const s = scaleFor(shownIdx(), box);
   setCenter(view.u + dirU * 0.1 * (box.w / (w * s)), view.v + dirV * 0.1 * (box.h / (h * s)));
   layoutStage();
 }
@@ -682,7 +695,7 @@ function zoomAt(ev, apply = zoomIn) {
 // Which candidate's pane is under the pointer: in the stacked layout it is
 // always the one on show.
 function paneAt(ev) {
-  if (!isSplit()) return state.detail.current_pick;
+  if (!isSplit()) return shownIdx();
   const n = stageImgs.length;
   const r = $("stage-frame").getBoundingClientRect();
   return clamp(Math.floor(((ev.clientX - r.left) / r.width) * n), 0, n - 1);
@@ -723,8 +736,8 @@ function attachStageHandlers() {
       return;
     }
     const box = stageBox();
-    const { w, h } = dimsOf(state.detail.current_pick);
-    const s = scaleFor(state.detail.current_pick, box);
+    const { w, h } = dimsOf(shownIdx());
+    const s = scaleFor(shownIdx(), box);
     const dx = ev.clientX - drag.x;
     const dy = ev.clientY - drag.y;
     if (Math.abs(dx) > 3 || Math.abs(dy) > 3) drag.moved = true;
@@ -808,11 +821,12 @@ function renderSwitcher() {
   const budget = nameBudget(d.paths.length);
 
   d.paths.forEach((path, j) => {
-    const active = j === d.current_pick;
-    const pinned = (d.also_keep || []).includes(j);
+    const active = j === shownIdx();
+    const kept = isKept(d, j);
+    const multi = multiKeep(d);
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.className = "cand" + (active ? " is-active" : "") + (pinned ? " is-pinned" : "");
+    btn.className = "cand" + (active ? " is-active" : "") + (kept ? " is-kept" : "");
     btn.id = `cand-${j}`;
     btn.setAttribute("role", "tab");
     btn.setAttribute("aria-selected", String(active));
@@ -831,8 +845,9 @@ function renderSwitcher() {
     name.textContent = shortName(path, budget);
     top.append(idx, name);
 
-    // Facts and the keeping/suggested tag share a line so the filename above
-    // them gets the tab's full width -- with six candidates it needs it.
+    // Facts and the suggested tag share a line so the filename above them
+    // gets the tab's full width -- with six candidates it needs it. Whether
+    // the file is kept is the Keep bar's job, under the tab.
     const meta = document.createElement("span");
     meta.className = "cand-meta";
     const facts = document.createElement("span");
@@ -840,12 +855,7 @@ function renderSwitcher() {
     const dim = d.dimensions[j];
     facts.textContent = `${dim[0]}×${dim[1]} · ${d.size_labels[j]}`;
     meta.appendChild(facts);
-    if (active || pinned) {
-      const tag = document.createElement("span");
-      tag.className = "cand-tag";
-      tag.textContent = active ? "Keeping" : "Keeping too";
-      meta.appendChild(tag);
-    } else if (j === d.suggested_idx) {
+    if (!kept && j === d.suggested_idx) {
       const mark = document.createElement("span");
       mark.className = "cand-mark";
       mark.textContent = "Suggested";
@@ -867,7 +877,9 @@ function renderSwitcher() {
     btn.append(top, meta, score);
     btn.title = `${path} — quality score ${d.scores[j].toFixed(3)}`
       + (d.scores[j] === best ? " (top scored)" : "")
-      + `. Press ${j + 1} to keep this one, Shift+${j + 1} to keep it as well.`;
+      + (multi
+        ? `. Press ${j + 1} to look at it, Shift+${j + 1} to change whether it's kept.`
+        : `. Press ${j + 1} to keep this one instead, Shift+${j + 1} to keep it as well.`);
     // The flip is the comparison itself, so a mouse press lands it on the
     // way down rather than on release. pick() rebuilds this strip, so the
     // press's own focus would hit a detached button: take it over and focus
@@ -877,24 +889,29 @@ function renderSwitcher() {
     btn.addEventListener("pointerdown", (ev) => {
       if (ev.pointerType !== "mouse" || ev.button !== 0) return;
       ev.preventDefault();
-      pick(j);
+      selectFile(j);
       const tab = $(`cand-${j}`);
       if (tab) tab.focus({ preventScroll: true });
     });
-    btn.addEventListener("click", (ev) => { if (ev.pointerType !== "mouse") pick(j); });
+    btn.addEventListener("click", (ev) => { if (ev.pointerType !== "mouse") selectFile(j); });
 
-    // A sibling of the tab, not a child: a button can't nest in a button.
-    // The slot is presentational so the tablist still reads as its tabs.
+    // The Keep bar: a sibling of the tab, not a child, since a button can't
+    // nest in a button. The slot is presentational so the tablist still reads
+    // as its tabs. A labelled full-width bar rather than a corner glyph: a
+    // reviewer facing a false positive has to *see* that a second file can
+    // be kept, before clicking it and swapping the first one out.
     const pin = document.createElement("button");
     pin.type = "button";
     pin.className = "cand-pin";
     pin.id = `cand-pin-${j}`;
-    pin.setAttribute("aria-pressed", String(pinned));
-    pin.setAttribute("aria-label", `Keep ${path} too`);
-    pin.textContent = pinned ? "✓" : "+";
-    pin.title = pinned
-      ? `Kept alongside the pick — click (or Shift+${j + 1}) to let it move with the duplicates again.`
-      : `Keep this file too, whichever file is on the stage — for a different photo that got grouped with real duplicates. Shift+${j + 1}${active ? " or K" : ""}.`;
+    pin.setAttribute("aria-pressed", String(kept));
+    pin.setAttribute("aria-label", `Keep ${path}`);
+    pin.textContent = kept ? "✓ Keeping" : "+ Keep too";
+    pin.title = !kept
+      ? `Keep this file as well — for a different photo that got grouped with real duplicates. Shift+${j + 1}${active ? " or K" : ""}.`
+      : (multi
+        ? `Stop keeping it, so it moves with the duplicates. Shift+${j + 1}${active ? " or K" : ""}.`
+        : "The file this group keeps. Keep another as well with its + Keep too, or pick a different one with its tab.");
     // A mouse press must not leave focus on the pin: Enter defers to a
     // focused button, so "click +, press Enter to confirm" would toggle the
     // pin back off instead -- reversing a keep. Focus goes to the stage, as
@@ -964,8 +981,8 @@ function renderLedger() {
     btn.type = "button";
     btn.className = "col-head-btn";
     btn.textContent = isKept(d, j) ? `${j + 1} · keeping` : String(j + 1);
-    btn.title = `${path} — click to keep this one instead`;
-    btn.addEventListener("click", () => pick(j));
+    btn.title = multiKeep(d) ? `${path} — click to look at it` : `${path} — click to keep this one instead`;
+    btn.addEventListener("click", () => selectFile(j));
     th.appendChild(btn);
     headRow.appendChild(th);
   });
@@ -1186,10 +1203,10 @@ function renderPickChange() {
   const d = state.detail;
   if (d) {
     stageImgs.forEach((img, j) => {
-      img.classList.toggle("is-active", j === d.current_pick);
+      img.classList.toggle("is-active", j === shownIdx());
       labelStageImg(img, j);
     });
-    $("stage").setAttribute("aria-labelledby", `cand-${d.current_pick}`);
+    $("stage").setAttribute("aria-labelledby", `cand-${shownIdx()}`);
   }
   renderSwitcher();
   renderLedger();
@@ -1275,15 +1292,32 @@ function pick(j) {
   // Optimistic: the flip must be instant, that's the point of the stage.
   d.current_pick = j;
   state.groups[i].current_pick = j;
+  // Mirrors the server: a pick drops its own index from also_keep.
+  d.also_keep = (d.also_keep || []).filter((k) => k !== j);
+  state.groups[i].also_keep = d.also_keep;
   renderPickChange();
   renderQueue();
 
   return queueStaging(i, "pick", { idx: j }, "change the pick");
 }
 
-// "keep too": pin or unpin file j alongside the pick. Same queue as pick() --
-// confirm awaits pickChain, so a K followed at once by Enter still lands the
-// pin before anything moves.
+// A tab, digit, arrow or ledger header: with one file kept that's a pick (the
+// stage is the keeper); with several it only changes what's on show, so
+// comparing can never swap a kept file out or add one in.
+function selectFile(j) {
+  const d = state.detail;
+  if (!d || j < 0 || j >= d.paths.length) return pickChain;
+  if (!multiKeep(d)) return pick(j);
+  view.shown = j;
+  renderPickChange();
+  return pickChain;
+}
+
+// The Keep bar: keep file j as well, or stop keeping it. Same queue as
+// pick() -- confirm awaits pickChain, so a K followed at once by Enter still
+// lands before anything moves. The server always keeps current_pick, so
+// un-keeping the pick while others stay kept hands the pick to one of them
+// first; un-keeping the only kept file isn't possible (Skip keeps them all).
 function togglePin(j) {
   const i = state.activeIndex;
   const d = state.detail;
@@ -1291,14 +1325,40 @@ function togglePin(j) {
   if (decisionsLocked()) { showToast(SCAN_LOCKED_MSG); return pickChain; }
   if (confirming) { showToast("Confirming — kept files are locked until it lands."); return pickChain; }
 
-  const keep = !(d.also_keep || []).includes(j);
+  const kept = keptIndices(d);
+  if (kept.length === 1 && kept[0] === j) {
+    showToast("Each group keeps at least one file — pick another to swap, or Skip group to keep them all.");
+    return pickChain;
+  }
+  // Entering multi-keep pins the stage where it is, so the stage doesn't
+  // jump when the tabs stop picking.
+  if (!multiKeep(d)) view.shown = shownIdx();
   const pins = new Set(d.also_keep || []);
-  if (keep) pins.add(j); else pins.delete(j);
+  let chain;
+  if (!kept.includes(j)) {
+    pins.add(j);
+    chain = () => queueStaging(i, "keep", { idx: j, keep: true }, "keep that file");
+  } else if (j !== d.current_pick) {
+    pins.delete(j);
+    chain = () => queueStaging(i, "keep", { idx: j, keep: false }, "stop keeping that file");
+  } else {
+    const next = kept.find((k) => k !== j);
+    pins.delete(j);
+    pins.delete(next);  // the server's pick route drops it too
+    d.current_pick = next;
+    state.groups[i].current_pick = next;
+    chain = () => {
+      queueStaging(i, "pick", { idx: next }, "stop keeping that file");
+      return queueStaging(i, "keep", { idx: j, keep: false }, "stop keeping that file");
+    };
+  }
   d.also_keep = [...pins].sort((a, b) => a - b);
   state.groups[i].also_keep = d.also_keep;
+  // Back to one kept file: the stage is the keeper again.
+  if (!multiKeep(d)) view.shown = null;
   renderPickChange();
   renderQueue();
-  return queueStaging(i, "keep", { idx: j, keep }, keep ? "keep that file too" : "unpin that file");
+  return chain();
 }
 
 function queueStaging(i, route, body, what) {
@@ -1333,7 +1393,7 @@ function pickRelative(delta) {
   const d = state.detail;
   if (!d) return;
   const n = d.paths.length;
-  pick(((d.current_pick + delta) % n + n) % n);
+  selectFile(((shownIdx() + delta) % n + n) % n);
 }
 
 async function confirmGroup() {
@@ -1420,7 +1480,7 @@ function stepGroup(delta) {
 function openFullRes() {
   const d = state.detail;
   if (!d) return;
-  window.open(`/api/full/${d.index}/${d.current_pick}?g=${state.generation}`, "_blank", "noopener");
+  window.open(`/api/full/${d.index}/${shownIdx()}?g=${state.generation}`, "_blank", "noopener");
 }
 
 // ---------------------------------------------------------------------------
@@ -1645,7 +1705,7 @@ function helpContent(info) {
   frag.appendChild(ul);
 
   frag.appendChild(h("h3", "Reading the stage"));
-  frag.appendChild(h("p", "One file fills the stage at a time and every file in the group is laid out in exactly the same frame, so moving between them changes the pixels and nothing else — the sharper file is the one that stops looking soft. The file on the stage is the file you're keeping. If a group caught a different photo alongside real duplicates, pin it with the + in the corner of its tab (Shift and its number, or K for the file on the stage) and it's kept too, whichever file you then pick. A group of two to four shows them side by side instead, with the kept ones outlined in blue — unless a group of three or four holds a really huge photo (over 50 megapixels) or the window is too narrow to give each its own usable pane."));
+  frag.appendChild(h("p", "One file fills the stage at a time and every file in the group is laid out in exactly the same frame, so moving between them changes the pixels and nothing else — the sharper file is the one that stops looking soft. The file on the stage is the file you're keeping. If a group caught a different photo alongside real duplicates, press + Keep too under it (or Shift and its number, or K for the file on the stage). While more than one file is kept, the tabs and arrows only change what's on the stage, and the Keep bars alone decide what stays. A group of two to four shows them side by side instead, with the kept ones outlined in blue — unless a group of three or four holds a really huge photo (over 50 megapixels) or the window is too narrow to give each its own usable pane."));
   frag.appendChild(h("p", "Click the stage (or press Z) to inspect at 1:1; a click zooms in on the exact spot under the pointer. On a very large photo, 1:1 shows only a sliver: drag the zoom slider at the bottom-right of the stage to inspect at a lower level instead, and every later group opens at that level. The − and = keys step it. At that zoom the largest file in the group is shown at its true pixels and the others are scaled to match the same part of the scene, so an export upscaled from a smaller original gives itself away. Scroll the wheel (or pinch) to zoom in and out around the pointer. Drag or hold shift with the arrow keys to pan; the spot you're inspecting stays put as you move between files, and side-by-side panes pan together."));
   frag.appendChild(h("p", "n/a in the table means that measurement has no value for that file — either its optional package isn't installed, or it failed on that one image. A measurement missing for any file is dropped from the whole group's score and the remaining weights are rescaled, so the group is still scored, just on fewer inputs."));
 
@@ -1655,15 +1715,15 @@ function helpContent(info) {
   [
     ["← →", "Move between the files in this group"],
     ["1 – 9", "Keep a specific file"],
-    ["Shift + 1 – 9", "Keep that file too, alongside the pick (press again to undo)"],
-    ["K", "Keep the file on the stage too, even after moving to another"],
+    ["Shift + 1 – 9", "Keep that file as well, or stop keeping it"],
+    ["K", "Same, for the file on the stage"],
     ["↑ ↓", "Move between groups"],
     ["Enter / C", "Confirm keep"],
     ["Delete / S", "Skip group — on a confirmed group, move its files back"],
     ["Z", "Inspect (at the zoom slider's level)"],
     ["− / =", "Zoom out / in"],
     ["Shift + arrows", "Pan while inspecting"],
-    ["O", "Open the kept file full-res in a new tab"],
+    ["O", "Open the file on the stage full-res in a new tab"],
     ["M", "Show or hide the measurements"],
     ["? / F1", "This panel"],
     ["Q", "Quit — stop the server, no confirmation"],
@@ -1821,7 +1881,7 @@ function attachKeyboardHandler() {
     else if (e.code === "ArrowDown") { stepGroup(1); e.preventDefault(); }
     else if (e.code === "KeyC") { confirmGroup(); e.preventDefault(); }
     else if (e.code === "Delete" || e.code === "Backspace" || e.code === "KeyS") { skipGroup(); e.preventDefault(); }
-    else if (e.code === "KeyK") { if (!e.repeat && state.detail) togglePin(state.detail.current_pick); e.preventDefault(); }
+    else if (e.code === "KeyK") { if (!e.repeat && state.detail) togglePin(shownIdx()); e.preventDefault(); }
     else if (e.code === "KeyZ") { setZoom(!view.zoom); e.preventDefault(); }
     else if (e.code === "Equal" || e.code === "NumpadAdd") { stepZoom(1); e.preventDefault(); }
     else if (e.code === "Minus" || e.code === "NumpadSubtract") { stepZoom(-1); e.preventDefault(); }
@@ -1832,7 +1892,7 @@ function attachKeyboardHandler() {
       const n = parseInt(e.code.slice(5), 10);
       if (n >= 1 && n <= 9 && state.detail && n <= state.detail.paths.length) {
         // A held toggle would flicker the pin on and off.
-        if (e.shiftKey) { if (!e.repeat) togglePin(n - 1); } else pick(n - 1);
+        if (e.shiftKey) { if (!e.repeat) togglePin(n - 1); } else selectFile(n - 1);
         e.preventDefault();
       }
     }

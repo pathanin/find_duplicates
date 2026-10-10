@@ -574,6 +574,9 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
             if not (0 <= body.idx < len(g.paths)):
                 raise HTTPException(400, "idx out of range")
             g.current_pick = body.idx
+            # The pick is kept anyway; left pinned too, it would stay kept
+            # after the next pick moves elsewhere (tests/test_keep_multiple.py).
+            g.also_keep = [k for k in g.also_keep if k != body.idx]
             return JSONResponse(_group_detail(session, i, g))
 
     @app.post("/api/group/{i}/keep")

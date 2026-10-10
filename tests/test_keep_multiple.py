@@ -233,6 +233,27 @@ def test_keep_route_guards() -> None:
         print("  ok  /keep rejects bad idx/group/stale g/no token/mid-rescan, accepts a valid one")
 
 
+def test_pick_drops_itself_from_also_keep() -> None:
+    """Un-keeping the pick while another file stays kept hands the pick to
+    that file. If it also stayed in also_keep, picking a third file later
+    would quietly keep two -- so a pick never leaves its own index pinned."""
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp)
+        _make_dup_set(directory, seed=23, n=3)
+        client, app = _client(directory)
+        with client:
+            _wait_ready(client)
+            client.post("/api/group/0/keep", params={"token": TOKEN}, json={"idx": 2, "keep": True})
+            r = client.post("/api/group/0/pick", params={"token": TOKEN}, json={"idx": 2})
+            assert r.json()["current_pick"] == 2 and r.json()["also_keep"] == [], r.json()
+            r = client.post("/api/group/0/pick", params={"token": TOKEN}, json={"idx": 0})
+            assert r.json()["also_keep"] == [], "picking another file must not resurrect the old pin"
+            client.post("/api/group/0/keep", params={"token": TOKEN}, json={"idx": 1, "keep": True})
+            r = client.post("/api/group/0/pick", params={"token": TOKEN}, json={"idx": 2})
+            assert r.json()["also_keep"] == [1], "a pick must leave other pins alone"
+        print("  ok  a pick removes only its own index from also_keep")
+
+
 def main() -> None:
     tests = [
         test_apply_group_leaves_pinned_files_in_place,
@@ -243,6 +264,7 @@ def main() -> None:
         test_symlink_to_pinned_target_is_not_moved,
         test_keep_route_then_confirm_moves_only_unpinned,
         test_keep_route_guards,
+        test_pick_drops_itself_from_also_keep,
     ]
     for test in tests:
         print(f"{test.__name__}:")
