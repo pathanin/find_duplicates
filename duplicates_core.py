@@ -18,6 +18,7 @@ import os
 import shutil
 import sys
 import threading
+from collections import Counter
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -421,7 +422,8 @@ def _print_progress(label: str, done: int, total: int, tty: bool) -> None:
 
 
 def group_duplicates(
-    paths: list[Path], threshold: int, cache: dict, progress_callback=None
+    paths: list[Path], threshold: int, cache: dict, progress_callback=None,
+    digests: dict[Path, bytes | None] | None = None,
 ) -> list[list[Path]]:
     """Groups `paths` by perceptual-hash Hamming distance, reusing `cache`
     for files whose (mtime, size) haven't changed (see cached_hash/
@@ -434,7 +436,11 @@ def group_duplicates(
     done, total) as each uncached item completes, instead of the default
     TTY-aware print via _print_progress -- lets a caller (e.g. the web
     front end's SSE progress stream) route progress to something other than
-    stdout without touching the CLI's default behavior."""
+    stdout without touching the CLI's default behavior.
+
+    A byte-identical copy is decoded once and shares its original's hash --
+    the decode is most of a hash, and ~0.9 s on a 24 MP HEIC. *digests*, if
+    given, keeps what was read to find copies (see analyze_paths)."""
     paths, stats = _stat_paths(paths)
     hashes: dict[Path, tuple[int, int] | None] = {}
     to_compute = []
@@ -452,14 +458,19 @@ def group_duplicates(
         cv2.setNumThreads(1)
         try:
             with ThreadPoolExecutor(max_workers=THREAD_POOL_WORKERS) as executor:
-                computed = executor.map(_hash_one, to_compute)
-                for done, (p, h) in enumerate(zip(to_compute, computed), start=1):
-                    store_hash(cache, p, stats[p], h)
-                    hashes[p] = h
-                    if progress_callback is not None:
-                        progress_callback("Hashing", done, total)
-                    else:
-                        _print_progress("Hashing", done, total, tty)
+                copies = _copies_by_original(to_compute, stats, {} if digests is None else digests, executor)
+                is_copy = {q for qs in copies.values() for q in qs}
+                originals = [p for p in to_compute if p not in is_copy]
+                done = 0
+                for p, h in zip(originals, executor.map(_hash_one, originals)):
+                    for q in (p, *copies.get(p, ())):
+                        store_hash(cache, q, stats[q], h)
+                        hashes[q] = h
+                        done += 1
+                        if progress_callback is not None:
+                            progress_callback("Hashing", done, total)
+                        else:
+                            _print_progress("Hashing", done, total, tty)
             if progress_callback is None and tty:
                 print()
         finally:
@@ -959,23 +970,48 @@ def _analyze_one(path_str: str) -> dict | None:
             _analyze_slots.notify_all()
 
 
+_SAMPLE_BYTES = 1 << 16
+
+
+def _sample_digest(path: Path) -> bytes | None:
+    """blake2b of three windows -- start, middle, end -- of the file: enough
+    to tell two different files of one size apart without reading either
+    whole. Only ever rules a copy *out*; a match still needs _file_digest."""
+    h = hashlib.blake2b(digest_size=16)
+    try:
+        with open(path, "rb") as f:
+            size = os.fstat(f.fileno()).st_size
+            for offset in sorted({0, max(0, (size - _SAMPLE_BYTES) // 2), max(0, size - _SAMPLE_BYTES)}):
+                f.seek(offset)
+                h.update(f.read(_SAMPLE_BYTES))
+    except OSError:
+        return None
+    return h.digest()
+
+
 def _copies_by_original(paths: list[Path], stats: dict[Path, os.stat_result],
                         digests: dict[Path, bytes | None], executor) -> dict[Path, list[Path]]:
     """{first file: [later files with exactly its bytes]} among *paths*.
-    Only files that share a size with another are read -- for multi-MB
-    photos a size match all but implies a copy, so a library without copies
-    reads nothing extra. Their digests land in *digests*, for _identical_to
-    to reuse instead of reading the same files again."""
+
+    Only a file that shares its size with another is looked at, so a library
+    without copies reads nothing extra. Even then a glance comes first: an
+    uncompressed format makes every photo from one camera the same size, and
+    reading a folder of 144 MB TIFFs whole to learn that would cost more than
+    the copies it finds. Full digests land in *digests*, for the next phase
+    and for _identical_to to reuse instead of reading the files again."""
     by_size: dict[int, list[Path]] = {}
     for p in paths:
         by_size.setdefault(stats[p].st_size, []).append(p)
     candidates = [p for same in by_size.values() if len(same) > 1 for p in same]
     unread = [p for p in candidates if p not in digests]
-    digests.update(zip(unread, executor.map(_file_digest, unread)))
+    samples = dict(zip(unread, executor.map(_sample_digest, unread)))
+    seen = Counter((stats[p].st_size, s) for p, s in samples.items() if s is not None)
+    alike = [p for p, s in samples.items() if s is not None and seen[stats[p].st_size, s] > 1]
+    digests.update(zip(alike, executor.map(_file_digest, alike)))
     first: dict[bytes, Path] = {}
     copies: dict[Path, list[Path]] = {}
     for p in candidates:
-        d = digests[p]
+        d = digests.get(p)
         if d is None:
             continue
         if d in first:
@@ -1246,7 +1282,11 @@ def build_groups(
     if analyze_cache is None:
         analyze_cache = {}
 
-    raw_groups = group_duplicates(paths, threshold, hash_cache, progress_callback=progress_callback)
+    # Shared by every phase: hashing, analysis and _identical_to all want to
+    # know which files are byte-identical, and none should read one twice.
+    digests: dict[Path, bytes | None] = {}
+    raw_groups = group_duplicates(paths, threshold, hash_cache, progress_callback=progress_callback,
+                                  digests=digests)
     if stats is not None:
         # A failed decode is cached as hash None (see cached_hash).
         entries = (hash_cache.get(_cache_key(p)) for p in paths)
@@ -1275,7 +1315,6 @@ def build_groups(
     remaining = [sum(1 for p in members if p in kept) for members in raw_groups]
     owner = {p: gi for gi, members in enumerate(raw_groups) for p in members if p in kept}
     analyzed: dict[Path, dict] = {}
-    digests: dict[Path, bytes | None] = {}
     cursor = 0
 
     def publish_ready() -> None:

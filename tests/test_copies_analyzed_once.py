@@ -1,15 +1,18 @@
-"""A byte-identical copy is analyzed once, not once per copy.
+"""A byte-identical copy is decoded once for hashing and analyzed once, not
+once per copy.
 
 Byte-identical copies are the commonest duplicate there is (" copy.jpg",
 " 2.jpg", a second export), and analyze() is the per-image scan bottleneck:
-~0.3 s single-threaded on a 24 MP JPEG, ~1.3 s on a 100 MP one. The same
-bytes always score the same, so every copy after the first was pure waste --
-half the analyze phase on tests/Test-image, which is nothing but such pairs.
+~0.3 s single-threaded on a 24 MP JPEG, ~1.3 s on a 100 MP one -- and a HEIC
+spends ~0.9 s just decoding for its hash. The same bytes always hash and
+score the same, so every copy after the first was pure waste: half the
+analyze phase on tests/Test-image, which is nothing but such pairs.
 
-analyze_paths now reads only files that share a size with another (for
-multi-MB photos a size match all but implies a copy), digests them, analyzes
-one file per content and hands each copy a result of its own. Each part of
-that is load-bearing:
+Only files that share a size with another are looked at, and those get a
+glance at three windows before anyone reads a file whole -- a folder of one
+camera's uncompressed TIFFs is all one size. Then one file per content is
+hashed and analyzed, and each copy is handed results of its own. Each part
+of that is load-bearing:
 
 - every copy still resolves through done_callback, or build_groups' per-group
   countdown never reaches zero and that group -- and, since publication is
@@ -96,18 +99,63 @@ def test_a_copy_is_analyzed_once(tmp: Path) -> None:
     print("  ok  the copy is analyzed once and still gets its own result, cache entry, callback and progress tick")
 
 
+class CountingDigest:
+    """Stands in for duplicates_core._file_digest, recording each file read
+    whole for its digest."""
+
+    def __init__(self):
+        self.real = dc._file_digest
+        self.calls: dict[str, int] = {}
+
+    def __call__(self, p: Path):
+        self.calls[p.name] = self.calls.get(p.name, 0) + 1
+        return self.real(p)
+
+    def __enter__(self):
+        dc._file_digest = self
+        return self
+
+    def __exit__(self, *exc):
+        dc._file_digest = self.real
+
+
 def test_same_size_different_bytes_are_both_analyzed(tmp: Path) -> None:
-    """A size match is only the trigger to look; the digest decides. BMP is
-    uncompressed, so two different photos of one size are the same length."""
+    """A size match is only the trigger to look. BMP is uncompressed, so two
+    different photos of one size are the same length -- a whole folder of
+    one camera's TIFFs is -- and a glance at a few windows of each must tell
+    them apart without reading either whole."""
     a, b = tmp / "a.bmp", tmp / "b.bmp"
-    cv2.imwrite(str(a), textured(64, 80, 3))
-    cv2.imwrite(str(b), textured(64, 80, 4))
-    assert a.stat().st_size == b.stat().st_size
-    with CountingAnalyze() as counted:
+    cv2.imwrite(str(a), textured(256, 320, 3))
+    cv2.imwrite(str(b), textured(256, 320, 4))
+    assert a.stat().st_size == b.stat().st_size > 3 * dc._SAMPLE_BYTES
+    with CountingAnalyze() as counted, CountingDigest() as digested:
         results = dc.analyze_paths([a, b], {})
     assert counted.calls == {"a.bmp": 1, "b.bmp": 1}, counted.calls
+    assert digested.calls == {}, f"read whole to tell apart: {digested.calls}"
     assert results[a]["blockiness"] != results[b]["blockiness"] or results[a]["noise_sigma"] != results[b]["noise_sigma"]
-    print("  ok  same size, different bytes: both analyzed")
+    print("  ok  same size, different bytes: both analyzed, neither read whole")
+
+
+def test_matching_windows_still_need_the_whole_file(tmp: Path) -> None:
+    """The windows only rule copies *out*. Two files that agree on all of
+    them but differ elsewhere are different files."""
+    size = 1 << 20
+    rng = np.random.default_rng(9)
+    data = bytearray(rng.integers(0, 256, size, dtype=np.uint8).tobytes())
+    (tmp / "a.bin").write_bytes(data)
+    (tmp / "b.bin").write_bytes(data)
+    data[300_000] ^= 0xFF  # outside the start, middle and end windows
+    (tmp / "c.bin").write_bytes(data)
+    (tmp / "d.bin").write_bytes(data[:-1])
+    paths = [tmp / n for n in ("a.bin", "b.bin", "c.bin", "d.bin")]
+    stats = {p: p.stat() for p in paths}
+    digests: dict = {}
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(4) as pool, CountingDigest() as digested:
+        copies = dc._copies_by_original(paths, stats, digests, pool)
+    assert copies == {paths[0]: [paths[1]]}, copies
+    assert digested.calls == {"a.bin": 1, "b.bin": 1, "c.bin": 1}, digested.calls
+    print("  ok  files agreeing on every window are still compared whole; a lone size is never read")
 
 
 def test_a_failed_original_fails_its_copies(tmp: Path) -> None:
@@ -147,20 +195,23 @@ def test_streaming_scan_publishes_every_group(tmp: Path) -> None:
     is read for its digest twice (analyze_paths and _identical_to share)."""
     make_library(tmp)
     published = []
-    digested: dict[str, int] = {}
-    real_digest = dc._file_digest
+    decoded: dict[str, int] = {}
+    real_hash_gray = dc.load_hash_gray
 
-    def counting_digest(p):
-        digested[p.name] = digested.get(p.name, 0) + 1
-        return real_digest(p)
+    def counting_hash_gray(p):
+        decoded[p.name] = decoded.get(p.name, 0) + 1
+        return real_hash_gray(p)
 
-    dc._file_digest = counting_digest
+    hashing = []
+    dc.load_hash_gray = counting_hash_gray
     try:
-        with CountingAnalyze() as counted:
-            groups = dc.build_groups(tmp, dc.DEFAULT_HASH_THRESHOLD, group_callback=published.append,
-                                     progress_callback=lambda *a: None)
+        with CountingAnalyze() as counted, CountingDigest() as digests_read:
+            groups = dc.build_groups(
+                tmp, dc.DEFAULT_HASH_THRESHOLD, group_callback=published.append,
+                progress_callback=lambda label, done, total: label == "Hashing" and hashing.append((done, total)))
     finally:
-        dc._file_digest = real_digest
+        dc.load_hash_gray = real_hash_gray
+    digested = digests_read.calls
 
     assert [id(g) for g in published] == [id(g) for g in groups], "published out of order, or not at all"
     by_name = {tuple(sorted(p.name for p in g.paths)): g for g in groups}
@@ -179,9 +230,13 @@ def test_streaming_scan_publishes_every_group(tmp: Path) -> None:
                 {"pair_hi.jpg"}, {"pair_lo.jpg"}, {"trio_lo.jpg"}]
     assert all(v == 1 for v in counted.calls.values()), counted.calls
     assert [len(c & set(counted.calls)) for c in contents] == [1] * len(contents), sorted(counted.calls)
+    # Hashing decodes once per content too -- a HEIC decode is ~0.9 s.
+    assert all(v == 1 for v in decoded.values()), decoded
+    assert [len(c & set(decoded)) for c in contents] == [1] * len(contents), sorted(decoded)
+    assert hashing == [(i, 11) for i in range(1, 12)], hashing
     assert all(v == 1 for v in digested.values()), f"read twice for a digest: {digested}"
-    print(f"  ok  {len(groups)} groups published in order; {len(counted.calls)} analyses for 11 files; "
-          "each digest read once")
+    print(f"  ok  {len(groups)} groups published in order; {len(decoded)} hash decodes and "
+          f"{len(counted.calls)} analyses for 11 files; each digest read once")
 
 
 def test_no_copies_no_digests(tmp: Path) -> None:
@@ -192,21 +247,23 @@ def test_no_copies_no_digests(tmp: Path) -> None:
         cv2.imwrite(str(tmp / f"p{g}_hi.jpg"), img, [cv2.IMWRITE_JPEG_QUALITY, 95])
         cv2.imwrite(str(tmp / f"p{g}_lo.jpg"), img, [cv2.IMWRITE_JPEG_QUALITY, 60])
     calls = []
-    real_digest = dc._file_digest
-    dc._file_digest = lambda p: calls.append(p) or real_digest(p)
+    real_digest, real_sample = dc._file_digest, dc._sample_digest
+    dc._file_digest = lambda p: calls.append(("whole", p.name)) or real_digest(p)
+    dc._sample_digest = lambda p: calls.append(("windows", p.name)) or real_sample(p)
     try:
         groups = dc.build_groups(tmp, dc.DEFAULT_HASH_THRESHOLD, progress_callback=lambda *a: None)
     finally:
-        dc._file_digest = real_digest
+        dc._file_digest, dc._sample_digest = real_digest, real_sample
     assert len(groups) == 3, len(groups)
-    assert calls == [], f"digested without a size collision: {calls}"
-    print("  ok  no size collisions, no digests")
+    assert calls == [], f"read for copies without a size collision: {calls}"
+    print("  ok  no size collisions, nothing read to look for copies")
 
 
 def main() -> None:
     tests = [
         test_a_copy_is_analyzed_once,
         test_same_size_different_bytes_are_both_analyzed,
+        test_matching_windows_still_need_the_whole_file,
         test_a_failed_original_fails_its_copies,
         test_streaming_scan_publishes_every_group,
         test_no_copies_no_digests,
