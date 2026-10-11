@@ -585,7 +585,10 @@ the checkbox tick, both drawn from borders.
 - A right-edge paper panel, `min(520px, 100%)` wide, 1px ink border, over a
   40%-ink scrim. Its head is a Display XS title and a quiet Close; its body is
   built from `/api/metrics-info` rather than hardcoded, so a change to metric
-  weights or descriptions in the core reaches the UI without an edit here.
+  weights or descriptions in the core reaches the UI without an edit here. The
+  list uses the ledger's own row labels and each counting metric's share of the
+  score as a percentage; a metric that produced no value in the session is
+  named once, in a sentence, as not counting.
 
 ### Stopped curtain
 - **The Quit button acts on the first click; the Q key asks twice.** A click

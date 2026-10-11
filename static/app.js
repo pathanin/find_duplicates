@@ -1187,7 +1187,7 @@ function renderLedger() {
           // Names the state, not a cause: "n/a" means either the optional
           // package isn't installed or the measurement failed on this one
           // file, and the UI can't tell which.
-          td.title = "Not measured for this file — either the optional metric isn't installed, or it failed on this image. See Help.";
+          td.title = "Not measured for this file — either an optional measurement that isn't available here, or it failed on this image. See Help.";
         }
       }
       tr.appendChild(td);
@@ -1939,28 +1939,35 @@ function helpContent(info) {
   frag.appendChild(h("p", "A weighted composite of the measurements below, normalized 0–1 within this group only — min-max against the other files here, so it never compares across different photos. It's a hand-tuned heuristic, not a lab measurement: treat it as a strong hint, and look harder when the group is flagged as a close call."));
   frag.appendChild(h("p", "Dimensions and file size are shown for reference and do not feed the score."));
 
-  frag.appendChild(h("h3", "Weighted measurements, by influence"));
+  // In the ledger's own words, with each measurement's real share of the
+  // score: the weights are rescaled over whatever produced a value, so a
+  // metric that never does (BRISQUE/NIQE, whose packages aren't installed on
+  // purpose) is named once as not counting rather than listed at a weight it
+  // never has.
+  frag.appendChild(h("h3", "What the score is made of, by influence"));
   const ul = h("ul", null, "metric-list");
-  Object.entries(info.weights)
-    .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
-    .forEach(([name, weight]) => {
-      const li = document.createElement("li");
-      li.appendChild(h("span", Math.abs(weight).toFixed(2), "weight"));
-      const right = document.createElement("span");
-      right.appendChild(h("span", name, "metric-name"));
-      right.appendChild(h("span", ` ${weight > 0 ? "higher is better" : "lower is better"}`, "metric-dir"));
-      right.appendChild(document.createElement("br"));
-      right.appendChild(h("span", info.descriptions[name], "metric-desc"));
-      li.appendChild(right);
-      ul.appendChild(li);
-    });
+  const notCounting = [];
+  info.metrics.forEach((m) => {
+    if (!m.counts) { notCounting.push(m.label.replace(/ \(.*\)$/, "")); return; }
+    const li = document.createElement("li");
+    li.appendChild(h("span", `${Math.round(m.share * 100)}%`, "weight"));
+    const right = document.createElement("span");
+    right.appendChild(h("span", m.label, "metric-name"));
+    right.appendChild(document.createElement("br"));
+    right.appendChild(h("span", m.description, "metric-desc"));
+    li.appendChild(right);
+    ul.appendChild(li);
+  });
   frag.appendChild(ul);
+  if (notCounting.length) {
+    frag.appendChild(h("p", `${notCounting.join(" and ")}, optional no-reference scores, produced no value in this review, so they count toward nothing here and their rows stay out of the table.`));
+  }
 
   frag.appendChild(h("h3", "Reading the stage"));
   frag.appendChild(h("p", "One file fills the stage at a time and every file in the group is laid out in exactly the same frame, so moving between them changes the pixels and nothing else — the sharper file is the one that stops looking soft. With one file kept, the file on the stage is the file you're keeping. If a group caught a different photo alongside real duplicates, press + Keep too under it (or Shift and its number, or K for the file on the stage). While more than one file is kept, the tabs and arrows only change what's on the stage, and the Keep bars alone decide what stays. A group of two to four shows them side by side instead, with the kept ones outlined in blue — unless a group of three or four holds a really huge photo (over 50 megapixels) or the window is too narrow to give each its own usable pane."));
   frag.appendChild(h("p", "A file tagged Same file as 1 (or another number) is byte for byte the same as that one, so there is nothing to compare: keep whichever you like. A group made only of such copies says Identical files above the table, and Keep one of each, under the queue count, confirms every such group at once, keeping the file shown in each and leaving groups with any real difference for you. A close call is measured between the top file and the best file that actually differs from it."));
   frag.appendChild(h("p", "Click the stage (or press Z) to inspect at 1:1; a click zooms in on the exact spot under the pointer. On a very large photo, 1:1 shows only a sliver: drag the zoom slider at the bottom-right of the stage to inspect at a lower level instead, and every later group opens at that level. The − and = keys step it. At that zoom the largest file in the group is shown at its true pixels and the others are scaled to match the same part of the scene, so an export upscaled from a smaller original gives itself away. Scroll the wheel (or pinch) to zoom in and out around the pointer. Drag or hold shift with the arrow keys to pan; the spot you're inspecting stays put as you move between files, and side-by-side panes pan together."));
-  frag.appendChild(h("p", "n/a in the table means that measurement has no value for that file — either its optional package isn't installed, or it failed on that one image. A measurement missing for any file is dropped from the whole group's score and the remaining weights are rescaled, so the group is still scored, just on fewer inputs."));
+  frag.appendChild(h("p", "n/a in the table means that measurement has no value for that file — either it's an optional measurement that isn't available here, or it failed on that one image. A measurement missing for any file is dropped from the whole group's score and the remaining weights are rescaled, so the group is still scored, just on fewer inputs."));
 
   frag.appendChild(h("h3", "Keyboard"));
   const keys = document.createElement("dl");
@@ -1973,13 +1980,14 @@ function helpContent(info) {
     ["↑ ↓", "Move between groups"],
     ["N", "Next group still waiting for a decision"],
     ["Enter / C", "Confirm keep"],
-    ["Delete / S", "Skip group — on a confirmed group, Undo keep: move its files back and decide it again"],
+    ["S / Delete / Backspace", "Skip group — on a confirmed group, Undo keep: move its files back and decide it again"],
     ["Z", "Inspect (at the zoom slider's level)"],
     ["− / =", "Zoom out / in"],
     ["Shift + arrows", "Pan while inspecting"],
     ["O", "Open the file on the stage full-res in a new tab"],
     ["M", "Show or hide the measurements"],
     ["? / F1", "This panel"],
+    ["Esc", "Stop inspecting; close the scan panel or this one"],
     ["Q, Q", "Quit — press twice to stop the server"],
   ].forEach(([k, v]) => {
     keys.appendChild(h("dt", k));

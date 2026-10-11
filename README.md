@@ -3,19 +3,17 @@
 Scan a directory for near-duplicate images — the same photo exported at different sizes or quality levels — and pick the best one to keep, from a browser page (LAN-capable, so a photo library sitting on a NAS or headless box can be reviewed from another machine).
 
 ```bash
-python3 find_duplicates.py [directory] [--threshold N] [--dest DIR] [--recursive] [--auto] [--dry-run] [--host H] [--port N]
+python3 find_duplicates.py [directory] [--threshold N] [--dest DIR] [--recursive] [--auto] [--dry-run] [--host H] [--port N] [--no-browser]
 ```
 
 ## How it works
 
-1. **Perceptual hash** — each image gets a 64-bit DCT hash. Images within a configurable Hamming distance (default 10/64) are grouped as duplicates.
+1. **Perceptual hash** — each image gets a 64-bit DCT hash. Images within a configurable Hamming distance (default 10/64) are proposed as duplicates, and a wider 256-bit hash of each pair has to agree before they're grouped, so two frames of one scene aren't taken for one photo. Above a threshold of 10 that second check is off, and loose matches climb quickly. Byte-identical copies are recognised as such and tagged in the review.
 2. **Quality scoring** — every image in a group is evaluated on sharpness, effective resolution (FFT-based, resistant to fake upscaling), noise, and blockiness. Scores are min-max normalized within each group and weighted into a composite quality score.
 3. **Interactive review** — pick a keeper per group from a browser page: it shows thumbnails and per-image metrics with keyboard shortcuts. `--auto` skips review entirely and keeps each group's suggested (top-scored) file automatically, without starting the web server.
 4. **Safe cleanup** — non-kept files are moved to `_duplicates/` (never deleted), so you can always move one back by hand if you change your mind. Every move, and every undo, is appended to `_duplicates/moves.log` (tab-separated: time, action, from, to), so where a file came from survives the program exiting. Pass `--dry-run` to preview without moving anything; `--auto --dry-run` lists what each group would keep and move.
 
 Byte-identical copies score exactly equal, so the tie-break decides: the shorter filename wins, because every convention for naming a copy *appends* to the original (`" copy"`, `" 2"`, `" (1)"`, `"-edited"`). That keeps `holiday.jpg` over `holiday copy.jpg`.
-
-**Entirely optional.** With no key, no network, or an API error the hint is simply absent and everything else — scanning, scoring, the suggested pick, `--auto` — behaves exactly the same. The hint is advisory in any case: it never changes which file is suggested or moved, and `--auto` never calls it.
 
 ## Install
 
@@ -58,7 +56,7 @@ Keyboard shortcuts: arrows to change the keeper selection, digit keys to jump to
 |---|---|---|
 | `directory` | `.` | Directory to scan |
 | `--threshold` | `10` | Max Hamming distance (0–64) for duplicate match |
-| `--dest` | `./_duplicates` | Where to move non-kept files |
+| `--dest` | `<directory>/_duplicates` | Where to move non-kept files |
 | `--recursive`, `-r` | — | Scan subdirectories too, not just the top level. Skips folders other programs manage — Photos/Aperture libraries, Lightroom previews, Synology `@eaDir`/`#recycle`, dot-folders — whose copies of your photos would otherwise all show up as duplicates |
 | `--dry-run` | — | Show what would happen, don't move anything |
 | `--auto`, `--yes` | — | Non-interactive: skip the review UI, keep each group's suggested file automatically, and exit (no web server) |

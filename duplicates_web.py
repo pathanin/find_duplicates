@@ -21,6 +21,7 @@ rescan leaves the previous state in place rather than half-updating it.
 import asyncio
 import io
 import json
+import math
 import os
 import secrets
 import signal
@@ -44,6 +45,7 @@ from duplicates_core import (
     METRIC_DESCRIPTIONS,
     METRIC_ROWS,
     METRIC_WEIGHTS,
+    OPTIONAL_METRICS,
     PREVIEW_MAX_SIDE,
     THUMBNAIL_FAILURE_COLOR,
     apply_pick,
@@ -562,7 +564,31 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
 
     @app.get("/api/metrics-info")
     async def get_metrics_info(_: str = Depends(require_token)) -> JSONResponse:
-        return JSONResponse({"weights": METRIC_WEIGHTS, "descriptions": METRIC_DESCRIPTIONS})
+        """The help sheet's scoring list, in the ledger's own words. A metric
+        counts if any file in this session produced a value for it (before
+        any result, every non-optional one is assumed to); `share` is its
+        part of the score among the counting ones, since score_group rescales
+        the weights over whatever is present."""
+        with session.lock:
+            results = [r for g in session.groups for r in g.results]
+
+        def counts(key: str) -> bool:
+            if not results:
+                return key not in OPTIONAL_METRICS
+            return any(r.get(key) is not None and math.isfinite(r[key]) for r in results)
+
+        labels = {row.key: row.label for row in METRIC_ROWS if row.key}
+        active = {k for k in METRIC_WEIGHTS if counts(k)}
+        total = sum(abs(METRIC_WEIGHTS[k]) for k in active) or 1.0
+        metrics = [
+            {
+                "key": k, "label": labels[k], "direction": 1 if w > 0 else -1,
+                "description": METRIC_DESCRIPTIONS[k], "counts": k in active,
+                "share": abs(w) / total if k in active else None,
+            }
+            for k, w in sorted(METRIC_WEIGHTS.items(), key=lambda kw: -abs(kw[1]))
+        ]
+        return JSONResponse({"metrics": metrics})
 
     @app.get("/api/group/{i}")
     async def get_group(i: int, _: str = Depends(require_token)) -> JSONResponse:

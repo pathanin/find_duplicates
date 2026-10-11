@@ -111,9 +111,14 @@ METRIC_DESCRIPTIONS = {
     "effective_resolution_fraction": "fraction of native resolution that's real detail, not just interpolated pixels",
     "noise_sigma": "sensor/compression noise",
     "blockiness": "JPEG block-edge artifacts",
-    "brisque": "no-reference perceptual quality score (needs optional `brisque` package)",
-    "niqe": "no-reference perceptual quality score (needs optional `pyiqa` package)",
+    "brisque": "no-reference perceptual quality score; optional, and counts only where it produces a value",
+    "niqe": "no-reference perceptual quality score; optional, and counts only where it produces a value",
 }
+
+# Weighted metrics that normally produce no value at all: their packages are
+# deliberately not installed (see CLAUDE.md), so the help sheet lists them as
+# not counting unless a scan actually produced one.
+OPTIONAL_METRICS = {"brisque", "niqe"}
 
 class MetricRow(NamedTuple):
     """One row of the metrics table rendered by the web UI's /api/group/{i}

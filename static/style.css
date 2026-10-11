@@ -944,7 +944,6 @@ button { font-family: inherit; }
 }
 .sheet-body .weight { font: var(--body-emphasis); font-variant-numeric: tabular-nums; color: var(--primary); }
 .sheet-body .metric-name { font: var(--caption-bold); }
-.sheet-body .metric-dir { font: var(--caption-sm); color: var(--graphite); }
 .sheet-body .metric-desc { font: var(--caption-sm); color: var(--charcoal); }
 .sheet-body .keys { display: grid; grid-template-columns: 104px minmax(0, 1fr); gap: 8px 12px; font: var(--caption-md); }
 .sheet-body .keys dt { font: var(--caption-bold); }

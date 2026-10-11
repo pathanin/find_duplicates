@@ -382,6 +382,43 @@ def test_scan_path_is_read_the_way_a_person_types_it() -> None:
         print("  ok  /api/scan expands ~, strips quotes and whitespace, and refuses relative paths")
 
 
+def test_metrics_info_describes_what_actually_scores() -> None:
+    """The help sheet listed snake_case keys ("effective_resolution_px_equiv")
+    that the ledger never shows, listed BRISQUE and NIQE at 0.10 each though
+    they produce no value without packages this project deliberately
+    doesn't install -- and told the reader to install them. It now carries
+    the ledger's own labels, says which metrics produced a value in this
+    session (and so count), and each counting metric's real share of the
+    score, since score_group rescales over the metrics present."""
+    import math
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp)
+        make_duplicate_set(directory, seed=51, n=2)
+        client, app = _make_client(directory, directory / "_duplicates")
+        with client:
+            _wait_ready(client)
+            info = client.get("/api/metrics-info", params={"token": TOKEN}).json()
+            metrics = {m["key"]: m for m in info["metrics"]}
+            assert set(metrics) == set(dc.METRIC_WEIGHTS), sorted(metrics)
+            ledger_labels = {row.key: row.label for row in dc.METRIC_ROWS if row.key}
+            assert all(m["label"] == ledger_labels[k] for k, m in metrics.items()), info["metrics"]
+
+            results = [r for g in app.state.session.groups for r in g.results]
+            for k, m in metrics.items():
+                produced = any(r.get(k) is not None and math.isfinite(r[k]) for r in results)
+                assert m["counts"] is produced, (k, m)
+            counting = [m for m in info["metrics"] if m["counts"]]
+            assert counting, "the core metrics always produce a value"
+            assert abs(sum(m["share"] for m in counting) - 1) < 1e-9, counting
+            assert all(m["share"] is None for m in info["metrics"] if not m["counts"])
+            shares = [m["share"] for m in counting]
+            assert shares == sorted(shares, reverse=True), "listed by influence"
+            for m in info["metrics"]:
+                text = m["description"].lower()
+                assert "install" not in text and "package" not in text and "pip" not in text, m
+        print("  ok  /api/metrics-info gives ledger labels, which metrics count, and their real shares")
+
+
 def test_close_call_group_serializes_without_500() -> None:
     """Regression test for the numpy.bool_/JSON bug: is_close_call must be
     a real JSON boolean, not something json.dumps chokes on, for both
@@ -984,6 +1021,7 @@ def main() -> None:
         test_state_says_whether_dest_follows_the_directory,
         test_state_reports_what_the_scan_found,
         test_scan_path_is_read_the_way_a_person_types_it,
+        test_metrics_info_describes_what_actually_scores,
         test_close_call_group_serializes_without_500,
         test_confirm_moves_files_and_skip_unapplies,
         test_undo_restores_the_files_and_reopens_the_group,
