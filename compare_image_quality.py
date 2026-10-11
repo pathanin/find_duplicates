@@ -66,7 +66,7 @@ def _load_bgr_via_pil(path):
         return None
 
 
-def load_gray(path):
+def _load_bgr(path):
     # Decodes color even though brisque (the only consumer of the BGR image)
     # is usually not installed. Decoding IMREAD_GRAYSCALE instead is ~4 ms/
     # image faster and was tried; it is NOT bit-identical, because libjpeg
@@ -83,6 +83,11 @@ def load_gray(path):
         img = _load_bgr_via_pil(path)
     if img is None:
         raise FileNotFoundError(path)
+    return img
+
+
+def load_gray(path):
+    img = _load_bgr(path)
     # float32, not float64: every metric below shares this one buffer, and at
     # multi-megapixel native resolution it's the dominant memory-bandwidth
     # cost in analyze() (noise_estimate/blockiness_score both do multiple
@@ -93,6 +98,95 @@ def load_gray(path):
     # against inputs that are 8-bit pixel data to begin with.
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32)
     return img, gray
+
+
+# EXIF orientations that swap width and height. cv2 applies the orientation
+# itself on decode, so a JPEG carrying one of these comes out (h, w).
+_TRANSPOSING_ORIENTATIONS = {5, 6, 7, 8}
+
+
+def decode_plan(path):
+    """(width, height, route) from the header alone, or None if PIL can't
+    read it. route is how analyze() will decode the file, which sets its
+    peak memory -- duplicates_core._analyze_cost prices a file by it:
+
+    - "in_place": straight into the gray buffer (see _imread_into). JPEG
+      only, and not one an EXIF rotation transposes, since that changes the
+      shape cv2 hands back.
+    - "cv2": any other format cv2 reads, via the plain imread.
+    - "pil": HEIC/HEIF, which only PIL (with pillow-heif) can decode."""
+    try:
+        with PILImage.open(path) as im:
+            w, h = im.size
+            if im.format == "HEIF":
+                route = "pil"
+            elif im.format == "JPEG" and (
+                    w == h or im.getexif().get(0x0112) not in _TRANSPOSING_ORIENTATIONS):
+                route = "in_place"
+            else:
+                route = "cv2"
+    except Exception:
+        return None
+    return w, h, route
+
+
+# Seeds the bytes _imread_into presets in the last row of its buffer.
+_UNDECODED_MARKER_SEED = 0x5EED
+
+
+def _imread_into(path, buf):
+    """cv2.imread(path, IMREAD_COLOR) decoded straight into *buf* (an
+    (h, w, 3) uint8 array), or None if that didn't happen -- the caller then
+    falls back to _load_bgr, which fails or succeeds exactly as it always has.
+
+    The plain call allocates its result twice over: a 3 B/px BGR image
+    peaks at 6 B/px while it decodes. The dst overload decodes in place at
+    3, pixel-identical -- but is silent about failure, handing back the
+    untouched buffer for a missing, corrupt or unsupported file. Hence the
+    marker: libjpeg writes rows top to bottom, so a buffer that still ends
+    in it never finished decoding (decode_plan keeps other formats off this
+    path; an interlaced PNG fills its last row before its last pass). A
+    photo whose own last row matched the random bytes exactly would only
+    cost the fallback. A shape cv2 disagrees with raises, and is also None."""
+    marker = np.random.default_rng(_UNDECODED_MARKER_SEED).integers(
+        0, 256, size=buf[-1].shape, dtype=np.uint8)
+    buf[-1] = marker
+    try:
+        out = cv2.imread(path, buf, cv2.IMREAD_COLOR)
+    except cv2.error:
+        return None
+    if out is not buf or np.array_equal(buf[-1], marker):
+        return None
+    return buf
+
+
+def _gray_and_brisque(path):
+    """load_gray()'s float32 gray, bit-identical, in about half the memory,
+    plus brisque_score() of the color image it came from.
+
+    analyze() runs several of these at once, and on a 100 MP photo memory,
+    not cores, is what limits how many: duplicates_core admits work against
+    a byte budget priced per pixel (ANALYZE_BYTES_PER_PIXEL). So the color
+    image is decoded into the gray buffer's own memory -- 3 of its 4 bytes
+    per pixel -- and overwritten by the gray once brisque, its only other
+    reader, is done with it."""
+    plan = decode_plan(path)
+    gray = img = None
+    if plan is not None and plan[2] == "in_place":
+        w, h, _ = plan
+        gray = np.empty((h, w), np.float32)
+        img = _imread_into(path, gray.reshape(-1).view(np.uint8)[: h * w * 3].reshape(h, w, 3))
+    if img is None:
+        img = _load_bgr(path)
+    g8 = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    brisque = brisque_score(img)
+    del img
+    if gray is not None and gray.size == g8.size:
+        gray = gray.reshape(g8.shape)
+        np.copyto(gray, g8, casting="unsafe")  # exactly g8.astype(np.float32)
+    else:
+        gray = g8.astype(np.float32)
+    return gray, brisque
 
 
 def laplacian_sharpness(gray, target_size=(512, 512)):
@@ -198,8 +292,17 @@ def effective_resolution(gray):
     return cutoff_fraction, equivalent_pixels
 
 
-def noise_estimate(gray):
-    """Fast noise sigma estimate (Immerkaer's method)."""
+def _full_size_scratch(out, rows, cols):
+    """A C-contiguous (rows, cols) float32 view over *out*'s memory, so one
+    full-size scratch array serves every step that needs one, in turn. A
+    prefix of the flat buffer rather than a slice: a strided view would sum
+    in a different order under .mean() and stop being bit-identical."""
+    return out.reshape(-1)[: rows * cols].reshape(rows, cols)
+
+
+def noise_estimate(gray, out=None):
+    """Fast noise sigma estimate (Immerkaer's method). *out*, if given, is a
+    float32 array of gray's shape to filter into instead of allocating."""
     h, w = gray.shape
     if h < 3 or w < 3:
         return 0.0  # noise indistinguishable from signal at this size
@@ -207,7 +310,7 @@ def noise_estimate(gray):
     # float32, matching gray's dtype -- cv2.filter2D with ddepth=-1 (same
     # depth as source) needs the kernel's dtype to match the source's.
     M = np.array(M, dtype=np.float32)
-    conv = cv2.filter2D(gray, -1, M)
+    conv = cv2.filter2D(gray, -1, M, dst=out)
     # cv2.norm(..., NORM_L1), not np.sum(np.abs(conv)): fuses the abs and the
     # reduction into one C call instead of two full-array numpy passes (one
     # to build the abs() temporary, one to sum it) -- ~2.7x faster, verified
@@ -217,24 +320,29 @@ def noise_estimate(gray):
     return sigma
 
 
-def blockiness_score(gray, block_size=8):
+def blockiness_score(gray, block_size=8, out=None):
     """Detects JPEG-style blocking artifacts by measuring discontinuity
-    strength at block boundaries vs within blocks."""
+    strength at block boundaries vs within blocks. *out*, if given, is a
+    float32 array of gray's shape to hold the differences instead of
+    allocating."""
     h, w = gray.shape
+    boundary_cols = np.arange(block_size - 1, w - 1, block_size)
+    boundary_rows = np.arange(block_size - 1, h - 1, block_size)
+    if out is None:
+        out = np.empty_like(gray)
+
     # cv2.absdiff, not np.abs(np.diff(...)): fuses the subtract and the abs
     # into one C call instead of two full-array numpy passes -- ~2.3-2.5x
     # faster, verified against real photos in tests/Test-image at ~1e-7
-    # relative drift.
-    diff_h = cv2.absdiff(gray[:, 1:], gray[:, :-1])
-    diff_v = cv2.absdiff(gray[1:, :], gray[:-1, :])
-
-    boundary_cols = np.arange(block_size - 1, w - 1, block_size)
-    boundary_rows = np.arange(block_size - 1, h - 1, block_size)
-
-    boundary_energy_h = diff_h[:, boundary_cols].mean() if len(boundary_cols) else 0
-    boundary_energy_v = diff_v[boundary_rows, :].mean() if len(boundary_rows) else 0
-    overall_h = diff_h.mean()
-    overall_v = diff_v.mean()
+    # relative drift. One direction at a time, in the same scratch: each
+    # diff is a full-size float32 array, and holding both was analyze()'s
+    # memory peak.
+    diff = cv2.absdiff(gray[:, 1:], gray[:, :-1], dst=_full_size_scratch(out, h, w - 1))
+    boundary_energy_h = diff[:, boundary_cols].mean() if len(boundary_cols) else 0
+    overall_h = diff.mean()
+    diff = cv2.absdiff(gray[1:, :], gray[:-1, :], dst=_full_size_scratch(out, h - 1, w))
+    boundary_energy_v = diff[boundary_rows, :].mean() if len(boundary_rows) else 0
+    overall_v = diff.mean()
 
     score = ((boundary_energy_h - overall_h) + (boundary_energy_v - overall_v)) / 2
     # float(): the .mean() calls above run on float32 arrays now, so score is
@@ -302,12 +410,17 @@ def niqe_score(path):
 
 
 def analyze(path):
-    img, gray = load_gray(path)
+    # Peak memory is two full-size float32 arrays: the gray, and one scratch
+    # the noise filter and both blockiness diffs take turns in (21 B/px down
+    # to 9 on a 100 MP JPEG). The metrics are independent, so neither the
+    # shared scratch nor brisque moving first changes any value.
+    gray, brisque = _gray_and_brisque(path)
     sharpness = laplacian_sharpness(gray)
     cutoff_fraction, eq_px = effective_resolution(gray)
-    noise = noise_estimate(gray)
-    blockiness = blockiness_score(gray)
-    brisque = brisque_score(img)
+    scratch = np.empty_like(gray)
+    noise = noise_estimate(gray, out=scratch)
+    blockiness = blockiness_score(gray, out=scratch)
+    del scratch
     niqe = niqe_score(path)
 
     return {

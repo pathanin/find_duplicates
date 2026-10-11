@@ -29,7 +29,7 @@ import cv2
 import numpy as np
 from PIL import Image as PILImage
 
-from compare_image_quality import analyze
+from compare_image_quality import analyze, decode_plan
 
 # HEIC/HEIF (the default format Apple Photos/iPhone exports) has no reliable
 # OS-level decoder behind cv2.imread, so PIL needs this optional plugin
@@ -888,14 +888,23 @@ def store_result(cache: dict, p: Path, st: os.stat_result, result: dict) -> None
 
 
 # analyze() works on the full-resolution image (the metrics must; see the
-# scoring trap in CLAUDE.md), so its memory scales with pixel count: measured
-# ~2.7 GB peak on a 100 MP JPEG. One thread per core of those swapped a 24 GB
-# Mac to a crawl, so _analyze_one admits work against a byte budget instead.
+# scoring trap in CLAUDE.md), so its memory scales with pixel count. One
+# thread per core of 100 MP photos swapped a 24 GB Mac to a crawl, so
+# _analyze_one admits work against a byte budget instead: a third of RAM.
 # Ordinary 12-24 MP photos still run one per core; only huge ones queue.
-# A third of RAM, measured on 15 of those 100 MP files (24 GB, 10 cores):
-# 8.1 s / 7.5 GB peak, against 12.4 s / 11.7 GB unbudgeted -- a half was no
-# faster and a quarter starved the cores (11.6 s).
-ANALYZE_BYTES_PER_PIXEL = 26
+#
+# The price is peak RSS measured per decode route (decode_plan), rounded up
+# so it stays an upper bound -- under-pricing is what swaps a 16 GB machine.
+# Measured on a 24 GB / 10-core M4, 24 to 102 MP: an in-place JPEG peaks at
+# ~9.3 B/px plus ~150 MB that doesn't scale (the FFT at its 2048 px cap);
+# the plain cv2 decode (PNG, TIFF, a JPEG EXIF rotates sideways) at ~17;
+# HEIC through PIL at ~29. The in-place route used to be ~21 like the rest:
+# halving it is what lets twice as many 100 MP files analyze at once --
+# 28 of them went from 12.4 s to 6.7 s. Concurrency itself is not the
+# lever: forcing 6-10 of the old 2 GB analyses past the budget spent 11-25 s
+# of system time in page faults and finished slower than 3.
+ANALYZE_BYTES_PER_PIXEL = {"in_place": 10, "cv2": 18, "pil": 30}
+ANALYZE_FIXED_BYTES = 192 * 1024 * 1024
 ANALYZE_MEMORY_BUDGET = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") // 3
 _analyze_slots = threading.Condition()
 _analyze_in_flight = 0
@@ -904,12 +913,11 @@ _analyze_in_flight = 0
 def _analyze_cost(path_str: str) -> int:
     """Estimated peak bytes for analyze(), from the header alone (PIL's open
     is lazy). Unreadable means 0: analyze() will fail on it cheaply too."""
-    try:
-        with PILImage.open(path_str) as im:
-            w, h = im.size
-        return w * h * ANALYZE_BYTES_PER_PIXEL
-    except Exception:
+    plan = decode_plan(path_str)
+    if plan is None:
         return 0
+    w, h, route = plan
+    return w * h * ANALYZE_BYTES_PER_PIXEL[route] + ANALYZE_FIXED_BYTES
 
 
 def _analyze_one(path_str: str) -> dict | None:

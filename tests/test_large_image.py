@@ -38,19 +38,31 @@ def test_large_photos_pass_the_bomb_check() -> None:
 
 
 def test_analyze_cost_reads_the_header() -> None:
+    """Priced by how the file will decode: a JPEG lands in place at about
+    half the memory of anything else (tests/test_analyze_in_place.py holds
+    the prices against measured peaks). Rotating one sideways by EXIF loses
+    that, so the header's orientation counts too."""
     with tempfile.TemporaryDirectory() as tmp:
-        p = Path(tmp) / "a.png"
-        PILImage.new("L", (300, 200)).save(p)
-        assert dc._analyze_cost(str(p)) == 300 * 200 * dc.ANALYZE_BYTES_PER_PIXEL
-        assert dc._analyze_cost(str(Path(tmp) / "missing.jpg")) == 0
-    print("  ok  analyze cost comes from the header; unreadable costs 0")
+        tmp = Path(tmp)
+        PILImage.new("L", (300, 200)).save(tmp / "a.png")
+        PILImage.new("RGB", (300, 200)).save(tmp / "a.jpg")
+        exif = PILImage.Exif()
+        exif[0x0112] = 6
+        PILImage.new("RGB", (300, 200)).save(tmp / "turned.jpg", exif=exif.tobytes())
+        px, fixed = 300 * 200, dc.ANALYZE_FIXED_BYTES
+        assert dc._analyze_cost(str(tmp / "a.jpg")) == px * dc.ANALYZE_BYTES_PER_PIXEL["in_place"] + fixed
+        assert dc._analyze_cost(str(tmp / "a.png")) == px * dc.ANALYZE_BYTES_PER_PIXEL["cv2"] + fixed
+        assert dc._analyze_cost(str(tmp / "turned.jpg")) == px * dc.ANALYZE_BYTES_PER_PIXEL["cv2"] + fixed
+        assert dc._analyze_cost(str(tmp / "missing.jpg")) == 0
+    print("  ok  analyze cost comes from the header and the decode route; unreadable costs 0")
 
 
 def test_analyze_stays_under_memory_budget() -> None:
-    """analyze() peaks at ~2.7 GB on a 100 MP JPEG. Ten of those at once (one
-    per core) swapped a 24 GB Mac to a crawl -- browser included -- so
-    _analyze_one admits work against a byte budget. A file bigger than the
-    whole budget must still run, alone, or the scan would hang on it."""
+    """analyze() peaked at ~2.7 GB on a 100 MP JPEG (~1.1 GB since it decodes
+    in place). Ten of those at once (one per core) swapped a 24 GB Mac to a
+    crawl -- browser included -- so _analyze_one admits work against a byte
+    budget. A file bigger than the whole budget must still run, alone, or
+    the scan would hang on it."""
     costs = {"a": 60, "b": 60, "c": 60, "d": 60, "huge": 250, "e": 30, "f": 30}
     lock = threading.Lock()
     in_flight: dict[str, int] = {}
