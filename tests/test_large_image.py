@@ -90,6 +90,39 @@ def test_analyze_stays_under_memory_budget() -> None:
     print("  ok  concurrent analyze stays under the byte budget; oversized file runs alone")
 
 
+def test_analyze_admits_in_arrival_order() -> None:
+    """Groups publish in scan order, so a file that loses the race for the
+    budget holds up its group and every group after it. Condition wakeups
+    are in no particular order: on 28 x 100 MP photos the very first file
+    was admitted in the second wave, behind seven later ones, and the first
+    group showed up at 4.1 s instead of 2.5. Here "small" would fit beside
+    "a" but arrived after "b", which doesn't -- it must wait its turn."""
+    costs = {"a": 60, "b": 60, "small": 10}
+    admitted: list[str] = []
+    lock = threading.Lock()
+
+    def fake_analyze(p: str) -> dict:
+        with lock:
+            admitted.append(p)
+        time.sleep(0.1)
+        return {"path": p}
+
+    saved = dc.analyze, dc._analyze_cost, dc.ANALYZE_MEMORY_BUDGET
+    dc.analyze, dc._analyze_cost, dc.ANALYZE_MEMORY_BUDGET = fake_analyze, costs.__getitem__, 100
+    try:
+        with ThreadPoolExecutor(max_workers=3) as ex:
+            futures = []
+            for p in costs:  # staggered so arrival order is certain
+                futures.append(ex.submit(dc._analyze_one, p))
+                time.sleep(0.02)
+            for f in futures:
+                f.result()
+    finally:
+        dc.analyze, dc._analyze_cost, dc.ANALYZE_MEMORY_BUDGET = saved
+    assert admitted == list(costs), f"admitted out of arrival order: {admitted}"
+    print("  ok  analyze admits files in arrival order, never letting a later one jump the queue")
+
+
 def test_preview_render_uses_reduced_jpeg_decode() -> None:
     """A stage/thumb render of a 100 MP JPEG used to decode every pixel and
     convert to RGB first: ~1.5 GB peak and 0.7 s for an 800-1600 px preview.
@@ -156,6 +189,7 @@ def main() -> None:
         test_large_photos_pass_the_bomb_check,
         test_analyze_cost_reads_the_header,
         test_analyze_stays_under_memory_budget,
+        test_analyze_admits_in_arrival_order,
         test_preview_render_uses_reduced_jpeg_decode,
         test_preview_renders_are_capped,
     ]

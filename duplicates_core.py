@@ -908,6 +908,13 @@ ANALYZE_FIXED_BYTES = 192 * 1024 * 1024
 ANALYZE_MEMORY_BUDGET = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") // 3
 _analyze_slots = threading.Condition()
 _analyze_in_flight = 0
+# Admitted first come, first served, by ticket. Groups publish in scan
+# order, so a file that loses the race for the budget holds up its own group
+# and every group after it -- and Condition wakeups are in no order at all:
+# on 28 x 100 MP photos the very first file got in behind seven later ones,
+# and the first group showed up at 4.1 s instead of 2.5.
+_analyze_next_ticket = 0
+_analyze_now_serving = 0
 
 
 def _analyze_cost(path_str: str) -> int:
@@ -921,12 +928,27 @@ def _analyze_cost(path_str: str) -> int:
 
 
 def _analyze_one(path_str: str) -> dict | None:
-    global _analyze_in_flight
-    # Capped at the budget so a file bigger than all of it still runs, alone.
-    cost = min(_analyze_cost(path_str), ANALYZE_MEMORY_BUDGET)
+    global _analyze_in_flight, _analyze_next_ticket, _analyze_now_serving
+    # The ticket comes first: pricing reads the header, and the first ten
+    # files reading theirs at once would otherwise queue in whatever order
+    # those reads happened to finish.
     with _analyze_slots:
-        _analyze_slots.wait_for(lambda: _analyze_in_flight + cost <= ANALYZE_MEMORY_BUDGET)
+        ticket = _analyze_next_ticket
+        _analyze_next_ticket += 1
+    # Nothing between taking a ticket and being served may raise: a ticket
+    # never served would stall every analysis behind it. Capped at the
+    # budget so a file bigger than all of it still runs, alone -- which is
+    # also where an unpriceable one goes.
+    try:
+        cost = min(_analyze_cost(path_str), ANALYZE_MEMORY_BUDGET)
+    except Exception:  # noqa: BLE001
+        cost = ANALYZE_MEMORY_BUDGET
+    with _analyze_slots:
+        _analyze_slots.wait_for(lambda: _analyze_now_serving == ticket
+                                and _analyze_in_flight + cost <= ANALYZE_MEMORY_BUDGET)
+        _analyze_now_serving += 1
         _analyze_in_flight += cost
+        _analyze_slots.notify_all()  # the next ticket may fit beside this one
     try:
         return analyze(path_str)
     except Exception:
@@ -937,13 +959,47 @@ def _analyze_one(path_str: str) -> dict | None:
             _analyze_slots.notify_all()
 
 
+def _copies_by_original(paths: list[Path], stats: dict[Path, os.stat_result],
+                        digests: dict[Path, bytes | None], executor) -> dict[Path, list[Path]]:
+    """{first file: [later files with exactly its bytes]} among *paths*.
+    Only files that share a size with another are read -- for multi-MB
+    photos a size match all but implies a copy, so a library without copies
+    reads nothing extra. Their digests land in *digests*, for _identical_to
+    to reuse instead of reading the same files again."""
+    by_size: dict[int, list[Path]] = {}
+    for p in paths:
+        by_size.setdefault(stats[p].st_size, []).append(p)
+    candidates = [p for same in by_size.values() if len(same) > 1 for p in same]
+    unread = [p for p in candidates if p not in digests]
+    digests.update(zip(unread, executor.map(_file_digest, unread)))
+    first: dict[bytes, Path] = {}
+    copies: dict[Path, list[Path]] = {}
+    for p in candidates:
+        d = digests[p]
+        if d is None:
+            continue
+        if d in first:
+            copies.setdefault(first[d], []).append(p)
+        else:
+            first[d] = p
+    return copies
+
+
 def analyze_paths(paths: list[Path], cache: dict,
                   precomputed_stats: dict[Path, os.stat_result] | None = None,
-                  progress_callback=None, done_callback=None) -> dict[Path, dict]:
+                  progress_callback=None, done_callback=None,
+                  digests: dict[Path, bytes | None] | None = None) -> dict[Path, dict]:
     """analyze() every path, reusing `cache` for files whose (mtime, size)
     haven't changed and running the rest through a thread pool (analyze()'s
     cv2/numpy calls release the GIL -- see the comments at
     THREAD_POOL_WORKERS's definition).
+
+    A byte-identical copy is analyzed once, not once per copy: the same
+    bytes always score the same, and copies are the commonest duplicate
+    there is. Each copy still gets a result dict of its own (score_group
+    writes into each), its own cache entry, callback and progress tick.
+    *digests*, if given, memoizes the blake2b digests read to find them
+    (build_groups shares it with _identical_to).
 
     If *precomputed_stats* is provided it is used instead of calling stat()
     again, and any path it doesn't cover is dropped (an unreadable file is
@@ -985,23 +1041,34 @@ def analyze_paths(paths: list[Path], cache: dict,
         original_cv2_threads = cv2.getNumThreads()
         cv2.setNumThreads(1)
         try:
+            # Digests get a pool of their own: threads left idle in the
+            # analysis pool would take up the analyses in no particular
+            # order, and scan order is the order groups publish in.
+            with ThreadPoolExecutor(max_workers=THREAD_POOL_WORKERS) as digest_pool:
+                copies = _copies_by_original(to_compute, stats, {} if digests is None else digests, digest_pool)
             with ThreadPoolExecutor(max_workers=THREAD_POOL_WORKERS) as executor:
-                for done, (p, r) in enumerate(
-                    zip(to_compute, executor.map(_analyze_one, [str(p) for p in to_compute])), start=1
-                ):
-                    if r is not None:
-                        # After store_result (which copies): file_size tracks
-                        # the file, not the analysis, and has no business in
-                        # a cache entry keyed on it.
-                        store_result(cache, p, stats[p], r)
-                        r["file_size"] = stats[p].st_size
-                        results[p] = r
-                    if done_callback is not None:
-                        done_callback(p, r)
-                    if progress_callback is not None:
-                        progress_callback("Analyzing", done, total)
-                    else:
-                        _print_progress("Analyzing", done, total, tty)
+                is_copy = {q for qs in copies.values() for q in qs}
+                originals = [p for p in to_compute if p not in is_copy]
+                done = 0
+                for p, r in zip(originals, executor.map(_analyze_one, [str(p) for p in originals])):
+                    # Copies' dicts are taken before anything is added to r.
+                    resolved = [(p, r)] + [(q, None if r is None else {**r, "path": str(q)})
+                                           for q in copies.get(p, ())]
+                    for q, rq in resolved:
+                        if rq is not None:
+                            # After store_result (which copies): file_size
+                            # tracks the file, not the analysis, and has no
+                            # business in a cache entry keyed on it.
+                            store_result(cache, q, stats[q], rq)
+                            rq["file_size"] = stats[q].st_size
+                            results[q] = rq
+                        if done_callback is not None:
+                            done_callback(q, rq)
+                        done += 1
+                        if progress_callback is not None:
+                            progress_callback("Analyzing", done, total)
+                        else:
+                            _print_progress("Analyzing", done, total, tty)
         finally:
             cv2.setNumThreads(original_cv2_threads)
         if progress_callback is None and tty:
@@ -1021,19 +1088,21 @@ def _file_digest(path: Path) -> bytes | None:
     return h.digest()
 
 
-def _identical_to(paths: list[Path], results: list[dict]) -> list[int | None]:
+def _identical_to(paths: list[Path], results: list[dict],
+                  digests: dict[Path, bytes | None] | None = None) -> list[int | None]:
     """For each file, the first earlier file with exactly the same bytes, or
     None. Byte-identical copies are the commonest duplicate there is, and
     they tie on every metric, so a reviewer comparing them by eye is
     comparing a file with itself. Only a pair that already matches on size
-    and score is read and hashed; the analysis has just decoded both, so
-    they are usually still in the OS cache."""
-    digests: dict[int, bytes | None] = {}
+    and score is read and hashed; on a fresh scan analyze_paths has usually
+    hashed both already, and *digests* hands those over."""
+    if digests is None:
+        digests = {}
 
     def digest(j: int) -> bytes | None:
-        if j not in digests:
-            digests[j] = _file_digest(paths[j])
-        return digests[j]
+        if paths[j] not in digests:
+            digests[paths[j]] = _file_digest(paths[j])
+        return digests[paths[j]]
 
     out: list[int | None] = []
     for j in range(len(paths)):
@@ -1052,7 +1121,8 @@ def _identical_to(paths: list[Path], results: list[dict]) -> list[int | None]:
     return out
 
 
-def _build_group(members: list[Path], analyzed: dict[Path, dict]) -> Group | None:
+def _build_group(members: list[Path], analyzed: dict[Path, dict],
+                 digests: dict[Path, bytes | None] | None = None) -> Group | None:
     """Assemble one finished Group from a raw cluster, or None if fewer than
     two of its files survived analysis (it's no longer a duplicate group).
 
@@ -1111,7 +1181,7 @@ def _build_group(members: list[Path], analyzed: dict[Path, dict]) -> Group | Non
     # differs from it: an identical copy at index 1 ties it exactly, and used
     # to flag a group as close when the real choice wasn't (tests/
     # test_group_ordering.py). A group of nothing but copies is no call.
-    identical_to = _identical_to(paths, results)
+    identical_to = _identical_to(paths, results, digests)
     differing = [j for j in range(1, len(results)) if identical_to[j] != 0]
     close_call = bool(
         differing
@@ -1205,12 +1275,13 @@ def build_groups(
     remaining = [sum(1 for p in members if p in kept) for members in raw_groups]
     owner = {p: gi for gi, members in enumerate(raw_groups) for p in members if p in kept}
     analyzed: dict[Path, dict] = {}
+    digests: dict[Path, bytes | None] = {}
     cursor = 0
 
     def publish_ready() -> None:
         nonlocal cursor
         while cursor < len(raw_groups) and remaining[cursor] == 0:
-            group = _build_group(raw_groups[cursor], analyzed)
+            group = _build_group(raw_groups[cursor], analyzed, digests)
             cursor += 1
             if group is None:
                 continue
@@ -1228,7 +1299,7 @@ def build_groups(
 
     analyze_paths(
         grouped_paths, analyze_cache, precomputed_stats=grouped_stats,
-        progress_callback=progress_callback, done_callback=on_analyzed,
+        progress_callback=progress_callback, done_callback=on_analyzed, digests=digests,
     )
     # Nothing calls back for a group whose every file vanished between
     # find_images and _stat_paths, so those are flushed (and dropped) here.
