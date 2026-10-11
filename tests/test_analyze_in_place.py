@@ -43,17 +43,20 @@ def textured(h: int, w: int, seed: int = 0) -> np.ndarray:
     return cv2.add(img, rng.integers(0, 12, size=img.shape, dtype=np.uint8))
 
 
-def save_with_orientation(img_bgr: np.ndarray, path: Path, orientation: int) -> None:
+def save_with_orientation(img_bgr: np.ndarray, path: Path, orientation: int,
+                          progressive: bool = False) -> None:
     exif = PILImage.Exif()
     exif[0x0112] = orientation
     PILImage.fromarray(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)).save(
-        path, exif=exif.tobytes(), quality=90)
+        path, exif=exif.tobytes(), quality=90, progressive=progressive)
 
 
 def test_every_orientation_decodes_like_the_plain_call(tmp: Path) -> None:
     """cv2 applies EXIF orientation itself on both paths; the in-place one
     must agree with it for the flips (2-4) it handles, and hand the
-    transposing ones (5-8) to the plain call rather than guess."""
+    transposing ones (5-8) to the plain call rather than guess. Progressive
+    too: libjpeg reads every scan before writing a row, which the marker
+    relies on, and web and phone JPEGs are often progressive."""
     img = textured(48, 64)
     used_in_place = {}
     real = ciq._imread_into
@@ -65,17 +68,19 @@ def test_every_orientation_decodes_like_the_plain_call(tmp: Path) -> None:
 
     ciq._imread_into = spy
     try:
-        for o in range(1, 9):
-            p = tmp / f"o{o}.jpg"
-            save_with_orientation(img, p, o)
-            got, _ = ciq._gray_and_brisque(str(p))
-            _, want = ciq.load_gray(str(p))
-            assert got.dtype == np.float32 and got.shape == want.shape, (o, got.dtype, got.shape, want.shape)
-            assert np.array_equal(got, want), f"orientation {o}: in-place gray differs from the plain decode"
+        for progressive in (False, True):
+            for o in range(1, 9):
+                p = tmp / f"o{o}{'p' if progressive else ''}.jpg"
+                save_with_orientation(img, p, o, progressive)
+                got, _ = ciq._gray_and_brisque(str(p))
+                _, want = ciq.load_gray(str(p))
+                assert got.dtype == np.float32 and got.shape == want.shape, (p.name, got.shape, want.shape)
+                assert np.array_equal(got, want), f"{p.name}: in-place gray differs from the plain decode"
     finally:
         ciq._imread_into = real
-    assert used_in_place == {f"o{o}.jpg": True for o in range(1, 5)}, used_in_place
-    print("  ok  all 8 EXIF orientations match the plain decode; 1-4 decode in place, 5-8 don't try")
+    assert used_in_place == {f"o{o}{s}.jpg": True for o in range(1, 5) for s in ("", "p")}, used_in_place
+    print("  ok  all 8 EXIF orientations, baseline and progressive, match the plain decode; "
+          "1-4 decode in place, 5-8 don't try")
 
 
 class _SilentFailureCv2:
