@@ -426,7 +426,10 @@ def test_auto_keeps_the_original_of_a_byte_identical_copy() -> None:
 
         groups = dc.build_groups(directory, dc.DEFAULT_HASH_THRESHOLD, dest_dir=dest_dir)
         assert len(groups) == 1, f"expected one group, got {len(groups)}"
-        assert groups[0].is_close_call, "identical copies must read as a close call"
+        # Identical copies used to read as a close call; they are marked as
+        # copies now (see test_group_ordering.py), and --auto ignores the
+        # flag either way -- what matters here is which file it moves.
+        assert groups[0].identical_to == [None, 0], groups[0].identical_to
 
         summary = dc.auto_apply_groups(groups, dest_dir, dry_run=False)
 

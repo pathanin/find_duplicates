@@ -332,7 +332,13 @@ def _display_path(session: Session, path: Path) -> str:
     return path.name
 
 
-def _group_summary(i: int, g: Group) -> dict:
+def _reclaim(g: Group) -> int:
+    """Bytes confirming would move out: every file outside the kept set."""
+    kept = g.kept_indices()
+    return sum(int(r["file_size"]) for j, r in enumerate(g.results) if j not in kept)
+
+
+def _group_summary(session: Session, i: int, g: Group) -> dict:
     return {
         "index": i,
         "status": g.status,
@@ -341,6 +347,12 @@ def _group_summary(i: int, g: Group) -> dict:
         "also_keep": sorted(g.also_keep),
         "suggested_idx": g.suggested_idx,
         "is_close_call": g.is_close_call,
+        # The queue row's label: a row that says only "4 files" can't be
+        # told from the next one. The kept file's name, and what confirming
+        # would free -- both follow a re-pick.
+        "name": _display_path(session, g.paths[g.current_pick]),
+        "reclaim": _reclaim(g),
+        "identical": g.all_identical,
     }
 
 
@@ -402,7 +414,7 @@ def _render_scaled_jpeg(path: Path, max_side: int, quality: int) -> bytes:
 
 def _group_detail(session: Session, i: int, g: Group) -> dict:
     return {
-        **_group_summary(i, g),
+        **_group_summary(session, i, g),
         "paths": [_display_path(session, p) for p in g.paths],
         # Numeric siblings of the formatted METRIC_ROWS strings below. The
         # stage needs real numbers -- pixel dimensions to size its 1:1 zoom
@@ -422,6 +434,10 @@ def _group_detail(session: Session, i: int, g: Group) -> dict:
         # trivially True and the frontend ignores it -- same condition
         # confirm_group re-checks server-side before moving anything.)
         "needs_reapply": bool(pick_needs_reapply(session.manifest, i, g)),
+        # Per file: the first earlier file with the same bytes, or None. The
+        # stage tags those copies, so nobody compares a file with itself.
+        "identical_to": list(g.identical_to) or [None] * len(g.paths),
+        "all_identical": g.all_identical,
         # direction/kind are structured alongside the display label so the
         # frontend never has to re-derive a row's meaning by pattern-matching
         # `label` text -- see MetricRow's docstring in duplicates_core.py.
@@ -539,7 +555,7 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
                     "dest_is_default": session.params.dest_is_default(),
                     "dry_run": session.params.dry_run,
                 },
-                "groups": [_group_summary(i, g) for i, g in enumerate(session.groups)],
+                "groups": [_group_summary(session, i, g) for i, g in enumerate(session.groups)],
                 # None until the scan has listed its directory.
                 "scan": dict(session.scan_stats) or None,
             })
@@ -764,6 +780,44 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
             after = len(entry["moved"]) if entry and not entry["dry_run"] else 0
             g.status = "pending"
             return JSONResponse({**_group_detail(session, i, g), "restored": before - after})
+
+    @app.post("/api/confirm-identical")
+    async def confirm_identical(
+        gen: int | None = Query(default=None, alias="g"),
+        _: str = Depends(require_token),
+    ) -> JSONResponse:
+        """Confirm every pending group whose files are all byte-identical,
+        keeping each one's current pick (and pins): keeping any one of the
+        same bytes loses nothing, and a big library holds many such groups.
+        Nothing else is touched -- a group that isn't all copies still
+        needs a look. One group's failure (disk full, permission) leaves it
+        pending and the rest go on, as in --auto."""
+        with session.lock:
+            _require_not_scanning(session)
+            _require_generation(session, gen)
+            p = session.params
+            confirmed = files_moved = bytes_moved = 0
+            failures = []
+            for i, g in enumerate(session.groups):
+                if g.status != "pending" or not g.all_identical:
+                    continue
+                sizes = {str(path): int(r["file_size"]) for path, r in zip(g.paths, g.results)}
+                try:
+                    apply_pick(
+                        g, i, g.current_pick, p.dest_dir, p.dry_run, session.manifest,
+                        recursive=p.recursive, scan_root=p.directory,
+                    )
+                except Exception as exc:  # noqa: BLE001 -- one group's failure must not stop the rest
+                    failures.append({"group": i, "error": str(exc)})
+                    continue
+                confirmed += 1
+                entry = next(m for m in session.manifest if m["group"] == i)
+                files_moved += len(entry["moved"])
+                bytes_moved += sum(sizes.get(m["from"], 0) for m in entry["moved"])
+            return JSONResponse({
+                "confirmed": confirmed, "files_moved": files_moved, "bytes_moved": bytes_moved,
+                "failed": len(failures), "failures": failures,
+            })
 
     @app.post("/api/scan")
     async def start_scan(req: ScanRequest, _: str = Depends(require_token)) -> JSONResponse:

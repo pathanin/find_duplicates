@@ -65,18 +65,20 @@ def make_duplicate_set(directory: Path, seed: int, n: int) -> list[Path]:
 
 
 def make_close_call_pair(directory: Path, seed: int) -> list[Path]:
-    """Two exports at identical size/quality from the same base texture --
-    their metrics land in score_group's hi==lo degenerate range (tied
-    scores), guaranteeing is_close_call=True. Used to prove the API
-    actually serializes a close-call group correctly (regression test for
-    the numpy.bool_ bug)."""
+    """The same pixels saved at two PNG compression levels -- their metrics
+    land in score_group's hi==lo degenerate range (tied scores),
+    guaranteeing is_close_call=True. Different bytes on purpose: two
+    byte-identical files are marked as copies, not a close call. Used to
+    prove the API actually serializes a close-call group correctly
+    (regression test for the numpy.bool_ bug)."""
     rng = np.random.default_rng(seed)
     base = rng.integers(0, 255, size=(300, 400, 3), dtype=np.uint8)
     paths = []
-    for i in range(2):
-        p = directory / f"close_{seed}_{i}.jpg"
-        cv2.imwrite(str(p), base, [cv2.IMWRITE_JPEG_QUALITY, 90])
+    for i, level in enumerate((1, 9)):
+        p = directory / f"close_{seed}_{i}.png"
+        cv2.imwrite(str(p), base, [cv2.IMWRITE_PNG_COMPRESSION, level])
         paths.append(p)
+    assert paths[0].read_bytes() != paths[1].read_bytes(), "fixture: the pair must differ in bytes"
     return paths
 
 
@@ -478,6 +480,87 @@ def test_undo_of_a_dry_run_confirm_reopens_without_moving() -> None:
             assert r.status_code == 200 and r.json()["status"] == "pending", r.text
             assert r.json()["restored"] == 0, "a dry-run confirm moved nothing, so nothing comes back"
         print("  ok  undoing a dry-run confirm reopens the group and restores nothing")
+
+
+def make_identical_set(directory: Path, seed: int, n: int) -> list[Path]:
+    """One JPEG and n-1 byte-for-byte copies of it."""
+    rng = np.random.default_rng(seed)
+    base = rng.integers(0, 255, size=(150, 200, 3), dtype=np.uint8)
+    first = directory / f"same_{seed}.jpg"
+    cv2.imwrite(str(first), cv2.resize(base, (800, 600), interpolation=cv2.INTER_CUBIC),
+                [cv2.IMWRITE_JPEG_QUALITY, 90])
+    paths = [first]
+    for i in range(1, n):
+        p = directory / f"same_{seed} copy {i}.jpg"
+        shutil.copyfile(first, p)
+        paths.append(p)
+    return paths
+
+
+def test_queue_summaries_name_each_group_and_what_it_frees() -> None:
+    """Every queue row read "4 files" or "2 files", so the rail couldn't
+    tell one group from the next, or say which was worth doing first. A
+    summary names the file the group keeps and the bytes confirming would
+    move out, and both follow a re-pick."""
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp)
+        paths = make_duplicate_set(directory, seed=31, n=3)
+        client, app = _make_client(directory, directory / "_duplicates")
+        with client:
+            data = _wait_ready(client)
+            g = app.state.session.groups[0]
+            row = data["groups"][0]
+            sizes = [p.stat().st_size for p in g.paths]
+            assert row["name"] == g.paths[0].name, row
+            assert row["reclaim"] == sizes[1] + sizes[2], (row, sizes)
+            assert row["identical"] is False
+
+            client.post("/api/group/0/pick", params={"token": TOKEN}, json={"idx": 2})
+            client.post("/api/group/0/keep", params={"token": TOKEN}, json={"idx": 1, "keep": True})
+            row = client.get("/api/state", params={"token": TOKEN}).json()["groups"][0]
+            assert row["name"] == g.paths[2].name, row
+            assert row["reclaim"] == sizes[0], (row, sizes)
+        print("  ok  /api/state names each group's kept file and the bytes confirming would free")
+
+
+def test_identical_groups_can_be_kept_in_one_go() -> None:
+    """A big library holds many groups of nothing but byte-identical
+    copies, where keeping any one loses nothing -- and reviewing them one at
+    a time was the only way through short of --auto, which also decides
+    every group that isn't so clear-cut. One request keeps the first file
+    of each all-identical pending group and leaves the rest alone."""
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp)
+        dest_dir = directory / "_duplicates"
+        same_a = make_identical_set(directory, seed=41, n=2)
+        same_b = make_identical_set(directory, seed=42, n=3)
+        mixed = make_duplicate_set(directory, seed=43, n=2)
+        client, app = _make_client(directory, dest_dir, dry_run=False)
+        with client:
+            data = _wait_ready(client)
+            by_first = {Path(g.paths[0]).name: i for i, g in enumerate(app.state.session.groups)}
+            ia, ib, im = by_first[same_a[0].name], by_first[same_b[0].name], by_first[mixed[0].name]
+            assert [data["groups"][i]["identical"] for i in (ia, ib, im)] == [True, True, False]
+            detail = client.get(f"/api/group/{ib}", params={"token": TOKEN}).json()
+            assert detail["identical_to"] == [None, 0, 0] and detail["all_identical"] is True, detail
+
+            r = client.post("/api/confirm-identical", params={"token": TOKEN, "g": 1})
+            assert r.status_code == 409, "a stale view must not confirm anything"
+
+            gen = data["generation"]
+            r = client.post("/api/confirm-identical", params={"token": TOKEN, "g": gen})
+            assert r.status_code == 200, r.text
+            body = r.json()
+            assert body["confirmed"] == 2 and body["files_moved"] == 1 + 2 and body["failed"] == 0, body
+            assert same_a[0].exists() and not same_a[1].exists()
+            assert same_b[0].exists() and not any(p.exists() for p in same_b[1:])
+            assert all(p.exists() for p in mixed), "a group that isn't all copies must be left to review"
+            statuses = [g["status"] for g in client.get("/api/state", params={"token": TOKEN}).json()["groups"]]
+            assert statuses[ia] == statuses[ib] == "confirmed" and statuses[im] == "pending", statuses
+
+            r = client.post(f"/api/group/{ib}/undo", params={"token": TOKEN})
+            assert r.status_code == 200 and all(p.exists() for p in same_b), "a bulk keep undoes like any other"
+        print("  ok  /api/confirm-identical keeps one of each all-identical group and nothing else")
 
 
 def test_repick_after_confirm_moves_the_new_non_kept_file() -> None:
@@ -905,6 +988,8 @@ def main() -> None:
         test_confirm_moves_files_and_skip_unapplies,
         test_undo_restores_the_files_and_reopens_the_group,
         test_undo_of_a_dry_run_confirm_reopens_without_moving,
+        test_queue_summaries_name_each_group_and_what_it_frees,
+        test_identical_groups_can_be_kept_in_one_go,
         test_repick_after_confirm_moves_the_new_non_kept_file,
         test_confirm_partial_failure_leaves_group_pending,
         test_repick_partial_failure_demotes_the_confirmed_group_and_retries,

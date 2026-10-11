@@ -260,11 +260,13 @@ owner; none of it was sampled or derived from an existing asset.
   moved. Same value as `{colors.error}`, deliberately kept as a separate name
   because the two roles are separate.
 
-**The close call is stated once, where it can be acted on.** Most groups in a
-real scan are close calls, so flagging them in the queue marked nearly every
-row and the mark stopped meaning anything. The flag lives on the ledger header
-of the group being looked at, plus the queue row's tooltip — never as a
-standing mark down the rail.
+**The close call is stated once, where it can be acted on.** It is measured
+between the top file and the best file that actually differs from it — a
+byte-identical copy ties the top file exactly and used to flag groups whose
+real choice wasn't close. The flag lives on the ledger header of the group
+being looked at, plus the queue row's tooltip — never as a standing mark down
+the rail. A group of nothing but identical copies gets a neutral "Identical
+files" note instead, and each copy's tab says *Same file as N*.
 - **Bloom Wine** (`{colors.bloom-wine}`): the hairline under an error notice.
 
 ### Tertiary
@@ -492,11 +494,16 @@ the checkbox tick, both drawn from borders.
 
 ### Queue rail (signature)
 - 288px cloud column: a head block (groups left in Display MD, a 4px two-segment
-  meter of kept and skipped, a tally line) over a scrolling list.
-- Each row is a four-column grid — 2-digit index, status dot, filename, close
-  flag — 11px 16px padding, divided by light hairlines. Hover is fog; active is
-  a solid ink block with steel secondaries. Done rows drop their label to
-  graphite.
+  meter of kept and skipped, a tally line ending in what's left to free, and —
+  when any pending group is all identical copies — a blue underlined "Keep one
+  of each" button that asks for a second click) over a scrolling list.
+- Each row is a three-column grid — 2-digit index, status dot, and a text block
+  of the kept file's name (Caption MD, middle-truncated) over its facts (Caption
+  SM graphite: file count, "identical" when all copies, bytes to free or freed)
+  — 11px 16px padding, divided by light hairlines. Hover is fog; active is a
+  solid ink block with steel secondaries. Done rows drop their label to
+  graphite. Below 900px the text block takes a fixed 20ch, since an auto-sized
+  strip item collapses a 1fr track to nothing.
 - Status is shape first (see The Shape-Not-Only-Colour Rule), colour second.
 - During a scan the list drops to 0.4 opacity and stops taking pointer events.
 

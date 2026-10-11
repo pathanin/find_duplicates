@@ -161,6 +161,77 @@ def test_tied_copies_suggest_the_original_not_the_copy() -> None:
         print("  ok  a tie between an original and its copies suggests the original")
 
 
+def test_identical_copies_are_marked_and_the_close_call_skips_them() -> None:
+    """Byte-identical copies tie on every metric, so with one at index 1
+    the old rule -- top two within CLOSE_CALL_MARGIN -- flagged a group like
+    {original, its copy, a small export} as a close call, though the real
+    choice (original against the small export) wasn't close at all. The
+    reviewer was told to look harder at two files that are the same bytes.
+    Identical copies are marked instead, and the close call measures the
+    top file against the best file that actually differs from it."""
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        rng = np.random.default_rng(17)
+        base = rng.integers(0, 255, size=(150, 200, 3), dtype=np.uint8)
+        original = tmp / "beach.jpg"
+        save_jpeg(cv2.resize(base, (1600, 1200), interpolation=cv2.INTER_CUBIC), original)
+        copy = tmp / "beach copy.jpg"
+        shutil.copyfile(original, copy)
+        small = tmp / "beach small.jpg"
+        save_jpeg(cv2.resize(base, (400, 300), interpolation=cv2.INTER_CUBIC), small)
+
+        group = build_one_group(tmp)
+        assert group.paths == [original, copy, small], [p.name for p in group.paths]
+        scores = [r["quality_score"] for r in group.results]
+        assert scores[0] == scores[1], "fixture: the copy must tie the original, as the old rule saw it"
+        assert scores[0] - scores[2] >= dc.CLOSE_CALL_MARGIN, (
+            f"fixture: the small export must clearly lose, got {scores}"
+        )
+        assert group.identical_to == [None, 0, None], group.identical_to
+        assert group.all_identical is False
+        assert group.is_close_call is False, "a tie with an identical copy is not a close call"
+        print("  ok  an identical copy is marked as such, and doesn't make the group a close call")
+
+
+def test_a_group_of_identical_copies_is_all_identical() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        rng = np.random.default_rng(19)
+        base = rng.integers(0, 255, size=(150, 200, 3), dtype=np.uint8)
+        original = tmp / "dog.jpg"
+        save_jpeg(cv2.resize(base, (800, 600), interpolation=cv2.INTER_CUBIC), original)
+        shutil.copyfile(original, tmp / "dog 2.jpg")
+        shutil.copyfile(original, tmp / "dog (1).jpg")
+
+        group = build_one_group(tmp)
+        assert group.identical_to == [None, 0, 0], group.identical_to
+        assert group.all_identical is True
+        assert group.is_close_call is False, "keeping any one of identical files loses nothing"
+        assert isinstance(group.all_identical, bool) and isinstance(group.is_close_call, bool)
+        print("  ok  a group of byte-identical copies is all_identical and not a close call")
+
+
+def test_same_pixels_different_bytes_is_still_a_close_call() -> None:
+    """The other side of the boundary: identical means identical *bytes*.
+    The same pixels saved at two PNG compression levels decode alike and
+    tie on every metric, but they are different files -- say a tie, not
+    "same file"."""
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        rng = np.random.default_rng(23)
+        base = rng.integers(0, 255, size=(150, 200, 3), dtype=np.uint8)
+        img = cv2.resize(base, (800, 600), interpolation=cv2.INTER_CUBIC)
+        cv2.imwrite(str(tmp / "fast.png"), img, [cv2.IMWRITE_PNG_COMPRESSION, 1])
+        cv2.imwrite(str(tmp / "small.png"), img, [cv2.IMWRITE_PNG_COMPRESSION, 9])
+        assert (tmp / "fast.png").read_bytes() != (tmp / "small.png").read_bytes(), "fixture: bytes must differ"
+
+        group = build_one_group(tmp)
+        assert group.identical_to == [None, None], group.identical_to
+        assert group.all_identical is False
+        assert group.is_close_call is True, "an exact tie between different files is a close call"
+        print("  ok  pixel-identical files with different bytes are a close call, not 'identical'")
+
+
 def main() -> None:
     for fn in (
         test_best_scoring_file_is_first,
@@ -168,6 +239,9 @@ def main() -> None:
         test_paths_and_results_stay_aligned,
         test_tied_scores_keep_filename_order,
         test_tied_copies_suggest_the_original_not_the_copy,
+        test_identical_copies_are_marked_and_the_close_call_skips_them,
+        test_a_group_of_identical_copies_is_all_identical,
+        test_same_pixels_different_bytes_is_still_a_close_call,
     ):
         print(f"{fn.__name__}:")
         fn()

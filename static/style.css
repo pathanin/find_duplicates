@@ -353,9 +353,36 @@ button { font-family: inherit; }
 .q-item.is-active .q-dot-pending { border-color: var(--steel); }
 .q-item.is-active .q-dot-confirmed { background: var(--primary-bright); }
 
+/* Name over facts. The JS middle-truncates the name (copies differ at the
+   tail); the ellipsis here only catches what a narrow rail still can't fit. */
+.q-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .q-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.q-meta {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font: var(--caption-sm); font-variant-numeric: tabular-nums; color: var(--graphite);
+}
+.q-item.is-active .q-meta { color: var(--steel); }
 .q-item.is-done .q-label { color: var(--graphite); }
 .q-item.is-active.is-done .q-label { color: var(--steel); }
+
+/* Keep one of each identical set: blue, since it produces keepers. */
+.queue-bulk {
+  display: block;
+  margin-top: 10px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: var(--caption-sm);
+  color: var(--primary);
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.queue-bulk:hover { color: var(--primary-bright); }
+.queue-bulk.is-armed { color: var(--ink); font-weight: 700; }
+.queue-bulk:disabled { color: var(--graphite); cursor: default; }
+.queue-bulk[hidden] { display: none; }
 
 .queue-empty { padding: 18px 16px; font: var(--caption-md); color: var(--graphite); }
 
@@ -1037,9 +1064,12 @@ button { font-family: inherit; }
   .meter { width: 130px; margin: 0; }
   .queue-tally { display: none; }
   .queue-list { display: flex; overflow-x: auto; overflow-y: hidden; }
+  /* A fixed text width: in an auto-sized strip item a 1fr track collapses
+     to nothing, which left every row reading just "01". */
+  .q-text { width: 20ch; }
   .q-item {
     flex: 0 0 auto;
-    grid-template-columns: auto auto minmax(0, 1fr);
+    grid-template-columns: auto auto auto;
     gap: 8px;
     border-bottom: 0;
     border-right: 1px solid var(--hairline);

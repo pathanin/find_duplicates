@@ -12,6 +12,7 @@ rather than duplicating any of it.
 """
 
 import csv
+import hashlib
 import math
 import os
 import shutil
@@ -572,6 +573,12 @@ class Group:
     # duplicates. Independent of the pick: the kept set is always
     # {current_pick} | also_keep, so flipping the stage never drops a pin.
     also_keep: list[int] = field(default_factory=list)
+    # For each file, the first earlier file in the group with exactly the
+    # same bytes, else None -- set by _build_group, so empty on a Group built
+    # by hand. all_identical: every file is the same bytes as the first, so
+    # keeping any one of them loses nothing.
+    identical_to: list[int | None] = field(default_factory=list)
+    all_identical: bool = False
 
     def kept_indices(self, keep_idx: int | None = None) -> set[int]:
         return {self.current_pick if keep_idx is None else keep_idx, *self.also_keep}
@@ -990,6 +997,48 @@ def analyze_paths(paths: list[Path], cache: dict,
     return results
 
 
+def _file_digest(path: Path) -> bytes | None:
+    h = hashlib.blake2b(digest_size=32)
+    try:
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+    except OSError:
+        return None
+    return h.digest()
+
+
+def _identical_to(paths: list[Path], results: list[dict]) -> list[int | None]:
+    """For each file, the first earlier file with exactly the same bytes, or
+    None. Byte-identical copies are the commonest duplicate there is, and
+    they tie on every metric, so a reviewer comparing them by eye is
+    comparing a file with itself. Only a pair that already matches on size
+    and score is read and hashed; the analysis has just decoded both, so
+    they are usually still in the OS cache."""
+    digests: dict[int, bytes | None] = {}
+
+    def digest(j: int) -> bytes | None:
+        if j not in digests:
+            digests[j] = _file_digest(paths[j])
+        return digests[j]
+
+    out: list[int | None] = []
+    for j in range(len(paths)):
+        match = None
+        for k in range(j):
+            if out[k] is not None:
+                continue  # k's own original was already compared
+            if (results[k].get("file_size") != results[j].get("file_size")
+                    or results[k]["quality_score"] != results[j]["quality_score"]):
+                continue
+            dj = digest(j)
+            if dj is not None and dj == digest(k):
+                match = k
+                break
+        out.append(match)
+    return out
+
+
 def _build_group(members: list[Path], analyzed: dict[Path, dict]) -> Group | None:
     """Assemble one finished Group from a raw cluster, or None if fewer than
     two of its files survived analysis (it's no longer a duplicate group).
@@ -1044,9 +1093,16 @@ def _build_group(members: list[Path], analyzed: dict[Path, dict]) -> Group | Non
     # numpy.bool_ (unlike numpy.float64) isn't a subclass of its Python
     # equivalent and isn't JSON-serializable -- the web front end's
     # /api/state was the first consumer to actually hit this.
+    #
+    # The close call measures the top file against the best one that actually
+    # differs from it: an identical copy at index 1 ties it exactly, and used
+    # to flag a group as close when the real choice wasn't (tests/
+    # test_group_ordering.py). A group of nothing but copies is no call.
+    identical_to = _identical_to(paths, results)
+    differing = [j for j in range(1, len(results)) if identical_to[j] != 0]
     close_call = bool(
-        len(results) > 1
-        and results[0]["quality_score"] - results[1]["quality_score"] < CLOSE_CALL_MARGIN
+        differing
+        and results[0]["quality_score"] - results[differing[0]]["quality_score"] < CLOSE_CALL_MARGIN
     )
     return Group(
         paths=paths,
@@ -1060,6 +1116,8 @@ def _build_group(members: list[Path], analyzed: dict[Path, dict]) -> Group | Non
         suggested_idx=0,
         current_pick=0,
         is_close_call=close_call,
+        identical_to=identical_to,
+        all_identical=not differing,
     )
 
 

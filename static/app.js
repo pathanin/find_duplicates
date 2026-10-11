@@ -23,7 +23,7 @@ const state = {
   generation: 0,
   params: null,
   scan: null,       // {images, unreadable} for the scan behind `groups`
-  groups: [],       // summaries: {index, status, file_count, current_pick, also_keep, suggested_idx, is_close_call}
+  groups: [],       // summaries: {index, status, file_count, current_pick, also_keep, suggested_idx, is_close_call, name, reclaim, identical}
   activeIndex: -1,
   detail: null,     // {index, status, current_pick, also_keep, suggested_idx, is_close_call, paths, dimensions, sizes, size_labels, scores, metrics}
   eventSource: null,
@@ -105,7 +105,7 @@ let receiptGroup = -1;
 function showReceipt(message, i) {
   $("receipt-text").textContent = message;
   const btn = $("receipt-reopen");
-  btn.textContent = `Reopen group ${i + 1}`;
+  btn.textContent = i >= 0 ? `Reopen group ${i + 1}` : "";
   btn.onclick = () => loadGroup(i);
   receiptGroup = i;
   renderReceiptReopen();
@@ -114,7 +114,7 @@ function showReceipt(message, i) {
 
 // "Reopen group 3" while group 3 is already open is a link to here.
 function renderReceiptReopen() {
-  $("receipt-reopen").hidden = state.activeIndex === receiptGroup;
+  $("receipt-reopen").hidden = receiptGroup < 0 || state.activeIndex === receiptGroup;
 }
 
 function clearReceipt() {
@@ -123,6 +123,27 @@ function clearReceipt() {
 
 function fmtInt(n) {
   return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+}
+
+// Same units and rounding as duplicates_core.humansize, which labels the
+// files on the stage: the queue's sizes are summed here, so they can't come
+// preformatted.
+function humanSize(n) {
+  if (n < 1024) return `${Math.round(n)}B`;
+  for (const unit of ["KB", "MB", "GB"]) {
+    n /= 1024;
+    if (n < 1024 || unit === "GB") return `${n.toFixed(1)}${unit}`;
+  }
+}
+
+// A queue row's name and size follow the pick at once, like the stage does,
+// rather than waiting for the server's copy of the summary.
+function localSummary(d) {
+  const kept = keptIndices(d);
+  return {
+    name: d.paths[d.current_pick],
+    reclaim: d.sizes.reduce((sum, size, j) => (kept.includes(j) ? sum : sum + size), 0),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -397,6 +418,7 @@ function renderQueue() {
     return;
   }
 
+  const dry = !!(state.params && state.params.dry_run);
   state.groups.forEach((g, i) => {
     const li = document.createElement("li");
     const btn = document.createElement("button");
@@ -415,19 +437,30 @@ function renderQueue() {
     const dot = document.createElement("span");
     dot.className = `q-dot q-dot-${g.status}`;
 
+    // The kept file's name, middle-truncated like the strip's tabs (copies
+    // differ at the tail), over what the group holds and frees. "4 files"
+    // alone made every row look like the next.
+    const text = document.createElement("span");
+    text.className = "q-text";
     const label = document.createElement("span");
     label.className = "q-label";
-    label.textContent = g.status === "confirmed"
-      ? `${g.file_count} files · kept [${keptLabel(g)}]`
-      : `${g.file_count} files`;
+    label.textContent = shortName(g.name || `Group ${i + 1}`, 30);
+    const meta = document.createElement("span");
+    meta.className = "q-meta";
+    const files = g.identical ? `${g.file_count} identical files` : `${g.file_count} files`;
+    const size = humanSize(g.reclaim || 0);
+    meta.textContent = g.status === "confirmed"
+      ? `${files} · kept [${keptLabel(g)}] · ${size} ${dry ? "would be freed" : "freed"}`
+      : g.status === "skipped" ? `${files} · skipped` : `${files} · ${size} to free`;
+    text.append(label, meta);
 
-    btn.append(idx, dot, label);
+    btn.append(idx, dot, text);
 
     // No close-call flag in the queue on purpose: most groups in a real scan
     // are close calls, so flagging them here marks nearly every row and the
     // mark stops meaning anything. It stays where it can be acted on -- the
     // ledger note on the group being looked at -- and in the row's tooltip.
-    btn.title = `Group ${i + 1} · ${STATUS_WORD[g.status]} · ${g.file_count} files`
+    btn.title = `Group ${i + 1} · ${g.name || ""} · ${STATUS_WORD[g.status]} · ${g.file_count} files`
       + (g.is_close_call ? " · close call: the top two scored nearly the same" : "");
     btn.addEventListener("click", () => loadGroup(i));
     li.appendChild(btn);
@@ -451,9 +484,78 @@ function renderQueue() {
 function renderScanTally() {
   const { confirmed, skipped, total } = reviewCounts();
   const p = state.progress;
+  const toFree = state.groups.reduce((sum, g) => (g.status === "pending" ? sum + (g.reclaim || 0) : sum), 0);
   $("queue-tally").textContent = scanStillPublishing()
     ? `Still scanning — ${p && p.total > 0 ? `${fmtInt(p.done)} / ${fmtInt(p.total)}` : "…"}`
-    : (total ? `${confirmed} kept · ${skipped} skipped` : "");
+    : (total ? `${confirmed} kept · ${skipped} skipped · ${humanSize(toFree)} left to free` : "");
+  renderBulkIdentical();
+}
+
+// Groups of nothing but byte-identical copies: keeping any one loses
+// nothing, so they don't need a look each. One button keeps the current
+// pick of every such pending group -- after a second click, since it moves
+// files across the whole queue at once. Groups that aren't all copies are
+// never touched.
+let bulkArmed = false;
+let bulkArmTimer = null;
+let bulkBusy = false;
+
+function identicalPending() {
+  return state.groups.filter((g) => g.status === "pending" && g.identical);
+}
+
+function renderBulkIdentical() {
+  const btn = $("btn-identical");
+  const groups = identicalPending();
+  if (!groups.length || decisionsLocked()) {
+    btn.hidden = true;
+    bulkArmed = false;
+    return;
+  }
+  const files = groups.reduce((sum, g) => sum + g.file_count - keptIndices(g).length, 0);
+  const size = humanSize(groups.reduce((sum, g) => sum + (g.reclaim || 0), 0));
+  const dry = !!(state.params && state.params.dry_run);
+  btn.hidden = false;
+  btn.disabled = bulkBusy;
+  btn.classList.toggle("is-armed", bulkArmed);
+  btn.textContent = bulkArmed
+    ? `Click again to ${dry ? "mark" : "move"} ${files} cop${files === 1 ? "y" : "ies"} (${size})${dry ? " — dry run" : ""}`
+    : `Keep one of each: ${groupWord(groups.length)} of identical files`;
+  btn.title = `Every file in ${groups.length === 1 ? "this group" : "these groups"} is the same bytes, so keeping any one loses nothing. Groups with any file that differs are left for you to review.`;
+}
+
+async function keepOneOfEachIdentical() {
+  if (bulkBusy || decisionsLocked()) return;
+  if (!bulkArmed) {
+    bulkArmed = true;
+    clearTimeout(bulkArmTimer);
+    bulkArmTimer = setTimeout(() => { bulkArmed = false; renderBulkIdentical(); }, 5000);
+    renderBulkIdentical();
+    return;
+  }
+  clearTimeout(bulkArmTimer);
+  bulkArmed = false;
+  bulkBusy = true;
+  renderBulkIdentical();
+  try {
+    await pickChain;  // a pick still in flight changes what a group keeps
+    const r = await api(`/api/confirm-identical?g=${state.generation}`, { method: "POST" });
+    const dry = !!(state.params && state.params.dry_run);
+    showReceipt(dry
+      ? `Dry run: ${groupWord(r.confirmed)} of identical files would keep one each and move ${r.files_moved} cop${r.files_moved === 1 ? "y" : "ies"}. Nothing was moved.`
+      : `${groupWord(r.confirmed)} of identical files: kept one each, ${r.files_moved} cop${r.files_moved === 1 ? "y" : "ies"} (${humanSize(r.bytes_moved)}) moved.`, -1);
+    if (r.failed) showToast(`${groupWord(r.failed)} couldn't be applied and stayed pending: ${r.failures[0].error}`, true);
+    await refreshState();
+    const open = state.activeIndex >= 0 && state.groups[state.activeIndex];
+    if (!open || open.status !== "pending") await loadFirstPending();
+    else await loadGroup(state.activeIndex);
+  } catch (e) {
+    if (e.status === 409) await handleStale();
+    else showToast(`Couldn't keep the identical groups: ${e.message}`, true);
+  } finally {
+    bulkBusy = false;
+    renderBulkIdentical();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -895,7 +997,16 @@ function renderSwitcher() {
     const dim = d.dimensions[j];
     facts.textContent = `${dim[0]}×${dim[1]} · ${d.size_labels[j]}`;
     meta.appendChild(facts);
-    if (!kept && j === d.suggested_idx) {
+    // A byte-identical copy says so: flipping to it changes nothing, and
+    // without the tag a reviewer compares a file with itself.
+    const twin = d.identical_to ? d.identical_to[j] : null;
+    if (twin != null) {
+      const mark = document.createElement("span");
+      mark.className = "cand-mark";
+      mark.textContent = `Same file as ${twin + 1}`;
+      mark.title = `Byte for byte the same as file ${twin + 1} — keeping either loses nothing.`;
+      meta.appendChild(mark);
+    } else if (!kept && j === d.suggested_idx) {
       const mark = document.createElement("span");
       mark.className = "cand-mark";
       mark.textContent = "Suggested";
@@ -1085,7 +1196,8 @@ function renderLedger() {
   });
 
   const notes = [];
-  if (d.is_close_call) notes.push("Close call — the top two scored nearly the same");
+  if (d.all_identical) notes.push("Identical files — keeping any one loses nothing");
+  else if (d.is_close_call) notes.push("Close call — the top two different files scored nearly the same");
   $("ledger-note").textContent = notes.join(" · ");
   $("ledger-note").className = d.is_close_call ? "ledger-note is-close" : "ledger-note";
 }
@@ -1283,6 +1395,8 @@ function applyGroupPatch(i, data, keepLocalPick = false) {
     also_keep: alsoKeep,
     suggested_idx: data.suggested_idx,
     is_close_call: data.is_close_call,
+    identical: data.all_identical,
+    ...localSummary({ ...data, current_pick: pick, also_keep: alsoKeep }),
   };
   if (i === state.activeIndex) state.detail = { ...data, current_pick: pick, also_keep: alsoKeep };
   renderQueue();
@@ -1345,6 +1459,7 @@ function pick(j) {
   // Mirrors the server: a pick drops its own index from also_keep.
   d.also_keep = (d.also_keep || []).filter((k) => k !== j);
   state.groups[i].also_keep = d.also_keep;
+  Object.assign(state.groups[i], localSummary(d));
   renderPickChange();
   renderQueue();
 
@@ -1406,6 +1521,7 @@ function togglePin(j) {
   state.groups[i].also_keep = d.also_keep;
   // Back to one kept file: the stage is the keeper again.
   if (!multiKeep(d)) view.shown = null;
+  Object.assign(state.groups[i], localSummary(d));
   renderPickChange();
   renderQueue();
   return chain();
@@ -1543,6 +1659,19 @@ function advance() {
   showToast(scanStillPublishing()
     ? "Caught up — more groups will appear as the scan finds them."
     : "That was the last one — every group is reviewed.");
+}
+
+// N: the next group still pending, wherever it is. The arrows walk every
+// group, decided or not; this one skips straight to work left to do.
+function nextPending() {
+  const n = state.groups.length;
+  for (let off = 1; off <= n; off++) {
+    const j = (Math.max(state.activeIndex, 0) + off) % n;
+    if (state.groups[j].status === "pending" && j !== state.activeIndex) { loadGroup(j); return; }
+  }
+  showToast(scanStillPublishing()
+    ? "No other group is waiting yet — more appear as the scan finds them."
+    : "No other group is waiting for a decision.");
 }
 
 function stepGroup(delta) {
@@ -1829,6 +1958,7 @@ function helpContent(info) {
 
   frag.appendChild(h("h3", "Reading the stage"));
   frag.appendChild(h("p", "One file fills the stage at a time and every file in the group is laid out in exactly the same frame, so moving between them changes the pixels and nothing else — the sharper file is the one that stops looking soft. With one file kept, the file on the stage is the file you're keeping. If a group caught a different photo alongside real duplicates, press + Keep too under it (or Shift and its number, or K for the file on the stage). While more than one file is kept, the tabs and arrows only change what's on the stage, and the Keep bars alone decide what stays. A group of two to four shows them side by side instead, with the kept ones outlined in blue — unless a group of three or four holds a really huge photo (over 50 megapixels) or the window is too narrow to give each its own usable pane."));
+  frag.appendChild(h("p", "A file tagged Same file as 1 (or another number) is byte for byte the same as that one, so there is nothing to compare: keep whichever you like. A group made only of such copies says Identical files above the table, and Keep one of each, under the queue count, confirms every such group at once, keeping the file shown in each and leaving groups with any real difference for you. A close call is measured between the top file and the best file that actually differs from it."));
   frag.appendChild(h("p", "Click the stage (or press Z) to inspect at 1:1; a click zooms in on the exact spot under the pointer. On a very large photo, 1:1 shows only a sliver: drag the zoom slider at the bottom-right of the stage to inspect at a lower level instead, and every later group opens at that level. The − and = keys step it. At that zoom the largest file in the group is shown at its true pixels and the others are scaled to match the same part of the scene, so an export upscaled from a smaller original gives itself away. Scroll the wheel (or pinch) to zoom in and out around the pointer. Drag or hold shift with the arrow keys to pan; the spot you're inspecting stays put as you move between files, and side-by-side panes pan together."));
   frag.appendChild(h("p", "n/a in the table means that measurement has no value for that file — either its optional package isn't installed, or it failed on that one image. A measurement missing for any file is dropped from the whole group's score and the remaining weights are rescaled, so the group is still scored, just on fewer inputs."));
 
@@ -1841,6 +1971,7 @@ function helpContent(info) {
     ["Shift + 1 – 9", "Keep that file as well, or stop keeping it"],
     ["K", "Same, for the file on the stage"],
     ["↑ ↓", "Move between groups"],
+    ["N", "Next group still waiting for a decision"],
     ["Enter / C", "Confirm keep"],
     ["Delete / S", "Skip group — on a confirmed group, Undo keep: move its files back and decide it again"],
     ["Z", "Inspect (at the zoom slider's level)"],
@@ -2039,6 +2170,7 @@ function attachKeyboardHandler() {
     else if (e.code === "Minus" || e.code === "NumpadSubtract") { stepZoom(-1); e.preventDefault(); }
     else if (e.code === "KeyO") { openFullRes(); e.preventDefault(); }
     else if (e.code === "KeyM") { setLedgerOpen(!state.ledgerOpen); e.preventDefault(); }
+    else if (e.code === "KeyN") { nextPending(); e.preventDefault(); }
     else if (e.code === "KeyQ") { quitKey(); e.preventDefault(); }
     else if (e.code.startsWith("Digit")) {
       const n = parseInt(e.code.slice(5), 10);
@@ -2064,6 +2196,7 @@ function attachHandlers() {
   $("help-close").addEventListener("click", closeSheet);
   $("help-scrim").addEventListener("click", closeSheet);
   $("btn-quit").addEventListener("click", quitNow);
+  $("btn-identical").addEventListener("click", keepOneOfEachIdentical);
   $("ledger-toggle").addEventListener("click", () => setLedgerOpen(!state.ledgerOpen));
 
   $("scan-panel").addEventListener("submit", async (e) => {
