@@ -347,6 +347,54 @@ def test_confirm_moves_files_and_skip_unapplies() -> None:
         print("  ok  confirm moves the non-kept file; skip unapplies and restores it")
 
 
+def test_undo_restores_the_files_and_reopens_the_group() -> None:
+    """Undo keep used to ride /skip: it moved the files back but marked the
+    group *skipped*, and the page then jumped to the next group -- so
+    someone undoing a keep to choose differently had to find the group
+    again and un-skip it first. /undo restores and leaves the group
+    pending, ready to decide again. /skip keeps its own contract (see
+    test_confirm_moves_files_and_skip_unapplies)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp)
+        dest_dir = directory / "_duplicates"
+        make_duplicate_set(directory, seed=15, n=3)
+        client, app = _make_client(directory, dest_dir, dry_run=False)
+        with client:
+            _wait_ready(client)
+            group = app.state.session.groups[0]
+            moved = [p for j, p in enumerate(group.paths) if j != group.current_pick]
+
+            r = client.post("/api/group/0/confirm", params={"token": TOKEN})
+            assert r.status_code == 200 and r.json()["status"] == "confirmed", r.text
+            assert not any(p.exists() for p in moved)
+
+            r = client.post("/api/group/0/undo", params={"token": TOKEN})
+            assert r.status_code == 200, r.text
+            body = r.json()
+            assert body["status"] == "pending", f"undo must reopen the group, got {body['status']}"
+            assert body["restored"] == 2, body["restored"]
+            assert all(p.exists() for p in moved), "undo must move every file back"
+            assert app.state.session.manifest == [], "nothing is left on record as moved"
+
+            r = client.post("/api/group/0/undo", params={"token": TOKEN, "g": 1})
+            assert r.status_code == 409, "undo must refuse a stale view like the other mutating routes"
+        print("  ok  /undo moves the files back and leaves the group pending, not skipped")
+
+
+def test_undo_of_a_dry_run_confirm_reopens_without_moving() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp)
+        make_duplicate_set(directory, seed=16, n=2)
+        client, _ = _make_client(directory, directory / "_duplicates", dry_run=True)
+        with client:
+            _wait_ready(client)
+            client.post("/api/group/0/confirm", params={"token": TOKEN})
+            r = client.post("/api/group/0/undo", params={"token": TOKEN})
+            assert r.status_code == 200 and r.json()["status"] == "pending", r.text
+            assert r.json()["restored"] == 0, "a dry-run confirm moved nothing, so nothing comes back"
+        print("  ok  undoing a dry-run confirm reopens the group and restores nothing")
+
+
 def test_repick_after_confirm_moves_the_new_non_kept_file() -> None:
     """Confirm keep=A, then re-pick to keep=B, then confirm again: A must
     come back to its original location and B's former sibling (now A) must
@@ -767,6 +815,8 @@ def main() -> None:
         test_state_says_whether_dest_follows_the_directory,
         test_close_call_group_serializes_without_500,
         test_confirm_moves_files_and_skip_unapplies,
+        test_undo_restores_the_files_and_reopens_the_group,
+        test_undo_of_a_dry_run_confirm_reopens_without_moving,
         test_repick_after_confirm_moves_the_new_non_kept_file,
         test_confirm_partial_failure_leaves_group_pending,
         test_repick_partial_failure_demotes_the_confirmed_group_and_retries,

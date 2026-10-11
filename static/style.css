@@ -807,7 +807,9 @@ button { font-family: inherit; }
   padding-bottom: 8px;
   border-bottom: 1px solid var(--hairline);
   font: var(--caption-sm);
-  color: var(--steel);
+  /* Graphite, not steel: steel on paper is ~1.8:1, and this line is the
+     only record of the move once the bar has advanced. */
+  color: var(--graphite);
 }
 .receipt[hidden] { display: none; }
 .receipt-reopen {
@@ -930,6 +932,9 @@ button { font-family: inherit; }
 .btn-quit { border-left-color: var(--hairline); }
 .btn-quit:hover { color: var(--error); }
 .btn-quit:active { color: var(--bloom-wine); }
+/* Armed by a first Q: the label says what a second press does, in the red
+   reserved for the one control that ends the session. */
+.btn-quit.is-armed { color: var(--error); }
 
 /* Opaque and over everything: after the exit the thumbnails, the stage
    renders and the progress stream are all dead URLs, and a review screen

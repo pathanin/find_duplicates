@@ -99,12 +99,21 @@ function showToast(message, isError = false) {
 // The last confirm or undo, kept on a line in the decision bar until the next
 // one -- see .receipt in style.css for why it isn't a toast. Reopen goes back
 // to the group, where Skip undoes a confirm or a new pick can be confirmed.
+let receiptGroup = -1;
+
 function showReceipt(message, i) {
   $("receipt-text").textContent = message;
   const btn = $("receipt-reopen");
   btn.textContent = `Reopen group ${i + 1}`;
   btn.onclick = () => loadGroup(i);
+  receiptGroup = i;
+  renderReceiptReopen();
   $("receipt").hidden = false;
+}
+
+// "Reopen group 3" while group 3 is already open is a link to here.
+function renderReceiptReopen() {
+  $("receipt-reopen").hidden = state.activeIndex === receiptGroup;
 }
 
 function clearReceipt() {
@@ -153,6 +162,7 @@ async function loadGroup(i) {
     if (token !== loadGroupToken) return; // superseded by a newer loadGroup
     state.activeIndex = i;
     state.detail = data;
+    renderReceiptReopen();
     view.shown = null;
     view.zoom = false;
     view.u = 0.5;
@@ -1131,7 +1141,7 @@ function renderDecision() {
   if (d.status === "confirmed") {
     add(dry ? "Marked kept (dry run) " : "Kept ");
     keptNames();
-    add(dry ? `. ${files} would have moved to ${dest}.` : `. ${files} moved to ${dest} — undo with Skip group.`);
+    add(dry ? `. ${files} would have moved to ${dest}.` : `. ${files} moved to ${dest} — Undo keep moves them back.`);
     if (d.needs_reapply) add("  Kept files changed since confirming — confirm again to apply it.", "warn");
   } else if (d.status === "skipped") {
     add("Skipped — every file left where it is. Confirming would keep ");
@@ -1172,7 +1182,7 @@ function updateActionButtons() {
   const status = state.detail ? state.detail.status : "pending";
   if (hasGroup && status === "confirmed") {
     skip.textContent = "Undo keep";
-    skip.dataset.enabledTitle = "Move the files this group already moved back where they came from, and mark it skipped. Shortcut: Delete, Backspace or S";
+    skip.dataset.enabledTitle = "Move this group's files back where they came from, and decide it again. Shortcut: Delete, Backspace or S";
   } else if (hasGroup && status === "skipped") {
     skip.textContent = "Un-skip group";
     skip.dataset.enabledTitle = "Put this group back in the queue as pending. Shortcut: Delete, Backspace or S";
@@ -1181,6 +1191,17 @@ function updateActionButtons() {
     skip.dataset.enabledTitle = "Leave every file in this group where it is and move on. Shortcut: Delete, Backspace or S";
   }
   if (hasGroup) skip.title = skip.dataset.enabledTitle;
+  // Confirming a group that's already applied exactly as shown moves
+  // nothing, so the button says so instead of inviting a no-op.
+  if (hasGroup && alreadyApplied(state.detail)) {
+    const confirm = $("btn-confirm");
+    confirm.disabled = true;
+    confirm.title = "Already applied as shown. Pick a different file, or Keep too, to change it — then confirm again.";
+  }
+}
+
+function alreadyApplied(d) {
+  return d.status === "confirmed" && !d.needs_reapply;
 }
 
 // ---------------------------------------------------------------------------
@@ -1406,6 +1427,13 @@ async function confirmGroup() {
   confirming = true;
   try {
     await pickChain;  // the server must be holding the pick that's on screen
+    // After the chain, so a pick still in flight has updated needs_reapply.
+    // The server would move nothing, and a receipt saying "N files moved"
+    // again would be false.
+    if (state.activeIndex === i && state.detail && alreadyApplied(state.detail)) {
+      showToast(`Group ${i + 1} is already applied as shown — change which files are kept to apply something else.`);
+      return;
+    }
     const data = await api(`/api/group/${i}/confirm?g=${state.generation}`, { method: "POST" });
     applyGroupPatch(i, data);
     const kept = keptIndices(data);
@@ -1429,25 +1457,43 @@ async function confirmGroup() {
   }
 }
 
+// The middle button and S/Delete/Backspace: Skip on a pending group,
+// Un-skip on a skipped one, Undo keep on a confirmed one.
 async function skipGroup() {
   const i = state.activeIndex;
   if (i < 0 || !state.detail) return;
   if (decisionsLocked()) { showToast(SCAN_LOCKED_MSG); return; }
-  const wasConfirmed = state.detail.status === "confirmed";
+  if (state.detail.status === "confirmed") return undoKeep(i);
   try {
     await pickChain;
     const data = await api(`/api/group/${i}/skip?g=${state.generation}`, { method: "POST" });
     applyGroupPatch(i, data);
-    // Undoing a confirmed group is a second real move -- files come back out
-    // of the destination folder -- so it gets said as plainly as the first.
-    if (wasConfirmed && !(state.params && state.params.dry_run)) {
-      const moved = data.restored;
-      showReceipt(`Group ${i + 1}: ${moved} file${moved === 1 ? "" : "s"} moved back, group marked skipped.`, i);
-    }
     if (data.status === "skipped") advance();
   } catch (e) {
     if (e.status === 409) await handleStale();
     else showToast(`Skip failed: ${e.message}`, true);
+  }
+}
+
+// Undo keep reopens the group where it stands, pending, rather than skipping
+// it and moving on: someone undoing a keep wants to decide that group again,
+// and used to have to find it and un-skip it first. Files coming back out of
+// the destination is a second real move, so it's said as plainly as the
+// first -- and under dry run the receipt still changes, or the "would keep"
+// line from the confirm would be left describing a decision that's gone.
+async function undoKeep(i) {
+  try {
+    await pickChain;
+    const data = await api(`/api/group/${i}/undo?g=${state.generation}`, { method: "POST" });
+    applyGroupPatch(i, data);
+    const moved = data.restored;
+    showReceipt(state.params && state.params.dry_run
+      ? `Dry run: group ${i + 1} is undecided again. Nothing had moved.`
+      : `Group ${i + 1}: ${moved} file${moved === 1 ? "" : "s"} moved back — decide it again.`, i);
+    $("stage").focus({ preventScroll: true });
+  } catch (e) {
+    if (e.status === 409) await handleStale();
+    else showToast(`Undo failed: ${e.message}`, true);
   }
 }
 
@@ -1521,10 +1567,10 @@ function rescanCost() {
   const lost = [];
   if (confirmed) {
     lost.push(dry
-      ? `the ${groupWord(confirmed)} marked kept go back to undecided`
-      : `the ${groupWord(confirmed)} you kept can't be undone from this page any more — every move is listed in ${state.params.dest}/moves.log`);
+      ? `${groupWord(confirmed)} marked kept ${confirmed === 1 ? "goes" : "go"} back to undecided`
+      : `${groupWord(confirmed)} you kept can't be undone from this page any more — every move is listed in ${state.params.dest}/moves.log`);
   }
-  if (skipped) lost.push(`the ${groupWord(skipped)} you skipped come back as pending`);
+  if (skipped) lost.push(`${groupWord(skipped)} you skipped ${skipped === 1 ? "comes" : "come"} back as pending`);
   return `Scanning again starts a new review: ${lost.join(", and ")}. Press Scan again to go ahead.`;
 }
 
@@ -1759,14 +1805,14 @@ function helpContent(info) {
     ["K", "Same, for the file on the stage"],
     ["↑ ↓", "Move between groups"],
     ["Enter / C", "Confirm keep"],
-    ["Delete / S", "Skip group — on a confirmed group, move its files back"],
+    ["Delete / S", "Skip group — on a confirmed group, Undo keep: move its files back and decide it again"],
     ["Z", "Inspect (at the zoom slider's level)"],
     ["− / =", "Zoom out / in"],
     ["Shift + arrows", "Pan while inspecting"],
     ["O", "Open the file on the stage full-res in a new tab"],
     ["M", "Show or hide the measurements"],
     ["? / F1", "This panel"],
-    ["Q", "Quit — stop the server, no confirmation"],
+    ["Q, Q", "Quit — press twice to stop the server"],
   ].forEach(([k, v]) => {
     keys.appendChild(h("dt", k));
     keys.appendChild(h("dd", v));
@@ -1775,7 +1821,7 @@ function helpContent(info) {
 
   frag.appendChild(h("h3", "Stopping and finishing"));
   frag.appendChild(h("p", "Confirm and skip apply immediately — there's no save step and nothing is left half-done, so it's safe to close this tab at any point. Non-kept files are moved, never deleted. Closing the tab leaves the server running, so reopening this URL picks up where you left off."));
-  frag.appendChild(h("p", "Quit in the top bar (or Q) stops the program itself, for every page on this URL — use it when you're done, especially if the scan is running on a machine you'd otherwise have to go and find a terminal on. It acts on the first press, with no confirmation, and can't be undone from here; starting the review again means running find_duplicates.py on that machine. The tab closes itself where the browser allows that, and otherwise just tells you the server has stopped."));
+  frag.appendChild(h("p", "Quit in the top bar stops the program itself, for every page on this URL — use it when you're done, especially if the scan is running on a machine you'd otherwise have to go and find a terminal on. The button acts on the first click; the Q key asks for a second press, since a stray key would otherwise end the session. It can't be undone from here: starting the review again means running find-duplicates on that machine. The tab closes itself where the browser allows that, and otherwise just tells you the server has stopped."));
   return frag;
 }
 
@@ -1805,6 +1851,35 @@ function trapTab(e) {
 // ---------------------------------------------------------------------------
 
 let quitting = false;
+
+// The Q key asks twice; the Quit button doesn't. Quitting stops the server
+// for every tab on this URL and takes the undo record, every skip and the
+// scan cache with it -- on a headless box, getting back means SSH -- and Q
+// sits next to S, which skips. So a lone Q only arms it: the Quit label
+// says what a second press does, and the arm lapses on its own.
+const QUIT_ARM_MS = 3000;
+const QUIT_ARM_MSG = "Press Q again to stop the server — for every tab on this URL.";
+let quitArmedUntil = 0;
+let quitArmTimer = null;
+
+function quitKey() {
+  if (Date.now() < quitArmedUntil) { disarmQuit(); quitNow(); return; }
+  quitArmedUntil = Date.now() + QUIT_ARM_MS;
+  $("btn-quit").textContent = "Q again to quit";
+  $("btn-quit").classList.add("is-armed");
+  showToast(QUIT_ARM_MSG);
+  clearTimeout(quitArmTimer);
+  quitArmTimer = setTimeout(disarmQuit, QUIT_ARM_MS);
+}
+
+function disarmQuit() {
+  clearTimeout(quitArmTimer);
+  quitArmedUntil = 0;
+  if (quitting) return;
+  $("btn-quit").textContent = "Quit";
+  $("btn-quit").classList.remove("is-armed");
+  if ($("toast").textContent === QUIT_ARM_MSG) $("toast").hidden = true;
+}
 
 function groupWord(n) { return `${n} group${n === 1 ? "" : "s"}`; }
 
@@ -1927,7 +2002,7 @@ function attachKeyboardHandler() {
     else if (e.code === "Minus" || e.code === "NumpadSubtract") { stepZoom(-1); e.preventDefault(); }
     else if (e.code === "KeyO") { openFullRes(); e.preventDefault(); }
     else if (e.code === "KeyM") { setLedgerOpen(!state.ledgerOpen); e.preventDefault(); }
-    else if (e.code === "KeyQ") { quitNow(); e.preventDefault(); }
+    else if (e.code === "KeyQ") { quitKey(); e.preventDefault(); }
     else if (e.code.startsWith("Digit")) {
       const n = parseInt(e.code.slice(5), 10);
       if (n >= 1 && n <= 9 && state.detail && n <= state.detail.paths.length) {

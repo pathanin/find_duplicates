@@ -558,7 +558,13 @@ the checkbox tick, both drawn from borders.
   wrong voice in the one place that describes a destructive action.
 - The middle action is state-dependent: **Skip group** when pending, **Un-skip
   group** when skipped, **Undo keep** when confirmed — the last of which moves
-  files back out of the destination.
+  files back out of the destination and reopens the group as pending, on
+  screen, so it can be decided again (it does not skip it and move on).
+- Confirm keep is disabled on a group already applied exactly as shown: it
+  would move nothing, and its title says how to change the decision instead.
+- The receipt — the last confirm or undo, on a Caption SM line above the
+  sentence — is graphite, not steel: it is the only record of a move once the
+  bar has advanced. Its Reopen link hides while that group is already open.
 
 ### Notices and toast
 - Notices are persistent full-width bands under the command bar, Caption MD with
@@ -575,9 +581,13 @@ the checkbox tick, both drawn from borders.
   weights or descriptions in the core reaches the UI without an edit here.
 
 ### Stopped curtain
-- **Quit acts on the first press** — no confirmation step. It stops the server
-  and closes the tab; the review has no save state to lose, so a second click
-  would only stand between the reviewer and the thing they asked for.
+- **The Quit button acts on the first click; the Q key asks twice.** A click
+  on Quit is deliberate, so nothing stands between it and the exit. A key
+  press is not: Q sits beside S (skip), and quitting takes the undo record,
+  every skip and the scan cache with it — on a headless box, getting back
+  means SSH. The first Q turns the Quit label error red ("Q again to quit")
+  and says so in a toast; a second Q within 3 s quits, and the arm lapses on
+  its own.
 - A browser only closes a tab its own script opened, and refuses silently —
   which covers most real cases here, since the tab comes from the printed URL
   or `webbrowser.open`, not from a script. The curtain is the fallback for
@@ -596,7 +606,7 @@ the checkbox tick, both drawn from borders.
   arrows flip candidates and step groups; Shift+arrows pan the stage while
   inspecting at 1:1 (one tenth of the frame per press, so zoomed inspection is
   reachable without a pointer); Z toggles inspect; O opens full-res; M toggles
-  the ledger; ? or F1 opens help; Q quits; Escape closes.
+  the ledger; ? or F1 opens help; Q twice quits; Escape closes.
 - **Destructive keys ignore key repeat** (Q is one of them; `e.repeat` returns early) and **yield
   to a focused control** (`button`, `a[href]`, `summary`), so holding Enter
   cannot walk through group after group and Enter on a focused button does that

@@ -681,6 +681,31 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
                 g.status = "pending"
             return JSONResponse({**_group_detail(session, i, g), "restored": before - on_disk_moved()})
 
+    @app.post("/api/group/{i}/undo")
+    async def undo_group(
+        i: int, gen: int | None = Query(default=None, alias="g"),
+        _: str = Depends(require_token),
+    ) -> JSONResponse:
+        """Undo keep: move this group's files back and reopen it as pending,
+        so it can be decided again -- unlike /skip, which on a confirmed
+        group restores the files but closes the group as skipped. The pick
+        and pins stay as they were, so the reviewer picks up where they
+        left off. `restored` counts files actually moved back (0 for a
+        dry-run confirm), off the manifest like /skip's."""
+        with session.lock:
+            _require_not_scanning(session)
+            _require_generation(session, gen)
+            if not (0 <= i < len(session.groups)):
+                raise HTTPException(404, "no such group")
+            g = session.groups[i]
+            entry = next((m for m in session.manifest if m["group"] == i), None)
+            before = len(entry["moved"]) if entry and not entry["dry_run"] else 0
+            unapply(session.manifest, i)
+            entry = next((m for m in session.manifest if m["group"] == i), None)
+            after = len(entry["moved"]) if entry and not entry["dry_run"] else 0
+            g.status = "pending"
+            return JSONResponse({**_group_detail(session, i, g), "restored": before - after})
+
     @app.post("/api/scan")
     async def start_scan(req: ScanRequest, _: str = Depends(require_token)) -> JSONResponse:
         directory = Path(req.directory)
