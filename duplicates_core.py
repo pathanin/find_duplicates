@@ -11,6 +11,7 @@ find_duplicates.py and duplicates_web.py both import from this module
 rather than duplicating any of it.
 """
 
+import csv
 import math
 import os
 import shutil
@@ -18,6 +19,7 @@ import sys
 import threading
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass, field
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Callable, NamedTuple
@@ -174,23 +176,55 @@ METRIC_ROWS = [
 # Scanning + perceptual hashing + grouping
 # ---------------------------------------------------------------------------
 
+# Folders a recursive scan never walks into: each belongs to another program
+# that keeps a smaller copy of every photo beside it -- a Photos/Aperture
+# library's derivatives, Synology's @eaDir thumbnails, a recycle bin -- so
+# every original would come back paired with its own preview as a
+# "duplicate", and moving one out of a Photos library damages the library.
+# Dot-folders (.Trashes, .thumbnails, QNAP's .@__thumb) are skipped for the
+# same reason. Only folders met *during* the walk: a scan rooted at one of
+# them on purpose still runs.
+SKIP_DIR_NAMES = {
+    "@eaDir", "#recycle", "#snapshot", "@Recycle", "@Recently-Snapshot",
+    "$RECYCLE.BIN", "System Volume Information", "lost+found",
+}
+SKIP_DIR_SUFFIXES = (".photoslibrary", ".photolibrary", ".migratedphotolibrary", ".aplibrary", ".lrdata")
+
+
+def _skipped_dir(name: str) -> bool:
+    return name.startswith(".") or name in SKIP_DIR_NAMES or name.lower().endswith(SKIP_DIR_SUFFIXES)
+
+
+def _is_image_name(name: str) -> bool:
+    # "._" is an AppleDouble file (macOS metadata written beside each file
+    # on a NAS): it keeps the image's extension but holds no image.
+    return not name.startswith("._") and os.path.splitext(name)[1].lower() in IMAGE_EXTS
+
+
 def find_images(directory: Path, recursive: bool = False, exclude_dir: Path | None = None) -> list[Path]:
     """Top-level-only scan by default. With *recursive*, walks subdirectories
-    too -- *exclude_dir* (typically the move destination) is then required to
-    keep a re-scan from picking up files already moved out by a prior run;
-    it's meaningless (and ignored) in non-recursive mode since the default
-    destination (<directory>/_duplicates) already sits below the top level
-    iterdir() looks at."""
+    too, minus the folders _skipped_dir names -- *exclude_dir* (typically the
+    move destination) is then required to keep a re-scan from picking up
+    files already moved out by a prior run; it's meaningless (and ignored) in
+    non-recursive mode since the default destination (<directory>/_duplicates)
+    already sits below the top level iterdir() looks at."""
     if not recursive:
-        return sorted(p for p in directory.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_EXTS)
+        return sorted(p for p in directory.iterdir() if _is_image_name(p.name) and p.is_file())
     exclude_resolved = exclude_dir.resolve() if exclude_dir is not None else None
     found = []
-    for p in directory.rglob("*"):
-        if not p.is_file() or p.suffix.lower() not in IMAGE_EXTS:
-            continue
-        if exclude_resolved is not None and p.resolve().is_relative_to(exclude_resolved):
-            continue
-        found.append(p)
+    # os.walk rather than rglob so a skipped folder is pruned, not walked and
+    # filtered: a Photos library alone can hold a hundred thousand files.
+    for root, dirnames, filenames in os.walk(directory):
+        dirnames[:] = [d for d in dirnames if not _skipped_dir(d)]
+        for name in filenames:
+            if not _is_image_name(name):
+                continue
+            p = Path(root) / name
+            if not p.is_file():
+                continue
+            if exclude_resolved is not None and p.resolve().is_relative_to(exclude_resolved):
+                continue
+            found.append(p)
     return sorted(found)
 
 
@@ -543,6 +577,28 @@ class Group:
         return {self.current_pick if keep_idx is None else keep_idx, *self.also_keep}
 
 
+# Written beside the moved files by every real (non-dry-run) move and
+# restore. The manifest lives in memory and dies with the process, and by
+# then a collision rename (name_dup1.jpg) has already lost the original
+# name -- so after an exit this file is what "move it back by hand" reads.
+MOVE_LOG_NAME = "moves.log"
+_MOVE_LOG_HEADER = "# find-duplicates move log: time, action, from, to -- tab-separated, one row per file\n"
+
+
+def _append_move_log(log_path: Path, action: str, src: str, dst: str) -> None:
+    """A record, not part of the move: failing to write it warns on stderr
+    and never fails the move or restore it describes."""
+    try:
+        new = not log_path.exists()
+        with open(log_path, "a", newline="", encoding="utf-8") as f:
+            if new:
+                f.write(_MOVE_LOG_HEADER)
+            csv.writer(f, delimiter="\t", lineterminator="\n").writerow(
+                [datetime.now().isoformat(timespec="seconds"), action, src, dst])
+    except OSError as exc:
+        print(f"warning: couldn't record a move in {log_path}: {exc}", file=sys.stderr)
+
+
 def _compute_dest(
     path: Path,
     dest_dir: Path,
@@ -594,6 +650,7 @@ def apply_group(
     kept_path = group.paths[keep_idx]
     keep = group.kept_indices(keep_idx)
     also_kept = [str(group.paths[j]) for j in sorted(keep - {keep_idx})]
+    log_path = dest_dir / MOVE_LOG_NAME
     moved = []
     try:
         # is_symlink()/resolve() can themselves raise (e.g. EACCES on a
@@ -609,10 +666,11 @@ def apply_group(
             dest = _compute_dest(path, dest_dir, dry_run, recursive=recursive, scan_root=scan_root)
             if not dry_run:
                 shutil.move(str(path), str(dest))
+                _append_move_log(log_path, "moved", str(path), str(dest))
             moved.append({"from": str(path), "to": str(dest)})
     finally:
         entry = {"group": group_index, "kept": str(kept_path), "also_kept": also_kept,
-                 "moved": moved, "dry_run": dry_run}
+                 "moved": moved, "dry_run": dry_run, "log": str(log_path)}
         if manifest is not None:
             manifest.append(entry)
     return entry
@@ -641,13 +699,19 @@ def auto_apply_groups(
     the source path is gone from disk by the time apply_group returns, so
     re-stat()'ing it afterward would silently always read 0.
 
+    bytes_moved is the same sum taken under dry run too -- what the run
+    would free -- since bytes_reclaimed stays 0 when nothing moved. entries
+    are the manifest entries apply_group recorded, one per group attempted,
+    so the CLI can name every file kept and moved.
+
     Returns {"confirmed": int, "failed": int, "files_moved": int,
-    "bytes_reclaimed": int, "failures": [{"group", "error", "files_moved",
-    "bytes_moved"}, ...]}."""
+    "bytes_reclaimed": int, "bytes_moved": int, "entries": [manifest entry, ...],
+    "failures": [{"group", "error", "files_moved", "bytes_moved"}, ...]}."""
     confirmed = 0
     failed = 0
     files_moved = 0
     bytes_reclaimed = 0
+    bytes_moved = 0
     failures = []
     manifest: list[dict] = []
 
@@ -674,6 +738,7 @@ def auto_apply_groups(
         moved_bytes = sum(size_by_path.get(m["from"], 0) for m in moved)
         n_moved = len(moved)
         files_moved += n_moved
+        bytes_moved += moved_bytes
 
         if error is not None:
             failed += 1
@@ -690,6 +755,8 @@ def auto_apply_groups(
         "failed": failed,
         "files_moved": files_moved,
         "bytes_reclaimed": bytes_reclaimed,
+        "bytes_moved": bytes_moved,
+        "entries": manifest,
         "failures": failures,
     }
 
@@ -732,6 +799,8 @@ def unapply(manifest: list[dict], group_index: int) -> None:
                 # forward move.
                 shutil.move(str(dst), str(src))
                 restored.append(moved)
+                if entry.get("log"):
+                    _append_move_log(Path(entry["log"]), "restored", str(dst), str(src))
     finally:
         # Keep tracking whatever wasn't restored (never just the fact that
         # *something* was restored) even if a move raised partway through,

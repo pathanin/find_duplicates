@@ -72,7 +72,7 @@
   </div>
   <div class="field field-wide">
     <label for="f-dest">Move non-kept files to</label>
-    <input id="f-dest" type="text" spellcheck="false" autocomplete="off" placeholder="&lt;directory&gt;/_duplicates">
+    <input id="f-dest" type="text" spellcheck="false" autocomplete="off" placeholder="_duplicates inside the directory">
   </div>
   <div class="field field-checks">
     <label class="check"><input id="f-recursive" type="checkbox"><span>Include subdirectories</span></label>
@@ -81,6 +81,7 @@
   <div class="field field-submit">
     <button type="submit" id="scan-btn" class="btn btn-primary">Scan</button>
   </div>
+  <p class="scan-warning" id="scan-warning" role="alert" hidden></p>
 </form>
 
 <div class="notices" id="notices"></div>

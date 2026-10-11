@@ -263,6 +263,7 @@ function renderAppState() {
     msg.appendChild(p);
   }
   updateActionButtons();
+  renderScanButton();
   updateDocumentTitle();
 }
 
@@ -1490,6 +1491,7 @@ function setScanPanelOpen(open) {
   $("scan-panel").hidden = !open;
   $("scope-toggle").setAttribute("aria-expanded", String(open));
   if (open) $("f-directory").focus();
+  else disarmRescan();
   layoutStage();
 }
 
@@ -1499,8 +1501,47 @@ function populateForm() {
   $("f-directory").value = p.directory;
   $("f-threshold").value = p.threshold;
   $("f-recursive").checked = p.recursive;
-  $("f-dest").value = p.dest || "";
+  // Blank when it's the directory's own _duplicates/, so it follows a changed
+  // directory. Prefilled with the old absolute path, the next scan moved the
+  // new library's duplicates into the first directory's folder.
+  $("f-dest").value = p.dest_is_default ? "" : (p.dest || "");
   $("f-dry-run").checked = p.dry_run;
+}
+
+// A rescan replaces the groups and the server's record of what moved, so
+// anything decided so far is gone once it starts: Undo keep stops working
+// for every confirmed group, and skipped groups come back as pending. The
+// first Scan says so; the second goes ahead.
+let rescanArmed = false;
+
+function rescanCost() {
+  const { confirmed, skipped } = reviewCounts();
+  if (!confirmed && !skipped) return "";
+  const dry = !!(state.params && state.params.dry_run);
+  const lost = [];
+  if (confirmed) {
+    lost.push(dry
+      ? `the ${groupWord(confirmed)} marked kept go back to undecided`
+      : `the ${groupWord(confirmed)} you kept can't be undone from this page any more — every move is listed in ${state.params.dest}/moves.log`);
+  }
+  if (skipped) lost.push(`the ${groupWord(skipped)} you skipped come back as pending`);
+  return `Scanning again starts a new review: ${lost.join(", and ")}. Press Scan again to go ahead.`;
+}
+
+function disarmRescan() {
+  rescanArmed = false;
+  $("scan-warning").hidden = true;
+  renderScanButton();
+}
+
+// One scan at a time: the server refuses a second with 409, so the button
+// says so up front rather than after a click.
+function renderScanButton() {
+  const btn = $("scan-btn");
+  const busy = state.status === "scanning";
+  btn.disabled = busy;
+  btn.title = busy ? "A scan is already running — start another once it finishes." : "";
+  btn.textContent = rescanArmed ? "Scan anyway" : "Scan";
 }
 
 function renderProgress(data) {
@@ -1915,6 +1956,14 @@ function attachHandlers() {
 
   $("scan-panel").addEventListener("submit", async (e) => {
     e.preventDefault();
+    const cost = rescanCost();
+    if (cost && !rescanArmed) {
+      rescanArmed = true;
+      $("scan-warning").textContent = cost;
+      $("scan-warning").hidden = false;
+      renderScanButton();
+      return;
+    }
     const body = {
       directory: $("f-directory").value,
       threshold: parseInt($("f-threshold").value, 10),
@@ -1925,7 +1974,7 @@ function attachHandlers() {
     $("scan-btn").disabled = true;
     try {
       await api("/api/scan", { method: "POST", body: JSON.stringify(body) });
-      setScanPanelOpen(false);
+      setScanPanelOpen(false);  // also disarms
       state.detail = null;
       state.activeIndex = -1;
       renderProgress({ label: "", done: 0, total: 0 });
@@ -1933,7 +1982,7 @@ function attachHandlers() {
     } catch (err) {
       showToast(`Scan didn't start: ${err.message}`, true);
     } finally {
-      $("scan-btn").disabled = false;
+      renderScanButton();
     }
   });
 

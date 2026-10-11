@@ -38,7 +38,7 @@ from pathlib import Path
 
 import uvicorn
 
-from duplicates_core import DEFAULT_HASH_THRESHOLD, auto_apply_groups, build_groups, humansize
+from duplicates_core import DEFAULT_HASH_THRESHOLD, MOVE_LOG_NAME, auto_apply_groups, build_groups, humansize
 import duplicates_web
 from duplicates_web import ScanParams, create_app
 
@@ -69,24 +69,51 @@ def _threshold_arg(s: str) -> int:
     return v
 
 
+def _shown(path: str | Path, root: Path) -> str:
+    """Relative to the scan root when inside it: the per-group lines are
+    read as a list, and one long shared prefix on every line buries the
+    part of each name that differs."""
+    p = Path(path)
+    try:
+        return str(p.relative_to(root))
+    except ValueError:
+        return str(p)
+
+
 def _run_auto(directory: Path, dest_dir: Path, threshold: int, recursive: bool, dry_run: bool) -> None:
     """Non-interactive path: scan, keep each group's suggested (top-scored)
     file automatically, and exit -- never starts the web server. One bad
     group (disk full, permission error) doesn't abort the run; see
-    auto_apply_groups."""
+    auto_apply_groups. Every group's keep/move is printed: under --dry-run
+    that list is the whole point, and after a real run it says what to
+    look for in dest_dir."""
     print(f"Scanning {directory} ...")
     groups = build_groups(directory, threshold, recursive=recursive, dest_dir=dest_dir)
     if not groups:
         print("No potential duplicate groups found.")
         return
 
-    print(f"Found {len(groups)} potential duplicate group(s). Auto-applying suggested picks...")
+    print(f"Found {len(groups)} potential duplicate group(s). "
+          f"{'Previewing' if dry_run else 'Applying'} each group's suggested pick:\n")
     summary = auto_apply_groups(groups, dest_dir, dry_run, recursive=recursive, scan_root=directory)
-    reclaimed = "(dry run)" if dry_run else humansize(summary["bytes_reclaimed"])
-    print(
-        f"\nDone. {summary['confirmed']} group(s) confirmed, {summary['files_moved']} file(s) "
-        f"{'would be moved' if dry_run else 'moved'} to {dest_dir}. Reclaimed: {reclaimed}"
-    )
+    verb = "would move" if dry_run else "moved"
+    for entry in summary["entries"]:
+        kept = [entry["kept"], *entry.get("also_kept", [])]
+        print(f"Group {entry['group'] + 1}: keep {', '.join(_shown(k, directory) for k in kept)}")
+        for m in entry["moved"]:
+            print(f"  {verb} {_shown(m['from'], directory)} -> {_shown(m['to'], directory)}")
+    if dry_run:
+        print(
+            f"\nDry run: {summary['confirmed']} group(s), {summary['files_moved']} file(s) "
+            f"({humansize(summary['bytes_moved'])}) would be moved to {dest_dir}. Nothing was moved."
+        )
+    else:
+        print(
+            f"\nDone. {summary['confirmed']} group(s) confirmed, {summary['files_moved']} file(s) "
+            f"moved to {dest_dir}. Reclaimed: {humansize(summary['bytes_reclaimed'])}"
+        )
+        if summary["files_moved"]:
+            print(f"Every move is recorded in {dest_dir / MOVE_LOG_NAME}")
     if summary["failed"]:
         print(f"\n{summary['failed']} group(s) FAILED and were left pending:", file=sys.stderr)
         for f in summary["failures"]:

@@ -5,6 +5,7 @@ suggested (top-scored) pick automatically.
 Run: python3 test_auto_mode.py
 """
 
+import io
 import shutil
 import sys
 import tempfile
@@ -73,6 +74,98 @@ def test_apply_group_standalone() -> None:
         assert not group.paths[1].exists() and not group.paths[2].exists()
         assert (dest_dir / "g_1.png").exists() and (dest_dir / "g_2.png").exists()
         print("  ok  apply_group() moves non-kept files the same way apply_pick does")
+
+
+def read_move_log(dest_dir: Path) -> list[list[str]]:
+    """The log's rows as [time, action, from, to], comment lines dropped."""
+    import csv
+    with open(dest_dir / dc.MOVE_LOG_NAME, newline="", encoding="utf-8") as f:
+        return [row for row in csv.reader(f, delimiter="\t") if row and not row[0].startswith("#")]
+
+
+def test_apply_group_and_unapply_write_a_move_log() -> None:
+    """The manifest is in memory only, so once the process exits it can no
+    longer say where a file came from -- and a collision rename
+    (name_dup1.jpg) has already lost the original name. A log next to the
+    moved files keeps that record on disk, and records restores too, so it
+    never claims a file is in dest_dir after undo brought it back."""
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp)
+        group = make_real_group(directory, n=3, prefix="log")
+        dest_dir = directory / "_duplicates"
+        manifest: list[dict] = []
+
+        dc.apply_group(group, 0, keep_idx=0, dest_dir=dest_dir, dry_run=False, manifest=manifest)
+        rows = read_move_log(dest_dir)
+        assert [r[1] for r in rows] == ["moved", "moved"], rows
+        assert {(r[2], r[3]) for r in rows} == {
+            (str(group.paths[1]), str(dest_dir / "log_1.png")),
+            (str(group.paths[2]), str(dest_dir / "log_2.png")),
+        }, rows
+
+        dc.unapply(manifest, 0)
+        rows = read_move_log(dest_dir)
+        assert [r[1] for r in rows] == ["moved", "moved", "restored", "restored"], rows
+        assert group.paths[1].exists() and group.paths[2].exists()
+        print("  ok  apply_group logs each move and unapply logs each restore, in <dest>/moves.log")
+
+
+def test_move_log_failure_does_not_fail_the_move() -> None:
+    """The log is a record, not part of the move: a log that can't be
+    written (here a directory squatting on its name) must not turn a
+    successful move into a failed confirm."""
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp)
+        group = make_real_group(directory, n=2, prefix="nolog")
+        dest_dir = directory / "_duplicates"
+        (dest_dir / dc.MOVE_LOG_NAME).mkdir(parents=True)
+        manifest: list[dict] = []
+
+        entry = dc.apply_group(group, 0, keep_idx=0, dest_dir=dest_dir, dry_run=False, manifest=manifest)
+        assert len(entry["moved"]) == 1 and not group.paths[1].exists(), "the move itself must still happen"
+        dc.unapply(manifest, 0)
+        assert group.paths[1].exists(), "and so must the restore"
+        print("  ok  an unwritable move log never fails the move or the restore")
+
+
+def test_auto_dry_run_reports_the_bytes_it_would_move() -> None:
+    """bytes_reclaimed stays 0 under dry run (nothing moved), but a preview
+    that can't say how much it would free is half a preview."""
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp)
+        group = make_real_group(directory, n=3, prefix="w")
+        expected = group.paths[1].stat().st_size + group.paths[2].stat().st_size
+        summary = dc.auto_apply_groups([group], directory / "_duplicates", dry_run=True)
+        assert summary["bytes_moved"] == expected, summary
+        assert summary["bytes_reclaimed"] == 0
+        assert len(summary["entries"]) == 1 and len(summary["entries"][0]["moved"]) == 2, summary
+        print("  ok  a dry run reports the bytes it would move, and every per-group entry")
+
+
+def test_run_auto_dry_run_names_every_file() -> None:
+    """--auto --dry-run is documented as "show what would happen", and used
+    to print only counts. It has to name what it keeps and what it moves,
+    or there is nothing to preview."""
+    import contextlib
+    import find_duplicates as fd
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp)
+        rng = np.random.default_rng(41)
+        base = rng.integers(0, 255, size=(150, 200, 3), dtype=np.uint8)
+        original = directory / "beach.jpg"
+        save_jpeg(cv2.resize(base, (800, 600), interpolation=cv2.INTER_CUBIC), original)
+        shutil.copyfile(original, directory / "beach copy.jpg")
+        dest_dir = directory / "_duplicates"
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            fd._run_auto(directory, dest_dir, dc.DEFAULT_HASH_THRESHOLD, recursive=False, dry_run=True)
+        text = out.getvalue()
+        assert "keep beach.jpg" in text, text
+        assert "would move beach copy.jpg" in text, text
+        assert "Nothing was moved" in text, text
+        assert (directory / "beach copy.jpg").exists() and not dest_dir.exists()
+        print("  ok  --auto --dry-run names the file it keeps and each file it would move")
 
 
 def test_auto_apply_groups_all_pending() -> None:
@@ -320,6 +413,10 @@ def test_auto_keeps_the_original_of_a_byte_identical_copy() -> None:
 def main() -> None:
     tests = [
         test_apply_group_standalone,
+        test_apply_group_and_unapply_write_a_move_log,
+        test_move_log_failure_does_not_fail_the_move,
+        test_auto_dry_run_reports_the_bytes_it_would_move,
+        test_run_auto_dry_run_names_every_file,
         test_auto_apply_groups_all_pending,
         test_auto_apply_groups_skips_already_confirmed,
         test_auto_apply_groups_dry_run,

@@ -202,6 +202,11 @@ button { font-family: inherit; }
 .field-narrow { flex: 0 0 120px; }
 .field-checks { flex: 0 0 auto; gap: 10px; justify-content: center; }
 .field-submit { flex: 0 0 auto; }
+/* What a rescan would throw away, said before it does. Neutral ink: no
+   hue means "this will end the review" yet (see DESIGN.md's one signal
+   per hue rule). */
+.scan-warning { flex: 1 0 100%; margin: 0; font: var(--caption-md); color: var(--ink); }
+.scan-warning[hidden] { display: none; }
 
 .field > label {
   font: var(--caption-sm);

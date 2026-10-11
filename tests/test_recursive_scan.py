@@ -88,6 +88,51 @@ def test_find_images_recursive_excludes_dest_dir() -> None:
         print("  ok  recursive scan excludes files already inside dest_dir")
 
 
+def test_find_images_recursive_skips_app_libraries_and_system_folders() -> None:
+    """A recursive scan of ~/Pictures or a NAS share walks straight into
+    folders another program owns, where every photo already has a smaller
+    copy beside it: a Photos library's derivatives, Synology's @eaDir
+    thumbnails, a recycle bin. Each of those pairs with its original as a
+    "duplicate", and moving one out of a Photos library damages the
+    library. AppleDouble "._" files (macOS metadata on a NAS) carry an
+    image extension but are never images."""
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        wanted = [tmp / "top.jpg", tmp / "2019" / "06" / "nested.jpg", tmp / "My Library" / "pic.jpg"]
+        unwanted = [
+            tmp / "Photos Library.photoslibrary" / "resources" / "derivatives" / "x.jpeg",
+            tmp / "Photos Library.photoslibrary" / "originals" / "x.jpeg",
+            tmp / "2019" / "@eaDir" / "nested.jpg" / "SYNOPHOTO_THUMB_XL.jpg",
+            tmp / "#recycle" / "old.jpg",
+            tmp / ".Trashes" / "t.jpg",
+            tmp / ".thumbnails" / "normal" / "t.png",
+            tmp / "2019" / "._nested.jpg",
+            tmp / "._top.jpg",
+        ]
+        for i, p in enumerate(wanted + unwanted):
+            save_jpeg(make_texture(64, 64, 100 + i), p)
+
+        found = set(dc.find_images(tmp, recursive=True))
+        assert found == set(wanted), (
+            f"expected only the user's own photos, got extra {sorted(found - set(wanted))} "
+            f"and missing {sorted(set(wanted) - found)}"
+        )
+        flat = set(dc.find_images(tmp))
+        assert flat == {tmp / "top.jpg"}, f"a top-level AppleDouble file must be skipped too, got {flat}"
+        print("  ok  recursive scan skips app libraries, NAS thumbnail/recycle folders and AppleDouble files")
+
+
+def test_find_images_scans_a_skipped_kind_of_folder_when_it_is_the_root() -> None:
+    """The skip list prunes folders found *during* a walk. Pointing the
+    scan at one of them on purpose is an explicit choice and still works."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "Old.photolibrary"
+        save_jpeg(make_texture(64, 64, 1), root / "Masters" / "a.jpg")
+        found = dc.find_images(root, recursive=True)
+        assert found == [root / "Masters" / "a.jpg"], f"an explicitly chosen root must be scanned, got {found}"
+        print("  ok  a library folder chosen as the scan root is still scanned")
+
+
 def test_compute_dest_preserves_relative_path() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
@@ -203,6 +248,8 @@ def main() -> None:
         test_find_images_flat_default_ignores_subdirs,
         test_find_images_recursive_finds_nested,
         test_find_images_recursive_excludes_dest_dir,
+        test_find_images_recursive_skips_app_libraries_and_system_folders,
+        test_find_images_scans_a_skipped_kind_of_folder_when_it_is_the_root,
         test_compute_dest_preserves_relative_path,
         test_compute_dest_collision_preserves_subdir,
         test_compute_dest_non_recursive_unchanged,

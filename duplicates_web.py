@@ -106,6 +106,13 @@ class ScanParams:
     dest_dir: Path
     dry_run: bool
 
+    def dest_is_default(self) -> bool:
+        """True when dest is the directory's own _duplicates/ -- the scan
+        panel then leaves its field blank so the destination follows a
+        changed directory instead of pointing every later scan's moves at
+        the first directory's folder."""
+        return self.dest_dir == self.directory / "_duplicates"
+
 
 @dataclass
 class Session:
@@ -472,6 +479,7 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
                     "threshold": session.params.threshold,
                     "recursive": session.params.recursive,
                     "dest": str(session.params.dest_dir),
+                    "dest_is_default": session.params.dest_is_default(),
                     "dry_run": session.params.dry_run,
                 },
                 "groups": [_group_summary(i, g) for i, g in enumerate(session.groups)],

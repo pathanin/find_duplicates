@@ -265,6 +265,36 @@ def test_scan_rejects_invalid_directory_and_out_of_range_threshold() -> None:
         print("  ok  POST /api/scan validates directory existence and threshold range")
 
 
+def test_state_says_whether_dest_follows_the_directory() -> None:
+    """The scan panel used to prefill the destination with the previous
+    run's absolute <directory>/_duplicates, so changing only the directory
+    sent the new library's duplicates into the old one's folder (and, under
+    --recursive, stopped excluding the new directory's own _duplicates/).
+    The panel leaves the field blank -- so it follows the directory --
+    exactly when the destination is that default, which only the server
+    can say."""
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp)
+        elsewhere = directory / "elsewhere"
+        elsewhere.mkdir()
+        client, _ = _make_client(directory, directory / "_duplicates")
+        with client:
+            data = _wait_ready(client)
+            assert data["params"]["dest_is_default"] is True, data["params"]
+
+            r = client.post("/api/scan", params={"token": TOKEN},
+                            json={"directory": str(directory), "dest": str(elsewhere)})
+            assert r.status_code == 200, r.text
+            data = _wait_ready(client)
+            assert data["params"]["dest_is_default"] is False, data["params"]
+
+            r = client.post("/api/scan", params={"token": TOKEN}, json={"directory": str(directory)})
+            assert r.status_code == 200, r.text
+            data = _wait_ready(client)
+            assert data["params"]["dest_is_default"] is True, data["params"]
+        print("  ok  /api/state says whether the destination is the directory's own _duplicates/")
+
+
 def test_close_call_group_serializes_without_500() -> None:
     """Regression test for the numpy.bool_/JSON bug: is_close_call must be
     a real JSON boolean, not something json.dumps chokes on, for both
@@ -734,6 +764,7 @@ def main() -> None:
         test_renders_honour_exif_orientation,
         test_group_detail_numeric_fields_match_their_display_strings,
         test_scan_rejects_invalid_directory_and_out_of_range_threshold,
+        test_state_says_whether_dest_follows_the_directory,
         test_close_call_group_serializes_without_500,
         test_confirm_moves_files_and_skip_unapplies,
         test_repick_after_confirm_moves_the_new_non_kept_file,
