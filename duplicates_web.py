@@ -199,6 +199,10 @@ class Session:
     progress_lock: Lock = field(default_factory=Lock)
     progress: dict = field(default_factory=lambda: {"label": "", "done": 0, "total": 0})
     progress_seq: int = 0
+    # What the scan behind `groups` found: {"images", "unreadable"} (see
+    # build_groups' *stats*). Swapped in with the groups it describes -- live
+    # for a streaming scan, at on_done for a rescan.
+    scan_stats: dict = field(default_factory=dict)
 
 
 # A scan runs here rather than in the loop's default executor: asyncio's
@@ -262,6 +266,8 @@ def _launch_scan(
         with session.lock:
             session.groups.append(group)
 
+    stats: dict = {}
+
     def run_scan() -> list[Group]:
         # Safe to hand these to the executor thread unlocked: /api/scan
         # rejects a second scan while one is running, so this is the only
@@ -270,7 +276,7 @@ def _launch_scan(
             params.directory, params.threshold, recursive=params.recursive,
             dest_dir=params.dest_dir, progress_callback=progress_cb,
             hash_cache=session.hash_cache, analyze_cache=session.analyze_cache,
-            group_callback=group_cb if stream else None,
+            group_callback=group_cb if stream else None, stats=stats,
         )
 
     def on_done(fut: "asyncio.Future[list[Group]]") -> None:
@@ -288,6 +294,7 @@ def _launch_scan(
                 return
             if not stream:
                 session.params = params
+                session.scan_stats = stats
                 session.groups = groups
                 session.manifest = []
                 session.image_cache = {}
@@ -303,6 +310,7 @@ def _launch_scan(
         # under the client, so nothing needs to be re-fetched at the end.
         with session.lock:
             session.params = params
+            session.scan_stats = stats
             session.generation += 1
             session.streaming = True
     with session.progress_lock:
@@ -424,6 +432,25 @@ def _group_detail(session: Session, i: int, g: Group) -> dict:
     }
 
 
+def _typed_path(raw: str, what: str) -> Path:
+    """A path as a person types or pastes it into the scan panel -- on
+    whatever machine the browser is on, though it's read on this one.
+    Surrounding whitespace and quotes are dropped (a pasted path often
+    carries one or the other) and ~ is expanded. A relative path is
+    refused: it would resolve against this process's working directory,
+    which a reviewer on another machine has no way to see."""
+    text = raw.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "'\"":
+        text = text[1:-1]
+    path = Path(text).expanduser()
+    if not path.is_absolute():
+        raise HTTPException(
+            400, f"'{text}' isn't a full path. Paths are read on the machine running "
+            f"find-duplicates, so start the {what} with / or ~.",
+        )
+    return path
+
+
 class ScanRequest(BaseModel):
     directory: str
     # 0-64 matches the CLI's _threshold_arg validation (max Hamming distance
@@ -513,6 +540,8 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
                     "dry_run": session.params.dry_run,
                 },
                 "groups": [_group_summary(i, g) for i, g in enumerate(session.groups)],
+                # None until the scan has listed its directory.
+                "scan": dict(session.scan_stats) or None,
             })
 
     @app.get("/api/metrics-info")
@@ -738,11 +767,16 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
 
     @app.post("/api/scan")
     async def start_scan(req: ScanRequest, _: str = Depends(require_token)) -> JSONResponse:
-        directory = Path(req.directory)
-        if not directory.exists() or not directory.is_dir():
-            raise HTTPException(400, f"'{req.directory}' is not a valid, existing directory")
+        directory = _typed_path(req.directory, "folder")
+        if not directory.is_dir():
+            raise HTTPException(
+                400, f"'{directory}' isn't a folder on the machine running find-duplicates",
+            )
         directory = directory.resolve()
-        dest_dir = (Path(req.dest).resolve() if req.dest else directory / "_duplicates")
+        dest_dir = (
+            _typed_path(req.dest, "destination").resolve() if req.dest and req.dest.strip()
+            else directory / "_duplicates"
+        )
 
         with session.lock:
             if session.status == "scanning":

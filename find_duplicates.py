@@ -107,9 +107,22 @@ def _run_auto(directory: Path, dest_dir: Path, threshold: int, recursive: bool, 
     that list is the whole point, and after a real run it says what to
     look for in dest_dir."""
     print(f"Scanning {directory} ...")
-    groups = build_groups(directory, threshold, recursive=recursive, dest_dir=dest_dir)
+    stats: dict = {}
+    groups = build_groups(directory, threshold, recursive=recursive, dest_dir=dest_dir, stats=stats)
+    unreadable = stats.get("unreadable", 0)
+    if unreadable:
+        print(f"{unreadable} file{'' if unreadable == 1 else 's'} couldn't be read and "
+              f"{'was' if unreadable == 1 else 'were'} skipped.")
     if not groups:
-        print("No potential duplicate groups found.")
+        # Say which kind of nothing: no images at all is usually a library in
+        # subfolders scanned top level only, and needs --recursive -- not a
+        # looser threshold, which only adds false matches.
+        if not stats.get("images"):
+            where = "" if recursive else " (top level only -- add --recursive to include subfolders)"
+            print(f"No images found in {directory}{where}.")
+        else:
+            n = stats["images"] - unreadable
+            print(f"Scanned {n} image{'' if n == 1 else 's'} in {directory}: none look like duplicates of each other.")
         return
 
     print(f"Found {len(groups)} potential duplicate group(s). "

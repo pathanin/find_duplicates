@@ -1066,7 +1066,7 @@ def _build_group(members: list[Path], analyzed: dict[Path, dict]) -> Group | Non
 def build_groups(
     directory: Path, threshold: int, recursive: bool = False, dest_dir: Path | None = None,
     progress_callback=None, hash_cache: dict | None = None, analyze_cache: dict | None = None,
-    group_callback=None,
+    group_callback=None, stats: dict | None = None,
 ) -> list[Group]:
     """*progress_callback*, if given, is passed straight through to
     group_duplicates/analyze_paths -- see their matching parameter. None
@@ -1088,8 +1088,17 @@ def build_groups(
     from scratch, which is the right default for one-shot --auto runs. Both
     key on path + mtime + size, so entries stay valid across rescans with a
     different threshold or recursive setting -- neither affects a file's hash
-    or its quality metrics."""
+    or its quality metrics.
+
+    *stats*, if given, is filled in as the scan goes: "images" (files found
+    with an image extension) once listing is done, then "unreadable" (files
+    that failed to decode for hashing or analysis, and so were left out).
+    An empty result means nothing without them -- no images at all (usually
+    a top-level scan of a library kept in subfolders) wants --recursive,
+    not a looser threshold."""
     paths = find_images(directory, recursive=recursive, exclude_dir=dest_dir)
+    if stats is not None:
+        stats.update(images=len(paths), unreadable=0)
 
     if hash_cache is None:
         hash_cache = {}
@@ -1097,6 +1106,10 @@ def build_groups(
         analyze_cache = {}
 
     raw_groups = group_duplicates(paths, threshold, hash_cache, progress_callback=progress_callback)
+    if stats is not None:
+        # A failed decode is cached as hash None (see cached_hash).
+        entries = (hash_cache.get(_cache_key(p)) for p in paths)
+        stats["unreadable"] = sum(1 for e in entries if e is not None and e["hash"] is None)
 
     # Compute stats for the grouped files once and pass to analyze_paths,
     # rather than letting it call stat() again on files already stat()'d
@@ -1137,6 +1150,8 @@ def build_groups(
     def on_analyzed(p: Path, result: dict | None) -> None:
         if result is not None:
             analyzed[p] = result
+        elif stats is not None:
+            stats["unreadable"] += 1
         remaining[owner[p]] -= 1
         publish_ready()
 

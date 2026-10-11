@@ -199,7 +199,7 @@ button { font-family: inherit; }
 
 .field { display: flex; flex-direction: column; gap: 6px; }
 .field-wide { flex: 1 1 260px; min-width: 200px; }
-.field-narrow { flex: 0 0 120px; }
+.field-narrow { flex: 0 0 200px; }
 .field-checks { flex: 0 0 auto; gap: 10px; justify-content: center; }
 .field-submit { flex: 0 0 auto; }
 /* What a rescan would throw away, said before it does. Neutral ink: no

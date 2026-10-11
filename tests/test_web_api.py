@@ -315,6 +315,71 @@ def test_state_says_whether_dest_follows_the_directory() -> None:
         print("  ok  /api/state says whether the destination is the directory's own _duplicates/")
 
 
+def test_state_reports_what_the_scan_found() -> None:
+    """"No duplicates" used to look the same whether the scan read a
+    thousand photos or none at all -- the commonest cause being a library
+    in year/month folders scanned top-level only -- and the page advised
+    raising the threshold either way. /api/state now says how many images
+    the scan found and how many it couldn't read."""
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp)
+        make_duplicate_set(directory, seed=21, n=2)
+        save = cv2.imwrite(str(directory / "other.jpg"), make_texture(300, 400, 99))
+        assert save
+        (directory / "broken.jpg").write_bytes(b"not an image at all")
+        client, _ = _make_client(directory, directory / "_duplicates")
+        with client:
+            data = _wait_ready(client)
+            assert data["scan"] == {"images": 4, "unreadable": 1}, data["scan"]
+            assert len(data["groups"]) == 1
+
+            empty = directory / "empty"
+            (empty / "2019").mkdir(parents=True)
+            cv2.imwrite(str(empty / "2019" / "a.jpg"), make_texture(100, 100, 1))
+            r = client.post("/api/scan", params={"token": TOKEN}, json={"directory": str(empty)})
+            assert r.status_code == 200, r.text
+            data = _wait_ready(client)
+            assert data["scan"] == {"images": 0, "unreadable": 0}, data["scan"]
+            assert data["params"]["recursive"] is False
+        print("  ok  /api/state reports images found and unreadable files for the last scan")
+
+
+def test_scan_path_is_read_the_way_a_person_types_it() -> None:
+    """The directory is typed on whatever machine the browser is on, but
+    resolved on the server: "~" wasn't expanded, a relative path resolved
+    against the server's working directory (which a LAN reviewer can't
+    see), and a path pasted with quotes or a trailing newline didn't
+    exist."""
+    import os
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp)
+        lib = home / "Pictures Library"
+        lib.mkdir()
+        old_home = os.environ.get("HOME")
+        os.environ["HOME"] = str(home)
+        try:
+            client, _ = _make_client(home, home / "_duplicates")
+            with client:
+                _wait_ready(client)
+                for typed in ("~/Pictures Library", f'"{lib}"', f"  {lib}\n"):
+                    r = client.post("/api/scan", params={"token": TOKEN}, json={"directory": typed})
+                    assert r.status_code == 200, f"{typed!r}: {r.text}"
+                    data = _wait_ready(client)
+                    assert data["params"]["directory"] == str(lib.resolve()), (typed, data["params"])
+                r = client.post("/api/scan", params={"token": TOKEN}, json={"directory": "Pictures Library"})
+                assert r.status_code == 400, r.text
+                assert "full path" in r.json()["detail"], r.json()
+                r = client.post("/api/scan", params={"token": TOKEN},
+                                json={"directory": str(lib), "dest": "dupes"})
+                assert r.status_code == 400 and "full path" in r.json()["detail"], r.text
+        finally:
+            if old_home is None:
+                del os.environ["HOME"]
+            else:
+                os.environ["HOME"] = old_home
+        print("  ok  /api/scan expands ~, strips quotes and whitespace, and refuses relative paths")
+
+
 def test_close_call_group_serializes_without_500() -> None:
     """Regression test for the numpy.bool_/JSON bug: is_close_call must be
     a real JSON boolean, not something json.dumps chokes on, for both
@@ -834,6 +899,8 @@ def main() -> None:
         test_group_detail_numeric_fields_match_their_display_strings,
         test_scan_rejects_invalid_directory_and_out_of_range_threshold,
         test_state_says_whether_dest_follows_the_directory,
+        test_state_reports_what_the_scan_found,
+        test_scan_path_is_read_the_way_a_person_types_it,
         test_close_call_group_serializes_without_500,
         test_confirm_moves_files_and_skip_unapplies,
         test_undo_restores_the_files_and_reopens_the_group,

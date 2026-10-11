@@ -22,6 +22,7 @@ const state = {
   error: null,
   generation: 0,
   params: null,
+  scan: null,       // {images, unreadable} for the scan behind `groups`
   groups: [],       // summaries: {index, status, file_count, current_pick, also_keep, suggested_idx, is_close_call}
   activeIndex: -1,
   detail: null,     // {index, status, current_pick, also_keep, suggested_idx, is_close_call, paths, dimensions, sizes, size_labels, scores, metrics}
@@ -138,6 +139,7 @@ async function refreshState() {
   if (data.generation !== state.generation) clearReceipt();
   state.generation = data.generation;
   state.params = data.params;
+  state.scan = data.scan;
   state.groups = data.groups;
   renderQueue();
   renderScope();
@@ -263,8 +265,29 @@ function renderAppState() {
       h.textContent = "That scan didn't run";
       p.textContent = `${state.error} — open the directory field above and try another path.`;
     } else if (state.status === "ready" && !state.groups.length) {
-      h.textContent = "No duplicates here";
-      p.textContent = `Nothing in ${state.params ? state.params.directory : "this directory"} hashed close enough to anything else to be a duplicate. Raise the threshold or scan somewhere else from the directory field above.`;
+      // Which kind of nothing decides the advice. No images at all is
+      // usually a library kept in year/month folders, scanned top level
+      // only: that wants Include subdirectories, and a looser threshold
+      // would only add false matches.
+      const dir = state.params ? state.params.directory : "this directory";
+      const recursive = !!(state.params && state.params.recursive);
+      const sc = state.scan || {};
+      const unread = sc.unreadable
+        ? ` ${fmtInt(sc.unreadable)} file${sc.unreadable === 1 ? "" : "s"} couldn't be read and ${sc.unreadable === 1 ? "was" : "were"} left out.`
+        : "";
+      if (!sc.images) {
+        h.textContent = "No images here";
+        p.textContent = recursive
+          ? `No JPEG, PNG, WebP, BMP, TIFF or HEIC files in ${dir} or its subfolders.`
+          : `No JPEG, PNG, WebP, BMP, TIFF or HEIC files at the top level of ${dir}. If the photos are in subfolders, open the directory field above and tick Include subdirectories.`;
+      } else {
+        const n = sc.images - (sc.unreadable || 0);
+        h.textContent = "No duplicates here";
+        p.textContent = `${fmtInt(n)} image${n === 1 ? "" : "s"} in ${dir}, and none looks like another.`
+          + (recursive ? "" : " Only the top level was scanned — tick Include subdirectories to compare across folders.")
+          + unread
+          + " A higher threshold finds looser matches, and more false ones.";
+      }
     } else {
       h.textContent = "Nothing selected";
       p.textContent = "Pick a group from the list to review it.";
@@ -297,7 +320,13 @@ function renderScope() {
   if (!p) return;
   $("scope-dir").textContent = p.directory;
   $("scope-dir").title = p.directory;
-  const bits = [`threshold ${p.threshold}/64`];
+  const bits = [];
+  const sc = state.scan;
+  if (sc && sc.images != null) {
+    bits.push(`${fmtInt(sc.images)} image${sc.images === 1 ? "" : "s"}`);
+    if (sc.unreadable) bits.push(`${fmtInt(sc.unreadable)} unreadable`);
+  }
+  bits.push(`threshold ${p.threshold}/64`);
   bits.push(p.recursive ? "recursive" : "top level only");
   if (p.dry_run) bits.push("dry run");
   $("scope-meta").textContent = bits.join(" · ");
@@ -1590,13 +1619,21 @@ function renderScanButton() {
   btn.textContent = rescanArmed ? "Scan anyway" : "Scan";
 }
 
+// The bar fills once per phase, so each says which of the two it is -- a
+// bar that reaches the end and starts over reads as the scan restarting.
+// The core's own labels stay terse for the CLI's progress line.
+const PHASE_LABELS = {
+  Hashing: "Step 1 of 2 · Finding look-alikes",
+  Analyzing: "Step 2 of 2 · Measuring quality",
+};
+
 function renderProgress(data) {
   const pct = data.total > 0 ? (100 * data.done) / data.total : 0;
   $("scanning-fill").style.width = `${pct}%`;
   // Just the phase: the directory being scanned is already the biggest
   // thing in the command bar, and uppercased at this size it reads as
   // shouting a path at someone who chose it ten seconds ago.
-  $("scanning-phase").textContent = data.label || "Reading the directory";
+  $("scanning-phase").textContent = PHASE_LABELS[data.label] || data.label || "Reading the directory";
   $("scanning-count").textContent = data.total > 0
     ? `${fmtInt(data.done)} / ${fmtInt(data.total)}`
     : "…";
@@ -2055,7 +2092,12 @@ function attachHandlers() {
       renderProgress({ label: "", done: 0, total: 0 });
       connectProgress();
     } catch (err) {
-      showToast(`Scan didn't start: ${err.message}`, true);
+      // In the panel, next to the field it's about, not in a toast that
+      // times out while the path is being fixed.
+      rescanArmed = false;
+      $("scan-warning").textContent = `Scan didn't start: ${err.message}`;
+      $("scan-warning").hidden = false;
+      $("f-directory").focus();
     } finally {
       renderScanButton();
     }

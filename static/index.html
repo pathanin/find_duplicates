@@ -67,8 +67,9 @@
     <input id="f-directory" type="text" required spellcheck="false" autocomplete="off" placeholder="/Volumes/photos/2019">
   </div>
   <div class="field field-narrow">
-    <label for="f-threshold">Hash threshold</label>
-    <input id="f-threshold" type="number" min="0" max="64" value="10">
+    <label for="f-threshold">Threshold · lower is stricter</label>
+    <input id="f-threshold" type="number" min="0" max="64" value="10"
+      title="How many of the 64 hash bits two images may differ by and still count as duplicates. 10 is the default. Above 10 the second, finer check switches off, so looser matches — and false ones — climb quickly.">
   </div>
   <div class="field field-wide">
     <label for="f-dest">Move non-kept files to</label>

@@ -168,6 +168,34 @@ def test_run_auto_dry_run_names_every_file() -> None:
         print("  ok  --auto --dry-run names the file it keeps and each file it would move")
 
 
+def test_run_auto_says_why_nothing_was_found() -> None:
+    """"No potential duplicate groups found." read the same for an empty
+    folder and a thousand distinct photos. The usual empty case is a
+    library in year/month folders scanned top level only, and that needs
+    --recursive, not a looser threshold."""
+    import contextlib
+    import find_duplicates as fd
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp)
+        save_jpeg(make_texture(200, 200, 1), directory / "2019" / "a.jpg")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            fd._run_auto(directory, directory / "_duplicates", dc.DEFAULT_HASH_THRESHOLD, recursive=False, dry_run=True)
+        assert "No images found" in out.getvalue() and "--recursive" in out.getvalue(), out.getvalue()
+
+        save_jpeg(make_texture(200, 200, 2), directory / "b.jpg")
+        save_jpeg(make_texture(200, 200, 3), directory / "c.jpg")
+        (directory / "d.jpg").write_bytes(b"not an image")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            fd._run_auto(directory, directory / "_duplicates", dc.DEFAULT_HASH_THRESHOLD, recursive=False, dry_run=True)
+        text = out.getvalue()
+        # b and c read fine; d is the unreadable one, reported on its own line.
+        assert "Scanned 2 images" in text and "none look like duplicates" in text, text
+        assert "1 file couldn't be read" in text, text
+        print("  ok  --auto says whether it found no images or no duplicates, and what it couldn't read")
+
+
 def test_auto_apply_groups_all_pending() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         directory = Path(tmp)
@@ -417,6 +445,7 @@ def main() -> None:
         test_move_log_failure_does_not_fail_the_move,
         test_auto_dry_run_reports_the_bytes_it_would_move,
         test_run_auto_dry_run_names_every_file,
+        test_run_auto_says_why_nothing_was_found,
         test_auto_apply_groups_all_pending,
         test_auto_apply_groups_skips_already_confirmed,
         test_auto_apply_groups_dry_run,
