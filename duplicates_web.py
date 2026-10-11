@@ -32,7 +32,7 @@ from pathlib import Path
 from threading import BoundedSemaphore, Event, Lock
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
 from PIL import Image as PILImage
@@ -64,6 +64,31 @@ COOKIE_NAME = "fd_token"
 # "no-cache" means revalidate, not "don't store": the ETag still makes the
 # check a 304 on a page that hasn't changed.
 NO_CACHE = {"Cache-Control": "no-cache"}
+
+# What a browser gets for the page itself without a valid token. Every run
+# prints a new token, so an old tab, a bookmark or a history entry lands
+# here -- and shown raw JSON it looks like a broken server. Self-contained:
+# /static needs the very token this visitor doesn't have.
+STALE_LINK_PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Link expired — duplicate review</title>
+<style>
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center;
+         background: #1a1a1a; color: #ffffff; font: 16px/1.38 system-ui, sans-serif; }
+  main { max-width: 52ch; padding: 40px; }
+  h1 { font-size: 24px; font-weight: 500; line-height: 1.17; margin: 0 0 12px; }
+  p { color: #c2c2c2; margin: 0 0 12px; }
+  code { color: #ffffff; }
+</style></head>
+<body><main>
+<h1>This link doesn't open the review</h1>
+<p>Each run of find-duplicates prints a new address with its own token, so a tab,
+bookmark or history entry from an earlier run stops working.</p>
+<p>Copy the current <code>Open:</code> address from the terminal (or log) where
+find-duplicates is running. If it has stopped, start it again there.</p>
+</main></body></html>
+"""
 
 # The formats a browser can't render natively -- everything else in
 # duplicates_core.IMAGE_EXTS (jpg/png/webp/bmp) is served as-is via
@@ -456,7 +481,12 @@ def create_app(initial_params: ScanParams, token: str) -> FastAPI:
         return supplied
 
     @app.get("/")
-    async def index(token: str = Depends(require_token)) -> Response:
+    async def index(request: Request) -> Response:
+        try:
+            token = require_token(request)
+        except HTTPException:
+            # A person is reading this one, not a script: see STALE_LINK_PAGE.
+            return HTMLResponse(STALE_LINK_PAGE, status_code=401, headers=NO_CACHE)
         resp = FileResponse(STATIC_DIR / "index.html", headers=NO_CACHE)
         # strict, not lax: entry is always via the printed ?token= URL, so no
         # cross-site navigation ever needs to arrive already authenticated.

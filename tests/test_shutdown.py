@@ -118,11 +118,38 @@ def test_startup_lines_survive_a_redirect():
     print("  ok  the startup lines are flushed even when stdout is a redirect")
 
 
+def test_busy_port_hands_out_no_url():
+    """A second copy on a port that's taken used to print "Scanning..." and
+    a fresh tokened Open: URL -- and open the browser on it, which landed
+    on the *other* server with the wrong token -- before failing to bind.
+    The address it handed out was dead before anyone read it. The port is
+    bound first now, and a taken one says what to do."""
+    import socket
+    with socket.socket() as busy:
+        # Port 0: whatever is free. A fixed port collides with the other
+        # tests' servers still in TIME_WAIT.
+        busy.bind(("127.0.0.1", 0))
+        busy.listen()
+        port = busy.getsockname()[1]
+        proc = subprocess.run(
+            [sys.executable, "-u", str(ROOT / "find_duplicates.py"), str(ROOT / "tests" / "Test-image"),
+             "--no-browser", "--port", str(port)],
+            cwd=str(ROOT), capture_output=True, text=True, timeout=30,
+        )
+    output = proc.stdout + proc.stderr
+    assert proc.returncode != 0, f"a failed bind must exit non-zero, got {proc.returncode}"
+    assert "Open:" not in output and "token=" not in output, f"a URL was printed for a server that never ran: {output!r}"
+    assert "--port" in proc.stderr and str(port) in proc.stderr, f"expected advice naming the port and --port: {proc.stderr!r}"
+    assert "Traceback" not in output, output
+    print("  ok  a busy port prints no URL, exits non-zero and suggests --port")
+
+
 def main():
     for test in (test_sigint_during_scan_exits_promptly,
                  test_second_sigint_during_shutdown_is_quiet,
                  test_sigint_with_an_open_sse_stream_exits_promptly,
-                 test_startup_lines_survive_a_redirect):
+                 test_startup_lines_survive_a_redirect,
+                 test_busy_port_hands_out_no_url):
         print(f"{test.__name__}:")
         test()
     print("all shutdown tests passed")

@@ -113,6 +113,26 @@ def test_data_endpoint_requires_token() -> None:
         print("  ok  /api/state rejects missing/wrong token")
 
 
+def test_page_without_a_valid_token_explains_itself() -> None:
+    """The token changes every run, so every tab, bookmark and history
+    entry from an earlier run lands on a missing or stale token -- and a
+    browser used to show it raw JSON. The page itself answers with a short
+    HTML explanation; the API keeps its JSON 401."""
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp)
+        client, _ = _make_client(directory, directory / "_duplicates")
+        with client:
+            for params in ({}, {"token": "from-an-earlier-run"}):
+                r = client.get("/", params=params)
+                assert r.status_code == 401, r.status_code
+                assert r.headers["content-type"].startswith("text/html"), r.headers["content-type"]
+                assert "Open:" in r.text and "terminal" in r.text, r.text
+                assert web.COOKIE_NAME not in client.cookies, "a rejected page load must not set the cookie"
+            r = client.get("/api/state")
+            assert r.status_code == 401 and r.headers["content-type"].startswith("application/json")
+        print("  ok  GET / without a valid token answers with an HTML explanation; the API stays JSON")
+
+
 def test_image_endpoint_requires_token() -> None:
     """Explicit PLAN requirement: token gating covers image bytes too, not
     just the JSON API -- an <img src> is exactly the kind of request a
@@ -803,6 +823,7 @@ def test_renders_honour_exif_orientation() -> None:
 def main() -> None:
     tests = [
         test_data_endpoint_requires_token,
+        test_page_without_a_valid_token_explains_itself,
         test_image_endpoint_requires_token,
         test_index_sets_cookie_and_cookie_alone_authenticates,
         test_initial_scan_populates_groups,

@@ -29,6 +29,7 @@ Requires:
 
 import argparse
 import asyncio
+import errno
 import os
 import secrets
 import socket
@@ -60,6 +61,24 @@ def _lan_ip() -> str | None:
             return s.getsockname()[0]
     except OSError:
         return None
+
+
+def _bind(host: str, port: int) -> socket.socket:
+    """The listening socket, bound before anything is printed or opened.
+    Uvicorn binds inside serve(), after the URL is already out: a taken
+    port used to print a fresh tokened URL and open the browser on it --
+    landing on whichever server did own the port, with the wrong token --
+    before failing. SO_REUSEADDR as uvicorn sets it, so a port left in
+    TIME_WAIT by the last run is still usable."""
+    sock = socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind((host, port))
+    except OSError:
+        sock.close()
+        raise
+    sock.set_inheritable(True)
+    return sock
 
 
 def _threshold_arg(s: str) -> int:
@@ -126,8 +145,18 @@ def _run_auto(directory: Path, dest_dir: Path, threshold: int, recursive: bool, 
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Find and review potential duplicate images by quality.")
-    parser.add_argument("directory", nargs="?", default=".", type=Path)
+    # prog: installed, this runs as `find-duplicates` through a wrapper, and
+    # argparse would otherwise name the script it was handed.
+    parser = argparse.ArgumentParser(
+        prog="find-duplicates",
+        description="Find near-duplicate images and pick which to keep from a browser page. "
+        "Prints a tokened URL and serves the review until Ctrl-C (or Quit on the page); "
+        "--auto skips the review instead.",
+    )
+    parser.add_argument(
+        "directory", nargs="?", default=".", type=Path,
+        help="Folder to scan. Default: the current directory (top level only, unless --recursive).",
+    )
     parser.add_argument(
         "--threshold",
         type=_threshold_arg,
@@ -172,6 +201,20 @@ def main() -> None:
     if args.auto:
         _run_auto(directory, dest_dir, args.threshold, args.recursive, args.dry_run)
         return
+
+    try:
+        sock = _bind(args.host, args.port)
+    except OSError as exc:
+        if exc.errno == errno.EADDRINUSE:
+            print(
+                f"Error: port {args.port} is already in use -- most likely by another find-duplicates "
+                f"still running (its URL is in that terminal). Stop it, or pick another port with "
+                f"--port {args.port + 1}.",
+                file=sys.stderr,
+            )
+        else:
+            print(f"Error: can't listen on {args.host}:{args.port}: {exc.strerror or exc}", file=sys.stderr)
+        sys.exit(1)
 
     token = secrets.token_urlsafe(32)
     params = ScanParams(
@@ -219,7 +262,7 @@ def main() -> None:
     # cancels the lifespan task mid-shutdown and dumps a traceback.
     loop = asyncio.new_event_loop()
     try:
-        loop.run_until_complete(server.serve())
+        loop.run_until_complete(server.serve(sockets=[sock]))
     except KeyboardInterrupt:
         pass
     # Exit without waiting on the interpreter's teardown: a scan thread may
