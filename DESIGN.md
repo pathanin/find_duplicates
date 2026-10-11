@@ -503,7 +503,9 @@ the checkbox tick, both drawn from borders.
   — 11px 16px padding, divided by light hairlines. Hover is fog; active is a
   solid ink block with steel secondaries. Done rows drop their label to
   graphite. Below 900px the text block takes a fixed 20ch, since an auto-sized
-  strip item collapses a 1fr track to nothing.
+  strip item collapses a 1fr track to nothing, and Keep one of each moves
+  beside the count and meter: under them it cost the ledger its header on a
+  short screen.
 - Status is shape first (see The Shape-Not-Only-Colour Rule), colour second.
 - During a scan the list drops to 0.4 opacity and stops taking pointer events.
 

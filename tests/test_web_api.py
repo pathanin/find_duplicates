@@ -692,9 +692,15 @@ def test_scanning_status_blocks_mutating_endpoints() -> None:
                 ).status_code == 409
                 assert client.post("/api/group/0/confirm", params={"token": TOKEN}).status_code == 409
                 assert client.post("/api/group/0/skip", params={"token": TOKEN}).status_code == 409
+                # Every other route that changes a group or moves files.
+                assert client.post(
+                    "/api/group/0/keep", params={"token": TOKEN}, json={"idx": 1, "keep": True}
+                ).status_code == 409
+                assert client.post("/api/group/0/undo", params={"token": TOKEN}).status_code == 409
+                assert client.post("/api/confirm-identical", params={"token": TOKEN}).status_code == 409
             finally:
                 session.status = "ready"
-        print("  ok  pick/confirm/skip all reject a request while a scan is in flight")
+        print("  ok  pick/keep/confirm/skip/undo/confirm-identical all reject a request while a scan is in flight")
 
 
 def test_generation_never_repeats_across_runs() -> None:

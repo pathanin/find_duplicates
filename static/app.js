@@ -79,6 +79,11 @@ async function api(path, opts = {}) {
         ? detail.map((d) => (d && d.msg) || JSON.stringify(d)).join("; ")
         : detail;
     } catch { message = res.statusText; }
+    // A tab left open across a restart: the new run has a new token, so
+    // every request here is refused. Say that, not "missing or invalid token".
+    if (res.status === 401) {
+      message = "this page is from an earlier run of find-duplicates — open the current Open: address from its terminal";
+    }
     // Callers need the code, not just the prose: 409 means this tab's
     // generation is stale and the view has to be reloaded, not toasted.
     const err = new Error(message || `HTTP ${res.status}`);

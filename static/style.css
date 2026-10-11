@@ -1058,6 +1058,17 @@ button { font-family: inherit; }
     border-right: 1px solid var(--hairline-strong);
   }
   .queue-count { gap: 6px; }
+  /* Keep one of each sits beside the count and meter, not under them: under
+     them it added 30px to the strip, and on a short screen that came out of
+     the ledger, whose header shrank to 16px. */
+  .queue-head:has(.queue-bulk:not([hidden])) {
+    display: grid;
+    grid-template-columns: auto auto;
+    column-gap: 14px;
+    align-content: center;
+  }
+  .queue-head .queue-count, .queue-head .meter { grid-column: 1; }
+  .queue-bulk { grid-column: 2; grid-row: 1 / span 2; align-self: center; margin: 0; max-width: 18ch; }
   .queue-left { font: var(--display-xs); font-variant-numeric: tabular-nums; }
   .queue-total { font: var(--caption-sm); }
   .meter { width: 130px; margin: 0; }
